@@ -7,6 +7,15 @@
  */
 import type { Writable } from 'node:stream';
 import { init } from './commands/init.js';
+import { up } from './commands/up.js';
+import { attach } from './commands/attach.js';
+import { stop } from './commands/stop.js';
+import { rm } from './commands/rm.js';
+import { list } from './commands/list.js';
+import { url } from './commands/url.js';
+import type { LauncherContext } from './lib/context.js';
+import { RealShellRunner } from './lib/shell.js';
+import { findRepoRoot, repoName } from './lib/repo.js';
 
 const USAGE = `devbox — one-command isolated worktree dev containers
 
@@ -125,7 +134,7 @@ export interface DispatchIO {
   stderr: Writable;
 }
 
-export function dispatch(args: string[], io: DispatchIO): number | Promise<number> {
+export async function dispatch(args: string[], io: DispatchIO): Promise<number> {
   // No args: print usage, exit non-zero.
   if (args.length === 0) {
     io.stderr.write(USAGE + '\n');
@@ -147,8 +156,19 @@ export function dispatch(args: string[], io: DispatchIO): number | Promise<numbe
       io.stdout.write(LIST_HELP + '\n');
       return 0;
     }
-    io.stderr.write('not yet implemented: --list (Phase 3)\n');
-    return 1;
+    const root = findRepoRoot();
+    if (!root) {
+      io.stderr.write('[devbox] not in a git repository\n');
+      return 1;
+    }
+    const ctx: LauncherContext = {
+      repoRoot: root,
+      repoName: repoName(root),
+      runner: new RealShellRunner(),
+      env: { ...process.env },
+      tty: process.stdin.isTTY,
+    };
+    return list(ctx, io.stderr);
   }
 
   // Init command.
@@ -168,9 +188,7 @@ export function dispatch(args: string[], io: DispatchIO): number | Promise<numbe
     return 2;
   }
 
-  // Branch command: <branch> [flag ...]
-  // first is the branch name (doesn't start with -) or a recognized branch flag
-  // used without a branch (error).
+  // Branch flag used without a branch (error).
   if (BRANCH_FLAGS.has(first)) {
     io.stderr.write(`usage: devbox <branch> ${first}\n\n`);
     io.stderr.write(USAGE + '\n');
@@ -181,8 +199,7 @@ export function dispatch(args: string[], io: DispatchIO): number | Promise<numbe
   const branch = first;
 
   // Help short-circuit: --help/-h anywhere in rest renders per-command help.
-  // Must run BEFORE flag routing so <branch> <flag> --help renders help (exit 0)
-  // instead of falling through to the not-yet-implemented stub (exit 1).
+  // Must run BEFORE the repo-root check so help works outside a git repo.
   const helpFlag = rest.find((a) => a === '--help' || a === '-h');
   if (helpFlag) {
     const actionFlag = rest.find((a) => BRANCH_FLAGS.has(a));
@@ -202,29 +219,38 @@ export function dispatch(args: string[], io: DispatchIO): number | Promise<numbe
     return 0;
   }
 
+  // Build the launcher context for branch commands (after help check).
+  const root = findRepoRoot();
+  if (!root) {
+    io.stderr.write('[devbox] not in a git repository\n');
+    return 1;
+  }
+  const ctx: LauncherContext = {
+    repoRoot: root,
+    repoName: repoName(root),
+    runner: new RealShellRunner(),
+    env: { ...process.env },
+    tty: process.stdin.isTTY,
+  };
+
   // Route by the first flag in rest.
   const flag = rest.find((a) => BRANCH_FLAGS.has(a));
 
   if (flag === '--attach' || flag === '-a') {
-    io.stderr.write(`not yet implemented: ${branch} --attach (Phase 3)\n`);
-    return 1;
+    return attach(ctx, branch);
   }
   if (flag === '--stop') {
-    io.stderr.write(`not yet implemented: ${branch} --stop (Phase 3)\n`);
-    return 1;
+    return stop(ctx, branch);
   }
   if (flag === '--rm') {
-    io.stderr.write(`not yet implemented: ${branch} --rm (Phase 3)\n`);
-    return 1;
+    return rm(ctx, branch);
   }
   if (flag === '--url' || flag === '--open' || flag === '-o') {
-    io.stderr.write(`not yet implemented: ${branch} ${flag} (Phase 3)\n`);
-    return 1;
+    return url(ctx, branch, flag === '--open' || flag === '-o');
   }
 
   // No flag: boot (up command).
-  io.stderr.write(`not yet implemented: ${branch} (Phase 3)\n`);
-  return 1;
+  return up(ctx, branch);
 }
 
 // Entry point when run as a bin.
