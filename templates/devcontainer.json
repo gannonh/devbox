@@ -1,0 +1,69 @@
+// {{REPO_NAME}} devbox — per-repo dev container config.
+//
+// This is the standard devcontainer.json that @devcontainers/cli, GitHub
+// Codespaces, and Cursor all read. `npx @gannonh/devbox <branch>` drives it via
+// `devcontainer up`. To add a tool permanently, add a Feature below or an apt
+// line in .devbox/Dockerfile — it persists for every future box.
+{
+  "name": "{{REPO_NAME}}-devbox",
+  "build": {
+    "dockerfile": "../.devbox/Dockerfile",
+    "context": ".."
+  },
+
+  // Run as the non-root user from the base image.
+  "remoteUser": "node",
+  "containerUser": "node",
+
+  // Features: prebuilt, composable installs. Add one line here and it's in
+  // every future box. See https://containers.dev/features
+  "features": {},
+
+  // No host port publishing needed: OrbStack exposes every container port at
+  // <container-name>.orb.local:<port>, so concurrent worktrees never collide.
+  // (forwardPorts is only used by VS Code/Codespaces attach, kept for that path.)
+  "forwardPorts": [5173, 9100, 6080],
+  "portsAttributes": {
+    "5173": { "label": "Vite dev server" },
+    "9100": { "label": "RPC server" },
+    "6080": { "label": "noVNC (headed GUI)" }
+  },
+
+  // Host config mounted in (read-only):
+  //   - DEVBOX_ENV -> /home/node/.env  (the repo's .env; provision.sh links it)
+  //   - ~/.pi      -> /tmp/host-pi      (provision.sh copies it minus
+  //                  sessions/npm/cache, then replays extensions Linux-native)
+  //
+  // The ~/.pi mount is Pi-specific. If you switch to Claude Code or Codex
+  // (see .devbox/provision.sh), remove the second mount line below — it is
+  // inert for non-Pi agents and ~/.pi is ~1.3GB.
+  "mounts": [
+    "source=${localEnv:DEVBOX_ENV},target=/home/node/.env,type=bind,readonly",
+    "source=${localEnv:HOME}/.pi,target=/tmp/host-pi,type=bind,readonly"
+  ],
+
+  "containerEnv": {
+    "DISPLAY": ":99",
+    "NOVNC_PORT": "6080",
+    "VNC_PORT": "5900",
+    // Electron's Chromium SUID sandbox can't run with host-owned node_modules
+    // bind-mounted in; the container is the isolation boundary, so disable it.
+    // Set DEVBOX_ELECTRON_NO_SANDBOX=1 to make Electron launch with --no-sandbox
+    // in the container. Your repo's Electron dev script should read this env var
+    // and pass --no-sandbox when it's set.
+    "DEVBOX_ELECTRON_NO_SANDBOX": "1"
+  },
+
+  // Lifecycle hooks (devcontainer spec):
+  //   postCreate — once, after create: full provisioning (deps, agent, .env) +
+  //                first display start. The CLI waits for this to finish.
+  //   postStart  — every start: (re)bring the display stack up. setsid fully
+  //                detaches it so the CLI tearing down the exec session does
+  //                not reap the long-lived Xvfb/VNC processes (a plain
+  //                `nohup ... &` job gets killed when the hook returns).
+  "postCreateCommand": "bash .devbox/provision.sh",
+  "postStartCommand": "setsid bash -c /usr/local/bin/devbox-start-display >/tmp/devbox-display.log 2>&1 < /dev/null",
+
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+}

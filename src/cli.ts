@@ -6,6 +6,7 @@
  * Command bodies land in Phases 2-3.
  */
 import type { Writable } from 'node:stream';
+import { init } from './commands/init.js';
 
 const USAGE = `devbox — one-command isolated worktree dev containers
 
@@ -124,7 +125,7 @@ export interface DispatchIO {
   stderr: Writable;
 }
 
-export function dispatch(args: string[], io: DispatchIO): number {
+export function dispatch(args: string[], io: DispatchIO): number | Promise<number> {
   // No args: print usage, exit non-zero.
   if (args.length === 0) {
     io.stderr.write(USAGE + '\n');
@@ -156,8 +157,8 @@ export function dispatch(args: string[], io: DispatchIO): number {
       io.stdout.write(INIT_HELP + '\n');
       return 0;
     }
-    io.stderr.write('not yet implemented: init (Phase 2)\n');
-    return 1;
+    const force = rest.includes('--force');
+    return init({ force, stdout: io.stdout, stderr: io.stderr });
   }
 
   // Unknown flag (starts with - but not a recognized global/branch flag).
@@ -227,9 +228,9 @@ export function dispatch(args: string[], io: DispatchIO): number {
 }
 
 // Entry point when run as a bin.
-function main() {
+async function main() {
   const args = process.argv.slice(2);
-  const code = dispatch(args, { stdout: process.stdout, stderr: process.stderr });
+  const code = await dispatch(args, { stdout: process.stdout, stderr: process.stderr });
   process.exit(code);
 }
 
