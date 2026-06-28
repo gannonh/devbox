@@ -185,13 +185,23 @@ flowchart LR
 The packaged `provision.sh` is generic. Kata-specific steps move into the
 opt-in `.devbox/post-create.sh` hook (which `init` writes as a no-op stub).
 
+**`ensure:electron` handling.** The existing kata-agents `provision.sh` runs
+`bun run ensure:electron` when the repo's `package.json` defines that script.
+This is a *generic* conditional (it keys off script presence, not Kata
+internals), so it is carried into the packaged `provision.sh` unchanged.
+Repos without that script are unaffected. This preserves the Electron-runtime
+parity from kata-agents without making `provision.sh` Kata-specific.
+
 Sections, in order:
 
 1. **Repo dependencies** — auto-detect from lockfile (`bun.lock` → `bun
    install`, `pnpm-lock.yaml` → `pnpm install --frozen-lockfile`,
    `package-lock.json` → `npm ci`). Skip when `node_modules` is populated.
-2. **`.env` link** — link `${HOME}/.env` to `/workspace/.env` if absent.
-3. **Agent setup** — three blocks, only one active:
+2. **Electron runtime (conditional)** — if `package.json` defines an
+   `ensure:electron` script, run it; log a warning on failure (Electron GUI
+   may not launch). No-op for non-Electron repos.
+3. **`.env` link** — link `${HOME}/.env` to `/workspace/.env` if absent.
+4. **Agent setup** — three blocks, only one active:
    - **Pi (active default)** — rsync `/tmp/host-pi` to `${HOME}/.pi`
      excluding `agent/sessions/`, `agent/npm/`, `agent/cache/`; replay
      extensions from `settings.json.packages[]` via
@@ -203,12 +213,20 @@ Sections, in order:
    - **Codex (commented out)** — `npm install -g @openai/codex`. Auth via
      `OPENAI_API_KEY` or `codex --login` (opens a browser; works in-box via
      Chromium).
-4. **Opt-in hook** — if `.devbox/post-create.sh` exists and is executable,
+5. **Opt-in hook** — if `.devbox/post-create.sh` exists and is executable,
    run it after deps + agent setup. Absent/non-executable → skipped, no error.
-5. **Display start** — `setsid bash -c /usr/local/bin/devbox-start-display`.
+6. **Display start** — `setsid bash -c /usr/local/bin/devbox-start-display`.
+
+`provision.sh` carries an inline comment header at the top documenting the
+agent-switching procedure: to switch, comment out the Pi block, uncomment the
+chosen block, and remove the `~/.pi` mount from `devcontainer.json` (it is
+inert-but-present when a non-Pi block is active, and `~/.pi` is ~1.3GB, so
+removing it avoids a wasteful mount).
 
 `devcontainer.json` keeps the `~/.pi` mount active (Pi is the default) with a
 comment showing how to remove it when switching to Claude Code or Codex.
+Switching agents is a two-file edit: comment-toggle the block in
+`provision.sh` and remove the `~/.pi` mount in `devcontainer.json`.
 
 ### Release workflow design
 
@@ -224,7 +242,11 @@ Two triggers, both producing the same release artifact:
 Workflow behavior (both triggers):
 
 - Resolve the target version: explicit input, or patch bump from the last
-  `v*` tag.
+  `v*` tag. "Last tag" is resolved via
+  `git tag --list 'v*' --sort=-v:refname | head -1` (highest semver). If there
+  is no prior tag and the `version` input is empty, the workflow errors with a
+  message instructing the user to provide an explicit version for the first
+  release.
 - Sync `package.json` `version` to the target (CI edits the file; tag is
   source of truth).
 - Create/update the git tag `v<version>` and push it (for manual dispatch
@@ -243,8 +265,12 @@ for v1.
    (Dockerfile, provision.sh, start-display.sh, post-create.sh stub,
    README.md) and `.devcontainer/devcontainer.json` without error. Files are
    byte-equivalent to `templates/` modulo token replacement for repo name.
-2. `init` is idempotent: detects existing config, prompts before overwriting
-   or errors with a `--force` override. No silent clobbering.
+2. `init` is idempotent with a single explicit rule: if `.devbox/` exists and
+   any file differs from the template, error and instruct the user to pass
+   `--force` to overwrite or to diff manually; if `.devbox/` exists and all
+   files match the templates, no-op with an info message; `--force` overwrites
+   unconditionally. In a non-TTY (e.g. CI), differing files always error
+   without prompting. No silent clobbering.
 3. `npx @gannonh/devbox <branch>` in an init'd repo boots a working box:
    creates the worktree, runs `devcontainer up`, drops the user into a shell
    in `/workspace` as the non-root user. noVNC, Vite, and GitHub-token
@@ -272,7 +298,10 @@ for v1.
    Pi-specific with removal instructions for other agents.
 8. Chromium + OAuth path works in the box: `xdg-open <url>` launches Chromium
    with `--no-sandbox --disable-gpu --test-type`; a `localhost:1455`
-   callback is reachable from inside the box (same network namespace).
+   callback (the Pi ChatGPT OAuth port, hardcoded as
+   `CHATGPT_OAUTH_CONFIG.CALLBACK_PORT` in
+   `packages/shared/src/auth/chatgpt-oauth-config.ts`) is reachable from
+   inside the box (same network namespace).
 9. Display stack survives lifecycle teardown: after `devcontainer up`
    returns, Xvfb/x11vnc/noVNC are still running (via `setsid`); `--attach`
    after a `--stop`/restart re-brings the display up.
@@ -293,9 +322,11 @@ for v1.
     produces a bootable box per criterion 3.
 14. `.devbox/README.md` generated by `init` covers quickstart (the
     one-command boot), prerequisites (docker/OrbStack, `@devcontainers/cli`,
-    `gh auth`, optional `~/.pi`), and a per-file rundown (what
+    `gh auth`, optional `~/.pi`), a per-file rundown (what
     Dockerfile/provision.sh/start-display.sh/post-create.sh/devcontainer.json
-    each do). It renders as markdown on GitHub.
+    each do), and an **agent switching** section (comment-toggle in
+    `provision.sh` + remove the `~/.pi` mount in `devcontainer.json`). It
+    renders as markdown on GitHub.
 
 ## Implementation phases
 
