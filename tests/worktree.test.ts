@@ -89,7 +89,7 @@ describe('removeWorktree', () => {
     expect(execQuiet).toHaveBeenCalledWith(
       'git',
       ['worktree', 'remove', '--force', '/worktrees/repo-dev'],
-      { cwd: '/repo' },
+      { cwd: '/repo', silentStderr: true },
     );
   });
 

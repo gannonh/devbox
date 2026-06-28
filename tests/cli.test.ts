@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dispatch } from '../src/cli.js';
+import { dispatch, resolveBranchAction } from '../src/cli.js';
 import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -118,5 +118,39 @@ describe('cli dispatch', () => {
     const output = stdout + stderr;
     expect(output).toContain('url');
     expect(output).toContain('USAGE');
+  });
+});
+
+describe('resolveBranchAction', () => {
+  it('returns { action: "up" } when no flags present', () => {
+    expect(resolveBranchAction([])).toEqual({ action: 'up' });
+  });
+
+  it('returns { action: "attach" } for --attach', () => {
+    expect(resolveBranchAction(['--attach'])).toEqual({ action: 'attach' });
+  });
+
+  it('returns { action: "stop" } for --stop', () => {
+    expect(resolveBranchAction(['--stop'])).toEqual({ action: 'stop' });
+  });
+
+  it('returns { action: "rm" } for --rm', () => {
+    expect(resolveBranchAction(['--rm'])).toEqual({ action: 'rm' });
+  });
+
+  it('returns { action: "url", open: false } for --url alone', () => {
+    expect(resolveBranchAction(['--url'])).toEqual({ action: 'url', open: false });
+  });
+
+  it('returns { action: "url", open: true } for --url --open', () => {
+    expect(resolveBranchAction(['--url', '--open'])).toEqual({ action: 'url', open: true });
+  });
+
+  it('returns { action: "url", open: true } for --open alone', () => {
+    expect(resolveBranchAction(['--open'])).toEqual({ action: 'url', open: true });
+  });
+
+  it('returns { action: "url", open: true } for -o alone', () => {
+    expect(resolveBranchAction(['-o'])).toEqual({ action: 'url', open: true });
   });
 });

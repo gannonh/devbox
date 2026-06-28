@@ -24,6 +24,10 @@ export interface ExecOptions {
   stdin?: string;
   /** If true, suppress stderr output (pipe to /dev/null). */
   silentStderr?: boolean;
+  /** If set, stream stdout chunks to this stream (e.g. process.stderr) with
+   *  the given prefix, while also capturing into the returned stdout string.
+   *  Used for devcontainer up so the user sees build progress live. */
+  streamStdoutTo?: { stream: NodeJS.WriteStream; prefix: string };
 }
 
 export interface ExecResult {
@@ -51,6 +55,13 @@ export class RealShellRunner implements ShellRunner {
       let stdout = '';
       child.stdout?.on('data', (data: Buffer) => {
         stdout += data.toString();
+        if (options?.streamStdoutTo) {
+          const { stream, prefix } = options.streamStdoutTo;
+          // Write each line with the prefix, matching bash's sed prefix.
+          for (const line of data.toString().split('\n')) {
+            if (line.length > 0) stream.write(`${prefix}${line}\n`);
+          }
+        }
       });
       if (options?.stdin && child.stdin) {
         child.stdin.write(options.stdin);
@@ -95,6 +106,20 @@ export class RealShellRunner implements ShellRunner {
 
 /** Singleton real runner. */
 export const shell: ShellRunner = new RealShellRunner();
+
+/**
+ * Safely single-quote-escape a string for use inside a shell single-quoted
+ * context. Replaces each `'` with `'{\}'` (close quote, escaped quote,
+ * reopen quote), then wraps the whole thing in single quotes.
+ *
+ * Equivalent to bash's `printf '%q'` for the single-quote-in-single-quotes
+ * case. Used for writing GH_TOKEN into /etc/profile.d/gh-token.sh.
+ */
+export function escapeShellSingleQuote(value: string): string {
+  // To embed a single quote inside a single-quoted shell string, close the
+  // quote, add an escaped quote (\'), then reopen: ' -> '\''
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 /**
  * Check if a command is available on the system (like bash's `command -v`).

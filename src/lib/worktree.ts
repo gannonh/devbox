@@ -73,6 +73,7 @@ export async function createWorktree(runner: ShellRunner, config: WorktreeConfig
 export async function removeWorktree(runner: ShellRunner, repoRoot: string, path: string): Promise<boolean> {
   const result = await runner.execQuiet('git', ['worktree', 'remove', '--force', path], {
     cwd: repoRoot,
+    silentStderr: true,
   });
   if (result.code === 0) return true;
   // Fallback: rm -rf

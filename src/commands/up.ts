@@ -13,7 +13,7 @@ import { branchToPath, resolveWorktreesDir, createWorktree } from '../lib/worktr
 import { resolveDevboxEnv, resolveGhToken } from '../lib/env.js';
 import { hyperlink } from '../lib/display.js';
 import { info, warn, die } from '../lib/log.js';
-import { commandExists } from '../lib/shell.js';
+import { commandExists, escapeShellSingleQuote } from '../lib/shell.js';
 import { existsSync } from 'node:fs';
 
 const CYAN = '\x1b[0;36m';
@@ -90,7 +90,10 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
     ...ghEnvArgs,
   ];
   const devcontainerEnv = { ...env, DEVBOX_ENV: devboxEnv } as Record<string, string>;
-  const result = await runner.execQuiet('devcontainer', devcontainerArgs, { env: devcontainerEnv });
+  const result = await runner.execQuiet('devcontainer', devcontainerArgs, {
+    env: devcontainerEnv,
+    streamStdoutTo: { stream: process.stderr, prefix: '[devcontainer] ' },
+  });
   // devcontainer up streams output; we don't parse it for the cid.
   if (result.code !== 0) {
     die('devcontainer up failed; check output above');
@@ -102,7 +105,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
 
   // Persist GH_TOKEN so every shell is authed.
   if (ghToken) {
-    const tokenScript = `export GH_TOKEN='${ghToken}'\n`;
+    const tokenScript = `export GH_TOKEN=${escapeShellSingleQuote(ghToken)}\n`;
     await runner.execQuiet(
       'docker',
       ['exec', '-i', '-u', 'root', cid, 'bash', '-c', 'cat > /etc/profile.d/gh-token.sh && chown node:node /etc/profile.d/gh-token.sh && chmod 600 /etc/profile.d/gh-token.sh'],

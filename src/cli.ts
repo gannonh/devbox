@@ -129,6 +129,29 @@ EXAMPLES
 
 const GLOBAL_FLAGS = new Set(['--help', '-h', '--list', '-l']);
 const BRANCH_FLAGS = new Set(['--attach', '-a', '--stop', '--rm', '--url', '--open', '-o']);
+
+export type BranchAction =
+  | { action: 'up' }
+  | { action: 'attach' }
+  | { action: 'stop' }
+  | { action: 'rm' }
+  | { action: 'url'; open: boolean };
+
+/**
+ * Resolve the action for a branch command from the remaining flags.
+ * --open/-o anywhere in the flags implies --url with open=true, matching the
+ * bash behavior where --open is an alias for --url --open.
+ */
+export function resolveBranchAction(rest: string[]): BranchAction {
+  const hasOpen = rest.includes('--open') || rest.includes('-o');
+  if (rest.includes('--url') || hasOpen) {
+    return { action: 'url', open: hasOpen };
+  }
+  if (rest.includes('--attach') || rest.includes('-a')) return { action: 'attach' };
+  if (rest.includes('--stop')) return { action: 'stop' };
+  if (rest.includes('--rm')) return { action: 'rm' };
+  return { action: 'up' };
+}
 export interface DispatchIO {
   stdout: Writable;
   stderr: Writable;
@@ -233,24 +256,21 @@ export async function dispatch(args: string[], io: DispatchIO): Promise<number> 
     tty: process.stdin.isTTY,
   };
 
-  // Route by the first flag in rest.
-  const flag = rest.find((a) => BRANCH_FLAGS.has(a));
+  // Route by the resolved action from all flags in rest.
+  const action = resolveBranchAction(rest);
 
-  if (flag === '--attach' || flag === '-a') {
-    return attach(ctx, branch);
+  switch (action.action) {
+    case 'attach':
+      return attach(ctx, branch);
+    case 'stop':
+      return stop(ctx, branch);
+    case 'rm':
+      return rm(ctx, branch);
+    case 'url':
+      return url(ctx, branch, action.open);
+    case 'up':
+      return up(ctx, branch);
   }
-  if (flag === '--stop') {
-    return stop(ctx, branch);
-  }
-  if (flag === '--rm') {
-    return rm(ctx, branch);
-  }
-  if (flag === '--url' || flag === '--open' || flag === '-o') {
-    return url(ctx, branch, flag === '--open' || flag === '-o');
-  }
-
-  // No flag: boot (up command).
-  return up(ctx, branch);
 }
 
 // Entry point when run as a bin.
