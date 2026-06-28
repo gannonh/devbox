@@ -74,4 +74,36 @@ describe('cli dispatch', () => {
     const output = stdout + stderr;
     expect(output).toContain('list');
   });
+
+  it('<branch> --attach --help prints attach usage and exits 0', () => {
+    const { code, stdout, stderr } = run(['my-feature', '--attach', '--help']);
+    expect(code).toBe(0);
+    const output = stdout + stderr;
+    expect(output).toContain('attach');
+    expect(output).toContain('USAGE');
+  });
+
+  it('<branch> --stop --help prints stop usage and exits 0', () => {
+    const { code, stdout, stderr } = run(['my-feature', '--stop', '--help']);
+    expect(code).toBe(0);
+    const output = stdout + stderr;
+    expect(output).toContain('stop');
+    expect(output).toContain('USAGE');
+  });
+
+  it('<branch> --rm --help prints rm usage and exits 0', () => {
+    const { code, stdout, stderr } = run(['my-feature', '--rm', '--help']);
+    expect(code).toBe(0);
+    const output = stdout + stderr;
+    expect(output).toContain('rm');
+    expect(output).toContain('USAGE');
+  });
+
+  it('<branch> --url --help prints url usage and exits 0', () => {
+    const { code, stdout, stderr } = run(['my-feature', '--url', '--help']);
+    expect(code).toBe(0);
+    const output = stdout + stderr;
+    expect(output).toContain('url');
+    expect(output).toContain('USAGE');
+  });
 });

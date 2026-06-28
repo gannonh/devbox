@@ -65,6 +65,58 @@ DESCRIPTION
   Lists all devbox containers for the current repo with their state
   (running/stopped) and noVNC URLs for running boxes.`;
 
+const ATTACH_HELP = (branch: string) => `devbox ${branch} --attach — re-enter a running box
+
+USAGE
+  devbox <branch> --attach|-a
+
+DESCRIPTION
+  Re-enters a running box for the branch. If the box is stopped, starts it
+  and re-brings the display stack up, then drops into a shell in /workspace.
+
+EXAMPLES
+  devbox ${branch} --attach    # re-enter the running box for ${branch}`;
+
+const STOP_HELP = (branch: string) => `devbox ${branch} --stop — stop the box (keeps worktree + container)
+
+USAGE
+  devbox <branch> --stop
+
+DESCRIPTION
+  Stops the container but keeps the worktree and container on disk.
+  Re-enter with: devbox <branch> --attach
+
+EXAMPLES
+  devbox ${branch} --stop      # stop the box for ${branch}`;
+
+const RM_HELP = (branch: string) => `devbox ${branch} --rm — remove container, worktree, and branch
+
+USAGE
+  devbox <branch> --rm
+
+DESCRIPTION
+  Removes the container, the worktree directory, and the local branch.
+  Uncommitted work in the worktree is lost.
+
+EXAMPLES
+  devbox ${branch} --rm        # tear down the box for ${branch}`;
+
+const URL_HELP = (branch: string) => `devbox ${branch} --url — print or open the noVNC URL
+
+USAGE
+  devbox <branch> --url [--open|-o]
+
+FLAGS
+  --open|-o    open the noVNC URL in a browser instead of printing it
+
+DESCRIPTION
+  Prints the noVNC URL for a running box. Add --open to launch it in a
+  browser.
+
+EXAMPLES
+  devbox ${branch} --url       # print the noVNC URL
+  devbox ${branch} --url --open  # open it in a browser`;
+
 const GLOBAL_FLAGS = new Set(['--help', '-h', '--list', '-l']);
 const BRANCH_FLAGS = new Set(['--attach', '-a', '--stop', '--rm', '--url', '--open', '-o']);
 export interface DispatchIO {
@@ -127,9 +179,25 @@ export function dispatch(args: string[], io: DispatchIO): number {
   // first = branch name, rest may contain flags.
   const branch = first;
 
-  // Branch-level help.
-  if (rest[0] === '--help' || rest[0] === '-h') {
-    io.stdout.write(UP_HELP(branch) + '\n');
+  // Help short-circuit: --help/-h anywhere in rest renders per-command help.
+  // Must run BEFORE flag routing so <branch> <flag> --help renders help (exit 0)
+  // instead of falling through to the not-yet-implemented stub (exit 1).
+  const helpFlag = rest.find((a) => a === '--help' || a === '-h');
+  if (helpFlag) {
+    const actionFlag = rest.find((a) => BRANCH_FLAGS.has(a));
+    let help: string;
+    if (actionFlag === '--attach' || actionFlag === '-a') {
+      help = ATTACH_HELP(branch);
+    } else if (actionFlag === '--stop') {
+      help = STOP_HELP(branch);
+    } else if (actionFlag === '--rm') {
+      help = RM_HELP(branch);
+    } else if (actionFlag === '--url' || actionFlag === '--open' || actionFlag === '-o') {
+      help = URL_HELP(branch);
+    } else {
+      help = UP_HELP(branch);
+    }
+    io.stdout.write(help + '\n');
     return 0;
   }
 
