@@ -6,6 +6,8 @@
  * Command bodies land in Phases 2-3.
  */
 import type { Writable } from 'node:stream';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { init } from './commands/init.js';
 import { up } from './commands/up.js';
 import { attach } from './commands/attach.js';
@@ -280,7 +282,27 @@ async function main() {
   process.exit(code);
 }
 
+/**
+ * Determine whether this module is the process entry point.
+ *
+ * When installed globally via npm, the `devbox` bin is a symlink to
+ * `dist/cli.js`. `process.argv[1]` is the symlink path, while
+ * `import.meta.url` is the real file URL — they don't match string-for-string.
+ * Resolve both to their real paths and compare those.
+ *
+ * Returns false when argv[1] is missing, doesn't exist, or resolves to a
+ * different file. Never throws.
+ */
+export function isMainEntry(argv1: string, moduleUrl: string): boolean {
+  if (!argv1 || !moduleUrl) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
 // Only run main when executed directly, not when imported.
-if (process.argv[1] && import.meta.url === new URL(process.argv[1], 'file://').href) {
+if (isMainEntry(process.argv[1] ?? '', import.meta.url)) {
   main();
 }
