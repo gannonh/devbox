@@ -2,13 +2,14 @@
 type: Spec
 title: "@gannonh/devbox npm package"
 description: Package the devbox tooling as a TypeScript CLI published to npm under @gannonh/devbox, installable via npx and configurable per-repo through `npx @gannonh/devbox init`.
-status: Draft
+status: Approved
+approved_at: 2026-06-28T19:24:09Z
 ---
 
 # @gannonh/devbox npm package
 
 ## Status
-Draft
+Approved
 
 ## Goal
 
