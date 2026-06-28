@@ -21,7 +21,6 @@ import { replaceTokens } from '../lib/tokens.js';
 
 export interface InitOptions {
   force: boolean;
-  stdout?: Writable;
   stderr?: Writable;
 }
 

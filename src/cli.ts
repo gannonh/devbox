@@ -158,7 +158,7 @@ export function dispatch(args: string[], io: DispatchIO): number | Promise<numbe
       return 0;
     }
     const force = rest.includes('--force');
-    return init({ force, stdout: io.stdout, stderr: io.stderr });
+    return init({ force, stderr: io.stderr });
   }
 
   // Unknown flag (starts with - but not a recognized global/branch flag).
