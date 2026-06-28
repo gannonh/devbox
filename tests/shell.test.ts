@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RealShellRunner, escapeShellSingleQuote } from '../src/lib/shell.js';
+import { RealShellRunner, escapeShellSingleQuote, commandExists } from '../src/lib/shell.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
@@ -142,5 +142,19 @@ describe('escapeShellSingleQuote', () => {
 
   it('handles empty string', () => {
     expect(escapeShellSingleQuote('')).toBe("''");
+  });
+});
+
+describe('commandExists', () => {
+  it('returns true for a command that exists (node)', async () => {
+    expect(await commandExists('node')).toBe(true);
+  });
+
+  it('returns true for a command that exists (true)', async () => {
+    expect(await commandExists('true')).toBe(true);
+  });
+
+  it('returns false for a command that does not exist', async () => {
+    expect(await commandExists('definitely-not-a-real-command-xyz')).toBe(false);
   });
 });

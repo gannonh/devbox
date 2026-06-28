@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { idLabel, containerFor, containerForAll, novncUrlFor } from '../src/lib/docker.js';
+import { idLabel, containerFor, containerForAll, novncUrlFor, containerName } from '../src/lib/docker.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {
@@ -68,5 +68,28 @@ describe('novncUrlFor', () => {
     const runner = mockShell({ exec });
     const url = await novncUrlFor(runner, 'cid');
     expect(url).toBe('http://vibrant-einstein.orb.local:6080/vnc.html');
+  });
+});
+
+describe('containerName', () => {
+  it('returns the container name without the leading slash', async () => {
+    const exec = vi.fn().mockResolvedValue('/my-box-name');
+    const runner = mockShell({ exec });
+
+    const name = await containerName(runner, 'abc123');
+    expect(name).toBe('my-box-name');
+    expect(exec).toHaveBeenCalledWith('docker', ['inspect', 'abc123', '--format', '{{.Name}}'], {});
+  });
+
+  it('strips leading slash from a long container name', async () => {
+    const exec = vi.fn().mockResolvedValue('/devbox-my-feature-abc123');
+    const runner = mockShell({ exec });
+    expect(await containerName(runner, 'cid')).toBe('devbox-my-feature-abc123');
+  });
+
+  it('returns name as-is when there is no leading slash', async () => {
+    const exec = vi.fn().mockResolvedValue('plain-name');
+    const runner = mockShell({ exec });
+    expect(await containerName(runner, 'cid')).toBe('plain-name');
   });
 });

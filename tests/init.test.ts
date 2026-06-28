@@ -128,4 +128,44 @@ describe('init', () => {
       expect(mode).not.toBe(0);
     }
   });
+
+  it('generated tree matches templates with token replacement (golden-file snapshot)', async () => {
+    // Snapshot the full set of generated file paths + their contents (modulo
+    // the repo-name token). This catches any template drift: if a template
+    // changes, this test fails until the snapshot is reviewed and updated.
+    const result = await init({ force: false });
+    expect(result).toBe(0);
+
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join: joinPath } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const templatesPath = joinPath(here, '..', 'templates');
+    const repoName = tempDir.split('/').pop()!;
+    const { replaceTokens } = await import('../src/lib/tokens.js');
+
+    // All generated files: { relativePath -> expectedContent }
+    const expectedTree: Record<string, string> = {};
+    for (const file of ['Dockerfile', 'provision.sh', 'start-display.sh', 'post-create.sh', 'README.md']) {
+      const raw = await readFile(joinPath(templatesPath, file), 'utf-8');
+      expectedTree[`.devbox/${file}`] = replaceTokens(raw, { repoName });
+    }
+    for (const file of ['devcontainer.json']) {
+      const raw = await readFile(joinPath(templatesPath, file), 'utf-8');
+      expectedTree[`.devcontainer/${file}`] = replaceTokens(raw, { repoName });
+    }
+
+    // Verify every file in the expected tree exists and matches
+    for (const [relPath, expectedContent] of Object.entries(expectedTree)) {
+      const actual = await readFile(join(tempDir, relPath), 'utf-8');
+      expect(actual).toBe(expectedContent);
+    }
+
+    // Verify the generated file SET matches exactly (no extra/missing files)
+    const devboxFiles = (await readdir(join(tempDir, '.devbox'))).sort();
+    expect(devboxFiles).toEqual(
+      ['Dockerfile', 'README.md', 'post-create.sh', 'provision.sh', 'start-display.sh'].sort(),
+    );
+    const devcontainerFiles = (await readdir(join(tempDir, '.devcontainer'))).sort();
+    expect(devcontainerFiles).toEqual(['devcontainer.json']);
+  });
 });
