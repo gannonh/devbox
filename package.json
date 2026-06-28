@@ -1,0 +1,31 @@
+{
+  "name": "@gannonh/devbox",
+  "version": "0.0.0",
+  "description": "One-command isolated worktree dev containers with headed display, Pi agent, Chromium/OAuth, and GitHub-token forwarding.",
+  "type": "module",
+  "bin": {
+    "devbox": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^26.0.1",
+    "eslint": "^9.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.0.0"
+  }
+}
