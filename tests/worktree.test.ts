@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { branchToPath, resolveWorktreesDir, createWorktree, removeWorktree, branchExists } from '../src/lib/worktree.js';
+import { branchToPath, resolveWorktreesDir, createWorktree, removeWorktree, branchExists, defaultBranch } from '../src/lib/worktree.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {
@@ -35,9 +35,36 @@ describe('resolveWorktreesDir', () => {
   });
 });
 
+describe('defaultBranch', () => {
+  it('returns the symbolic-ref HEAD name (stripped of refs/heads/)', async () => {
+    const execQuiet = vi.fn().mockResolvedValue({ stdout: 'refs/heads/main\n', code: 0 });
+    const runner = mockShell({ execQuiet });
+    expect(await defaultBranch(runner, '/repo')).toBe('main');
+    expect(execQuiet).toHaveBeenCalledWith(
+      'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: '/repo', silentStderr: true },
+    );
+  });
+
+  it('falls back to local HEAD when origin HEAD is not set', async () => {
+    const execQuiet = vi.fn()
+      .mockResolvedValueOnce({ stdout: '', code: 1 }) // origin HEAD fails
+      .mockResolvedValueOnce({ stdout: 'refs/heads/master\n', code: 0 }); // local HEAD
+    const runner = mockShell({ execQuiet });
+    expect(await defaultBranch(runner, '/repo')).toBe('master');
+  });
+
+  it('falls back to "main" when neither origin nor local HEAD resolves', async () => {
+    const execQuiet = vi.fn().mockResolvedValue({ stdout: '', code: 1 });
+    const runner = mockShell({ execQuiet });
+    expect(await defaultBranch(runner, '/repo')).toBe('main');
+  });
+});
+
 describe('createWorktree', () => {
-  it('creates a new branch from main when branch does not exist', async () => {
-    const execQuiet = vi.fn().mockResolvedValue({ stdout: '', code: 1 }); // branch does not exist
+  it('creates a new branch from the repo default branch when branch does not exist', async () => {
+    const execQuiet = vi.fn()
+      .mockResolvedValueOnce({ stdout: '', code: 1 }) // branch does not exist
+      .mockResolvedValueOnce({ stdout: 'refs/heads/main\n', code: 0 }); // defaultBranch
     const exec = vi.fn().mockResolvedValue('');
     const runner = mockShell({ exec, execQuiet });
 
@@ -47,12 +74,30 @@ describe('createWorktree', () => {
       branch: 'dev',
     });
 
-    // First call: check branch existence (show-ref)
-    expect(execQuiet).toHaveBeenCalledWith('git', ['show-ref', '--verify', '--quiet', 'refs/heads/dev'], { cwd: '/repo' });
-    // Second call: worktree add -b
+    // worktree add -b using the resolved default branch
     expect(exec).toHaveBeenCalledWith(
       'git',
       ['worktree', 'add', '--relative-paths', '-b', 'dev', '/worktrees/repo-dev', 'main'],
+      { cwd: '/repo' },
+    );
+  });
+
+  it('creates a new branch from master when default branch is master', async () => {
+    const execQuiet = vi.fn()
+      .mockResolvedValueOnce({ stdout: '', code: 1 }) // branch does not exist
+      .mockResolvedValueOnce({ stdout: 'refs/heads/master\n', code: 0 }); // defaultBranch
+    const exec = vi.fn().mockResolvedValue('');
+    const runner = mockShell({ exec, execQuiet });
+
+    await createWorktree(runner, {
+      repoRoot: '/repo',
+      path: '/worktrees/repo-dev',
+      branch: 'dev',
+    });
+
+    expect(exec).toHaveBeenCalledWith(
+      'git',
+      ['worktree', 'add', '--relative-paths', '-b', 'dev', '/worktrees/repo-dev', 'master'],
       { cwd: '/repo' },
     );
   });

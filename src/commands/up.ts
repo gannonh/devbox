@@ -9,7 +9,7 @@
  */
 import type { LauncherContext } from '../lib/context.js';
 import { containerFor, containerForAll, containerName } from '../lib/docker.js';
-import { branchToPath, resolveWorktreesDir, createWorktree } from '../lib/worktree.js';
+import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch } from '../lib/worktree.js';
 import { resolveDevboxEnv, resolveGhToken } from '../lib/env.js';
 import { hyperlink } from '../lib/display.js';
 import { info, warn, die } from '../lib/log.js';
@@ -56,8 +56,9 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   // 3. Fresh box: create the worktree.
   if (!existsSync(path)) {
     info(`creating worktree ${branch} -> ${path}`);
-    // Fetch latest main (best-effort, don't fail if offline).
-    await runner.execQuiet('git', ['fetch', 'origin', 'main'], { cwd: repoRoot, silentStderr: true });
+    // Fetch latest default branch (best-effort, don't fail if offline).
+    const base = await defaultBranch(runner, repoRoot);
+    await runner.execQuiet('git', ['fetch', 'origin', base], { cwd: repoRoot, silentStderr: true });
     await createWorktree(runner, { repoRoot, path, branch });
   } else {
     info(`worktree exists at ${path}, reusing`);
