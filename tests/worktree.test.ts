@@ -63,6 +63,7 @@ describe('defaultBranch', () => {
 describe('createWorktree', () => {
   it('creates a new branch from the repo default branch when branch does not exist', async () => {
     const execQuiet = vi.fn()
+      .mockResolvedValueOnce({ stdout: '', code: 0 }) // prune (succeeds)
       .mockResolvedValueOnce({ stdout: '', code: 1 }) // branch does not exist
       .mockResolvedValueOnce({ stdout: 'refs/heads/main\n', code: 0 }); // defaultBranch
     const exec = vi.fn().mockResolvedValue('');
@@ -84,6 +85,7 @@ describe('createWorktree', () => {
 
   it('creates a new branch from master when default branch is master', async () => {
     const execQuiet = vi.fn()
+      .mockResolvedValueOnce({ stdout: '', code: 0 }) // prune (succeeds)
       .mockResolvedValueOnce({ stdout: '', code: 1 }) // branch does not exist
       .mockResolvedValueOnce({ stdout: 'refs/heads/master\n', code: 0 }); // defaultBranch
     const exec = vi.fn().mockResolvedValue('');
@@ -103,7 +105,9 @@ describe('createWorktree', () => {
   });
 
   it('reuses existing branch when it already exists', async () => {
-    const execQuiet = vi.fn().mockResolvedValue({ stdout: '', code: 0 }); // branch exists
+    const execQuiet = vi.fn()
+      .mockResolvedValueOnce({ stdout: '', code: 0 }) // prune (succeeds)
+      .mockResolvedValueOnce({ stdout: '', code: 0 }); // branch exists
     const exec = vi.fn().mockResolvedValue('');
     const runner = mockShell({ exec, execQuiet });
 

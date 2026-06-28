@@ -86,6 +86,10 @@ export async function defaultBranch(
  * Uses --relative-paths so the .git pointer resolves inside the container.
  */
 export async function createWorktree(runner: ShellRunner, config: WorktreeConfig): Promise<void> {
+  // Prune stale worktree registrations (dirs deleted manually, etc.) so the
+  // add doesn't fail with "missing but already registered worktree".
+  await runner.execQuiet('git', ['worktree', 'prune'], { cwd: config.repoRoot, silentStderr: true });
+
   const exists = await branchExists(runner, config.repoRoot, config.branch);
   if (exists) {
     await runner.exec('git', ['worktree', 'add', '--relative-paths', config.path, config.branch], {
