@@ -6,6 +6,7 @@
  * child_process; tests inject a mock.
  */
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 
 export interface ShellRunner {
   /** Run a command, return stdout (trimmed). Throws on non-zero exit. */
@@ -14,8 +15,14 @@ export interface ShellRunner {
   /** Run a command and return { stdout, code }. Does not throw on non-zero. */
   execQuiet(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 
-  /** Spawn a command with inherited stdio, forward signals, return exit code. */
-  spawnInherit(command: string, args: string[], options?: ExecOptions): Promise<number>;
+  /** Spawn a command with inherited stdio, forward signals, return exit code.
+   *  signalSource defaults to `process`; inject a fake for testing. */
+  spawnInherit(
+    command: string,
+    args: string[],
+    options?: ExecOptions,
+    signalSource?: EventEmitter,
+  ): Promise<number>;
 }
 
 export interface ExecOptions {
@@ -79,8 +86,16 @@ export class RealShellRunner implements ShellRunner {
    *
    * This replaces bash's `exec` — Node has no exec(2), so we spawn and wait,
    * making the child the effective foreground process.
+   *
+   * signalSource defaults to `process`; tests inject a fake EventEmitter so
+   * they can emit signals without killing the vitest process.
    */
-  spawnInherit(command: string, args: string[], options?: ExecOptions): Promise<number> {
+  spawnInherit(
+    command: string,
+    args: string[],
+    options?: ExecOptions,
+    signalSource: EventEmitter = process as unknown as EventEmitter,
+  ): Promise<number> {
     return new Promise((resolve) => {
       const child = spawn(command, args, {
         cwd: options?.cwd,
@@ -92,12 +107,12 @@ export class RealShellRunner implements ShellRunner {
       const onSignal = (signal: NodeJS.Signals) => {
         child.kill(signal);
       };
-      process.on('SIGINT', onSignal);
-      process.on('SIGTERM', onSignal);
+      signalSource.on('SIGINT', onSignal);
+      signalSource.on('SIGTERM', onSignal);
 
       child.on('close', (code) => {
-        process.off('SIGINT', onSignal);
-        process.off('SIGTERM', onSignal);
+        signalSource.off('SIGINT', onSignal);
+        signalSource.off('SIGTERM', onSignal);
         resolve(code ?? 0);
       });
     });

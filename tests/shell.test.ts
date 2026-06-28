@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { RealShellRunner, escapeShellSingleQuote } from '../src/lib/shell.js';
+import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 
 function sleep(ms: number): Promise<void> {
@@ -22,15 +23,17 @@ describe('RealShellRunner.spawnInherit', () => {
 });
 
 describe('RealShellRunner.spawnInherit signal forwarding', () => {
-  it('forwards SIGINT to the child process', async () => {
-    // Spawn a node script that writes a marker on SIGINT and exits 42.
-    // If the signal is NOT forwarded, the child hangs and the test times out.
+  // This test verifies that a child process responds to kill('SIGINT') — i.e.,
+  // that Node's child.kill delivers signals. It does NOT exercise
+  // spawnInherit's own parent-to-child forwarding path (the onSignal handler);
+  // the test below ("forwards SIGINT from the parent to the child") covers
+  // that via a dependency-injected signal source.
+  it('a child process responds to kill("SIGINT")', async () => {
     const childScript = `
       process.on('SIGINT', () => {
         process.stdout.write('GOT_SIGINT\\n');
         process.exit(42);
       });
-      // Keep alive until signal arrives.
       setInterval(() => {}, 1000);
     `;
     const child = spawn('node', ['-e', childScript], {
@@ -39,13 +42,8 @@ describe('RealShellRunner.spawnInherit signal forwarding', () => {
     let childOut = '';
     child.stdout?.on('data', (d: Buffer) => (childOut += d.toString()));
 
-    // Give the child time to install its handler.
     await sleep(300);
 
-    // Send SIGINT to the child directly — this tests that spawnInherit's
-    // child.kill(signal) path works. We can't easily send SIGINT to ourselves
-    // (the test process) without killing vitest, so we verify the mechanism:
-    // the child responds to kill('SIGINT') by printing the marker and exiting.
     child.kill('SIGINT');
 
     const code = await new Promise<number>((resolve) => {
@@ -54,6 +52,46 @@ describe('RealShellRunner.spawnInherit signal forwarding', () => {
 
     expect(code).toBe(42);
     expect(childOut).toContain('GOT_SIGINT');
+  });
+
+  it('forwards SIGINT from the parent to the child', async () => {
+    // Exercise spawnInherit's parent-to-child forwarding path: the onSignal
+    // handler registered on signalSource must call child.kill(signal) when a
+    // signal is emitted on the signalSource. We inject a fake EventEmitter so
+    // we can emit 'SIGINT' without killing the vitest process.
+    const signalSource = new EventEmitter();
+    const runner = new RealShellRunner();
+
+    const childScript = `
+      process.on('SIGINT', () => {
+        process.stdout.write('GOT_SIGINT\\n');
+        process.exit(42);
+      });
+      setInterval(() => {}, 1000);
+    `;
+
+    // spawnInherit uses inherited stdio; the fake signalSource is the 4th arg.
+    // The child writes 'GOT_SIGINT' to its stdout (inherited to our stdout)
+    // and exits 42 on SIGINT. We assert on the exit code — if the forwarding
+    // path is broken, the child never receives the signal and the test times
+    // out.
+    const exitPromise = runner.spawnInherit(
+      'node',
+      ['-e', childScript],
+      {},
+      signalSource,
+    );
+
+    // Give the child time to install its handler.
+    await sleep(500);
+
+    // Emit SIGINT on the fake signal source — this exercises the onSignal
+    // handler in spawnInherit, which must forward to child.kill('SIGINT').
+    // If the handler is missing or broken, the child hangs and times out.
+    signalSource.emit('SIGINT', 'SIGINT');
+
+    const code = await exitPromise;
+    expect(code).toBe(42);
   });
 });
 
