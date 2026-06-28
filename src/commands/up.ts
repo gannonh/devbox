@@ -8,6 +8,7 @@
  *      print ready banner, exec into shell.
  */
 import type { LauncherContext } from '../lib/context.js';
+import { dirname } from 'node:path';
 import { containerFor, containerForAll, containerName } from '../lib/docker.js';
 import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch } from '../lib/worktree.js';
 import { resolveDevboxEnv, resolveGhToken } from '../lib/env.js';
@@ -68,6 +69,11 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   const devboxEnv = resolveDevboxEnv(repoRoot, env);
   if (!existsSync(devboxEnv)) {
     warn(`no .env at ${devboxEnv} (set DEVBOX_ENV)`);
+    // Create an empty placeholder so the devcontainer.json bind mount doesn't
+    // fail with "bind source path does not exist". provision.sh links this to
+    // /workspace/.env; an empty file is harmless.
+    await runner.execQuiet('mkdir', ['-p', dirname(devboxEnv)], {});
+    await runner.execQuiet('touch', [devboxEnv], {});
   }
 
   // GitHub token forwarding.
