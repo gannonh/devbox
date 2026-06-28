@@ -1,0 +1,189 @@
+# Release workflow for @gannonh/devbox.
+#
+# Two triggers, both producing the same release artifact:
+#
+#   1. Tag push (vX.Y.Z) — triggers automatically when a v* tag is pushed.
+#   2. Manual dispatch (primary path) — workflow_dispatch with:
+#        version:  full semver (e.g. "1.2.0"), or empty for patch bump from last tag
+#        dry_run:  boolean, default false — run everything except npm publish
+#
+# Version resolution:
+#   - If version input is provided, use it verbatim (strip leading 'v').
+#   - If empty, resolve the last tag via `git tag --list 'v*' --sort=-v:refname | head -1`
+#     and patch-bump it.
+#   - If no prior tag exists and version is empty, error (first release needs an
+#     explicit version).
+#
+# Tag is the source of truth. CI syncs package.json version to the tag/target,
+# not the other way around.
+#
+# Recursive-run handling:
+#   Manual dispatch commits the version bump + creates + pushes the tag
+#   "[skip-publish]" in the commit message so the tag-push trigger fires but
+#   skips its publish step (the manual-dispatch run already published).
+#   Tag-push jobs triggered by user-created tags (not from the workflow) run
+#   the full publish. This avoids double-publishing without complex actor
+#   checks.
+#
+# NPM_TOKEN is a repository secret configured in GitHub repo settings.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Full semver (e.g. 1.2.0). Empty = patch bump from last tag.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Run everything except npm publish'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full history + tags for version resolution
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve target version
+        id: version
+        run: |
+          set -euo pipefail
+
+          # Determine whether this is a tag-push trigger or manual dispatch.
+          IS_TAG_PUSH="${{ startsWith(github.ref, 'refs/tags/v') }}"
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+
+          if [ "$IS_TAG_PUSH" = "true" ]; then
+            # Tag push: the tag name IS the version. Extract it.
+            TARGET_VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "Triggered by tag push: v$TARGET_VERSION"
+          elif [ -n "$INPUT_VERSION" ]; then
+            # Manual dispatch with explicit version: strip leading 'v' if present.
+            TARGET_VERSION="${INPUT_VERSION#v}"
+            echo "Manual dispatch with explicit version: $TARGET_VERSION"
+          else
+            # Manual dispatch with empty version: patch-bump from last tag.
+            LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1)
+            if [ -z "$LAST_TAG" ]; then
+              echo "::error::No prior tag found. Provide an explicit version for the first release."
+              exit 1
+            fi
+            LAST_VERSION="${LAST_TAG#v}"
+            echo "Last tag: $LAST_TAG (version $LAST_VERSION)"
+
+            # Patch bump: increment the last numeric segment.
+            # Uses Bash parameter expansion to split on '.'.
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$LAST_VERSION"
+            PATCH=$((PATCH + 1))
+            TARGET_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            echo "Patch-bumped to: $TARGET_VERSION"
+          fi
+
+          echo "target_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Target version: $TARGET_VERSION"
+
+      - name: Sync package.json version
+        run: |
+          set -euo pipefail
+          TARGET_VERSION="${{ steps.version.outputs.target_version }}"
+          # npm version edits package.json in place without creating a git tag.
+          npm version "$TARGET_VERSION" --no-git-tag-version --allow-same-version
+          echo "Synced package.json to $TARGET_VERSION"
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      # --- Commit + tag (manual dispatch only) --------------------------------
+      # On tag-push, the tag already exists; skip this step.
+      - name: Commit version bump and create tag
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          TARGET_VERSION="${{ steps.version.outputs.target_version }}"
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # The [skip-publish] marker tells the tag-push trigger to skip its
+          # publish step, since this manual-dispatch run handles publishing.
+          # (Only matters when dry_run is false; in a dry run we don't push.)
+          COMMIT_MSG="chore(release): v${TARGET_VERSION} [skip-publish]"
+
+          git add package.json
+          git commit -m "$COMMIT_MSG"
+          git tag "v${TARGET_VERSION}"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: skipping tag push (commit + tag are local only)"
+          else
+            git push origin HEAD:main
+            git push origin "v${TARGET_VERSION}"
+            echo "Pushed commit + tag v${TARGET_VERSION}"
+          fi
+
+      # --- Publish ------------------------------------------------------------
+      # On tag-push: skip publish if the tag's commit message contains
+      # [skip-publish] (means the manual-dispatch run already published).
+      # On manual dispatch: publish unless dry_run is true.
+      - name: Check if publish should be skipped (tag-push with [skip-publish])
+        id: skip_publish
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          COMMIT_MSG=$(git log -1 --format='%s' "$TAG_NAME")
+          if echo "$COMMIT_MSG" | grep -q '\[skip-publish\]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG_NAME was created by the release workflow ([skip-publish]); skipping publish."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG_NAME was created manually; proceeding with publish."
+          fi
+
+      - name: Publish to npm
+        # Publish when: NOT a dry run AND the skip-publish check didn't flag it.
+        # On tag-push: github.event.inputs is undefined, so dry_run != true is true.
+        # On manual dispatch: skip_publish step is skipped, so outputs.skip is empty (!= 'true').
+        if: ${{ github.event.inputs.dry_run != true && steps.skip_publish.outputs.skip != 'true' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          TARGET_VERSION="${{ steps.version.outputs.target_version }}"
+          echo "Publishing @gannonh/devbox@$TARGET_VERSION"
+          npm publish
+
+      - name: Dry-run summary
+        if: ${{ github.event.inputs.dry_run == true }}
+        run: |
+          TARGET_VERSION="${{ steps.version.outputs.target_version }}"
+          echo "::notice::Dry run complete. Would have published @gannonh/devbox@$TARGET_VERSION"
