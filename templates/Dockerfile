@@ -49,6 +49,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 
+# Make the newer /usr/local/bin/git (2.54, from the base image) the git every
+# caller sees — PATH-independent. The apt /usr/bin/git is 2.47, too old for the
+# `relativeWorktrees` extension that --relative-paths worktrees use; agents and
+# subprocesses hitting /usr/bin/git fail on commit. Done after apt install so
+# the apt git binary isn't reinstated over the symlink.
+RUN ln -sf /usr/local/bin/git /usr/bin/git
+
 # -----------------------------------------------------------------------------
 # GitHub CLI (official apt repo).
 # -----------------------------------------------------------------------------
