@@ -9,8 +9,8 @@ describe('replaceTokens', () => {
 
   it('leaves other content intact', () => {
     const template = 'source=${localEnv:HOME}/.pi,target=/tmp/host-pi,type=bind,readonly\n{{REPO_NAME}}-devbox';
-    const result = replaceTokens(template, { repoName: 'kata-agents' });
-    expect(result).toBe('source=${localEnv:HOME}/.pi,target=/tmp/host-pi,type=bind,readonly\nkata-agents-devbox');
+    const result = replaceTokens(template, { repoName: 'sample-app' });
+    expect(result).toBe('source=${localEnv:HOME}/.pi,target=/tmp/host-pi,type=bind,readonly\nsample-app-devbox');
   });
 
   it('handles multiple occurrences', () => {

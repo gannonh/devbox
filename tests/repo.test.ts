@@ -67,7 +67,7 @@ describe('repoName', () => {
   });
 
   it('returns the basename for a nested path', () => {
-    expect(repoName('/home/user/projects/kata-agents')).toBe('kata-agents');
+    expect(repoName('/home/user/projects/sample-app')).toBe('sample-app');
   });
 
   it('returns the basename for a trailing-slash path', () => {

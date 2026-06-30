@@ -559,8 +559,6 @@ kata-agents f8e43a9) so --relative-paths worktree commits work in-box.
 - **Criterion 13 deferred**: `npx @gannonh/devbox@latest init` smoke test
   against the published package requires the first real npm publish via
   the release workflow. Pending first publish + NPM_TOKEN configuration.
-- **Dockerfile header** still says "Kata Agents — headed dev box";
-  cosmetic, could be genericized for non-Kata users.
 - **Non-OrbStack container IP fallback** not implemented (matches bash;
   spec risk note acknowledges as future improvement).
 - **`update`/`doctor` commands** deferred to v2 (per spec Out of scope).

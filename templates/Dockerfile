@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # =============================================================================
-# Kata Agents — headed dev box (devcontainer)
+# devbox — headed dev box (devcontainer)
 #
 # Built on the official Microsoft TypeScript-Node devcontainer base — the same
 # generic Node/TS image family Codespaces and Cursor build on. We layer the
