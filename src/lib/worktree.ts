@@ -7,6 +7,7 @@
  */
 import { dirname, join } from 'node:path';
 import type { ShellRunner } from './shell.js';
+import { warn } from './log.js';
 
 export interface WorktreeConfig {
   repoRoot: string;
@@ -116,6 +117,7 @@ export async function removeWorktree(runner: ShellRunner, repoRoot: string, path
   });
   if (result.code === 0) return true;
   // Fallback: rm -rf
+  warn(`git worktree remove failed for ${path}; falling back to rm -rf`);
   const rmResult = await runner.execQuiet('rm', ['-rf', path], {});
   return rmResult.code === 0;
 }

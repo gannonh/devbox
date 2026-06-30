@@ -4,7 +4,7 @@
 import type { LauncherContext } from '../lib/context.js';
 import { containerForAll } from '../lib/docker.js';
 import { branchToPath, resolveWorktreesDir, removeWorktree, deleteBranch, branchExists } from '../lib/worktree.js';
-import { info } from '../lib/log.js';
+import { info, warn } from '../lib/log.js';
 import { existsSync } from 'node:fs';
 
 export async function rm(ctx: LauncherContext, branch: string): Promise<number> {
@@ -13,7 +13,10 @@ export async function rm(ctx: LauncherContext, branch: string): Promise<number> 
   // Remove container (if any).
   const cid = await containerForAll(runner, branch);
   if (cid) {
-    await runner.execQuiet('docker', ['rm', '-f', cid], {});
+    const rmResult = await runner.execQuiet('docker', ['rm', '-f', cid], {});
+    if (rmResult.code !== 0) {
+      warn(`docker rm -f failed for ${cid}; container may need manual removal`);
+    }
   }
 
   // Remove worktree.

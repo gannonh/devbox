@@ -45,11 +45,14 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
     info(`starting stopped box for ${branch}`);
     await runner.exec('docker', ['start', cid], {});
     // Re-bring the display stack up. setsid so it survives this exec session.
-    await runner.execQuiet(
+    const displayResult = await runner.execQuiet(
       'docker',
       ['exec', '-u', 'node', cid, 'bash', '-lc', 'setsid bash -c /usr/local/bin/devbox-start-display </dev/null >/tmp/devbox-display.log 2>&1 || true'],
       {},
     );
+    if (displayResult.code !== 0) {
+      warn('display stack restart may have failed');
+    }
     await sleep(2000);
     return execIntoShell(runner, cid, tty);
   }
@@ -59,7 +62,10 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
     info(`creating worktree ${branch} -> ${path}`);
     // Fetch latest default branch (best-effort, don't fail if offline).
     const base = await defaultBranch(runner, repoRoot);
-    await runner.execQuiet('git', ['fetch', 'origin', base], { cwd: repoRoot, silentStderr: true });
+    const fetchResult = await runner.execQuiet('git', ['fetch', 'origin', base], { cwd: repoRoot, silentStderr: true });
+    if (fetchResult.code !== 0) {
+      warn(`git fetch origin ${base} failed (offline?); using local default branch: ${base}`);
+    }
     await createWorktree(runner, { repoRoot, path, branch });
   } else {
     info(`worktree exists at ${path}, reusing`);
@@ -80,7 +86,9 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   const ghToken = await resolveGhToken(env, runner, () => commandExists('gh'));
   const ghEnvArgs: string[] = [];
   if (ghToken) {
-    ghEnvArgs.push('--remote-env', `GH_TOKEN=${ghToken}`);
+    // Escape for shell safety: devcontainer CLI passes through to container env.
+    // Use the same escaping as profile.d injection.
+    ghEnvArgs.push('--remote-env', `GH_TOKEN=${escapeShellSingleQuote(ghToken)}`);
     info('forwarding GitHub token from host gh');
   } else {
     warn('no GitHub token (host gh not authed); gh/git push will need "gh auth login" in the box');

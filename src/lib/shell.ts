@@ -96,11 +96,19 @@ export class RealShellRunner implements ShellRunner {
     options?: ExecOptions,
     signalSource: EventEmitter = process as unknown as EventEmitter,
   ): Promise<number> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const child = spawn(command, args, {
         cwd: options?.cwd,
         env: options?.env as Record<string, string> | undefined,
         stdio: 'inherit',
+      });
+
+      // Handle spawn errors (ENOENT, EACCES, etc.) - without this,
+      // the promise would hang forever if the command doesn't exist.
+      child.on('error', (err) => {
+        signalSource.off('SIGINT', onSignal);
+        signalSource.off('SIGTERM', onSignal);
+        reject(err);
       });
 
       // Forward signals to the child so Ctrl-C etc. reach it, not just us.
@@ -140,11 +148,7 @@ export function escapeShellSingleQuote(value: string): string {
  * Check if a command is available on the system (like bash's `command -v`).
  */
 export async function commandExists(cmd: string): Promise<boolean> {
-  try {
-    const { execQuiet } = new RealShellRunner();
-    const result = await execQuiet('which', [cmd], { silentStderr: true });
-    return result.code === 0;
-  } catch {
-    return false;
-  }
+  const { execQuiet } = new RealShellRunner();
+  const result = await execQuiet('which', [cmd], { silentStderr: true });
+  return result.code === 0;
 }

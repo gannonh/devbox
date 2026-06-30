@@ -22,7 +22,7 @@ export async function url(ctx: LauncherContext, branch: string, open: boolean): 
     info(`opening ${url}`);
     const result = await runner.execQuiet('open', [url], {});
     if (result.code !== 0) {
-      die(`could not open browser (URL: ${url})`);
+      die(`could not open browser (URL: ${url}) — copy and paste the URL manually`);
     }
     return 0;
   }

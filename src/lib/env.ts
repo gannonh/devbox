@@ -40,6 +40,8 @@ export async function resolveGhToken(
     const token = await runner.exec('gh', ['auth', 'token'], { silentStderr: true });
     return token;
   } catch {
+    // gh auth token failed (network, config, etc.). Return empty; caller warns.
+    // We don't die here because explicit tokens or GITHUB_TOKEN may still work.
     return '';
   }
 }
