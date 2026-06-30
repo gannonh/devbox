@@ -180,7 +180,7 @@ jobs:
           set -euo pipefail
           TARGET_VERSION="${{ steps.version.outputs.target_version }}"
           echo "Publishing @gannonh/devbox@$TARGET_VERSION"
-          npm publish
+          npm publish --access public
 
       - name: Dry-run summary
         if: ${{ github.event.inputs.dry_run == true }}

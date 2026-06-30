@@ -76,6 +76,14 @@ describe('release workflow contract', () => {
     expect(wfStr).toContain('NPM_TOKEN');
   });
 
+  it('publishes the package as public', async () => {
+    const wf = await loadWorkflow();
+    const jobs = wf.jobs as Record<string, Record<string, unknown>>;
+    const release = jobs.release as Record<string, { steps: Array<Record<string, unknown>> }>;
+    const wfStr = JSON.stringify(release.steps);
+    expect(wfStr).toContain('--access public');
+  });
+
   it('gates npm publish on dry_run being false', async () => {
     const wf = await loadWorkflow();
     const jobs = wf.jobs as Record<string, Record<string, unknown>>;

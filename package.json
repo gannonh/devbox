@@ -20,6 +20,9 @@
     "typecheck": "tsc --noEmit"
   },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^26.0.1",

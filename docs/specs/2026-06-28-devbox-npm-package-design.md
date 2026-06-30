@@ -254,7 +254,7 @@ Workflow behavior (both triggers):
 - Create/update the git tag `v<version>` and push it (for manual dispatch
   only; tag-push trigger already has the tag).
 - Build (`tsc`), run tests, lint.
-- `npm publish` (unless `dry_run`).
+- `npm publish --access public` (unless `dry_run`).
 - On `dry_run`, publish step is skipped and the run summary shows the version
   that would have been published.
 
@@ -314,10 +314,10 @@ for v1.
 11. `npx @gannonh/devbox --help` and per-command help render correctly with
     usage, flags, and examples.
 12. Publish flow: pushing a tag `vX.Y.Z` triggers the release workflow, which
-    syncs `package.json` version to the tag, builds, and publishes to npm
-    under `@gannonh/devbox`. A manual workflow dispatch with a version input
-    (or empty for patch bump from last tag) and a dry-run checkbox does the
-    same. In both, the git tag is source of truth and `package.json` is
+    syncs `package.json` version to the tag, builds, and publishes public to
+    npm under `@gannonh/devbox`. A manual workflow dispatch with a version
+    input (or empty for patch bump from last tag) and a dry-run checkbox does
+    the same. In both, the git tag is source of truth and `package.json` is
     updated by CI.
 13. `npx @gannonh/devbox@latest init` works against the published package
     (post-release smoke test): a fresh repo init'd via the published package
@@ -372,7 +372,7 @@ for v1.
 
 - `.github/workflows/release.yml` with tag-push and `workflow_dispatch`
   triggers, version resolution, `package.json` sync, build/test/lint,
-  `npm publish`, dry-run support.
+  `npm publish --access public`, dry-run support.
 - Acceptance tie-in: criterion 12.
 
 ### Phase 6 — End-to-end validation
@@ -495,7 +495,7 @@ code-quality review gates:
    findRepoRoot/repoName) + init golden-file snapshot. (1 commit)
 5. **Release workflow** — .github/workflows/release.yml with tag-push +
    manual dispatch, version resolution, package.json sync, build/test/lint,
-   npm publish, dry-run, [skip-publish] recursive-run handling. (1 commit)
+   npm publish --access public, dry-run, [skip-publish] recursive-run handling. (1 commit)
 6. **E2E validation** — booted a real box via OrbStack; found and fixed 4
    real integration bugs (bin guard symlink, hardcoded main branch, missing
    .env crash, stale worktree registrations). (4 commits)
