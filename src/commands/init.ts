@@ -147,7 +147,40 @@ export async function init(options: InitOptions): Promise<number> {
   for (const f of DEVCONTAINER_FILES) created.push(`.devcontainer/${f}`);
   out.write('[devbox] created:\n');
   for (const f of created) out.write(`  ${f}\n`);
-  out.write('\n[devbox] ready. Boot a box with: npx @gannonh/devbox <branch>\n');
+  out.write('\n');
+  writeNextSteps(out);
+  out.write('[devbox] ready. Boot a box with: npx @gannonh/devbox <branch>\n');
 
   return 0;
+}
+
+/** Post-init customization guide. Points at the real repo-specific surfaces
+ * rather than implying every generated file needs editing. The templates are
+ * mostly generic by design; only a few hooks are meant for per-repo edits. */
+function writeNextSteps(out: Writable): void {
+  out.write('[devbox] next, tailor the box to this repo (skip anything that already fits):\n');
+  out.write('\n');
+  out.write('  1. Repo setup hook — .devbox/post-create.sh\n');
+  out.write('     Add repo-specific steps that run once after deps + agent setup:\n');
+  out.write('     migrations, native builds, seed data, extra tool installs.\n');
+  out.write('     No-op by default; leave it as-is if you have nothing custom.\n');
+  out.write('\n');
+  out.write('  2. Dev server ports — .devcontainer/devcontainer.json\n');
+  out.write('     forwardPorts/portsAttributes default to Vite (5173), RPC (9100),\n');
+  out.write('     noVNC (6080). Adjust to your repo\'s dev servers.\n');
+  out.write('\n');
+  out.write('  3. Secrets — .env in the repo root\n');
+  out.write('     provision.sh links it into the box as /home/node/.env. Add any keys\n');
+  out.write('     your code or agent needs (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY).\n');
+  out.write('\n');
+  out.write('  4. Agent — .devbox/provision.sh\n');
+  out.write('     Pi is active by default. To use Claude Code or Codex instead,\n');
+  out.write('     comment out the Pi block (4a) and uncomment 4b/4c, then remove the\n');
+  out.write('     ~/.pi mount from devcontainer.json.\n');
+  out.write('\n');
+  out.write('  5. Extra system packages — .devbox/Dockerfile (rarely needed)\n');
+  out.write('     Add apt lines only if your repo needs something beyond the defaults.\n');
+  out.write('\n');
+  out.write(`  Full per-file guide: .devbox/README.md\n`);
+  out.write('\n');
 }

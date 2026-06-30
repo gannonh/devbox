@@ -273,6 +273,12 @@ for v1.
    (Dockerfile, provision.sh, start-display.sh, post-create.sh stub,
    README.md) and `.devcontainer/devcontainer.json` without error. Files are
    byte-equivalent to `templates/` modulo token replacement for repo name.
+   After creating the files, `init` prints a customization guide pointing at
+   the repo-specific surfaces (the `post-create.sh` hook, devcontainer.json
+   ports/env, repo `.env` secrets, `provision.sh` agent switching, and
+   Dockerfile apt packages) before the boot prompt. The guide does not imply
+   the generic files (`Dockerfile`, `provision.sh`, `start-display.sh`) must
+   be edited; it names each surface with its actual purpose.
 2. `init` is idempotent with a single explicit rule: if `.devbox/` exists and
    any file differs from the template, error and instruct the user to pass
    `--force` to overwrite or to diff manually; if `.devbox/` exists and all

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Writable } from 'node:stream';
 import { init } from '../src/commands/init.js';
 
 describe('init', () => {
@@ -33,6 +34,37 @@ describe('init', () => {
     // .devcontainer/devcontainer.json
     const devcontainerFiles = await readdir(join(tempDir, '.devcontainer'));
     expect(devcontainerFiles).toContain('devcontainer.json');
+  });
+
+  it('prints post-init customization guidance before the boot prompt', async () => {
+    const chunks: string[] = [];
+    const stderr = new Writable({
+      write(chunk, _enc, cb) {
+        chunks.push(chunk.toString());
+        cb();
+      },
+    });
+
+    const result = await init({ force: false, stderr });
+    expect(result).toBe(0);
+
+    const output = chunks.join('');
+    // Guidance appears between the created list and the ready/boot prompt.
+    const createdIdx = output.indexOf('[devbox] created:');
+    const guidanceIdx = output.indexOf('next, tailor the box to this repo');
+    const readyIdx = output.indexOf('[devbox] ready.');
+    expect(createdIdx).toBeGreaterThanOrEqual(0);
+    expect(guidanceIdx).toBeGreaterThan(createdIdx);
+    expect(readyIdx).toBeGreaterThan(guidanceIdx);
+
+    // Points at the real repo-specific surfaces.
+    expect(output).toContain('.devbox/post-create.sh');
+    expect(output).toContain('.devcontainer/devcontainer.json');
+    expect(output).toContain('provision.sh');
+    expect(output).toContain('.env');
+
+    // Names the boot command verbatim so users know how to start.
+    expect(output).toContain('npx @gannonh/devbox <branch>');
   });
 
   it('applies token replacement for repo name in devcontainer.json', async () => {
