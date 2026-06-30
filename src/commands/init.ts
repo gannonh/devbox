@@ -14,14 +14,19 @@
  */
 import { mkdir, readFile, stat, writeFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import type { Writable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createInterface as createRlInterface } from 'node:readline/promises';
 import { replaceTokens } from '../lib/tokens.js';
 
 export interface InitOptions {
   force: boolean;
   stderr?: Writable;
+  stdin?: Readable;
+  /** Whether stdin is a TTY. Defaults to process.stdin.isTTY. In CI (no TTY)
+   * the skill-install prompt is skipped so init stays non-interactive. */
+  interactive?: boolean;
 }
 
 // Template files that go into .devbox/
@@ -55,6 +60,21 @@ function templatesDir(): string {
     if (existsSync(candidate)) return candidate;
   }
   // Fallback to the production path (will error clearly if missing)
+  return candidates[0];
+}
+
+/** Resolve the bundled skills/ directory relative to this module. Same
+ * resolution strategy as templatesDir(): dist/skills in production,
+ * skills/ at the repo root in tests. */
+function skillsDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, '..', 'skills'), // dist/commands -> dist/skills
+    join(here, '..', '..', 'skills'), // src/commands -> skills/
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
   return candidates[0];
 }
 
@@ -151,6 +171,13 @@ export async function init(options: InitOptions): Promise<number> {
   writeNextSteps(out);
   out.write('[devbox] ready. Boot a box with: npx @gannonh/devbox <branch>\n');
 
+  await maybeInstallSkill({
+    out,
+    stdin: options.stdin ?? process.stdin,
+    interactive: options.interactive ?? Boolean(process.stdin.isTTY),
+    cwd,
+  });
+
   return 0;
 }
 
@@ -183,4 +210,60 @@ function writeNextSteps(out: Writable): void {
   out.write('\n');
   out.write(`  Full per-file guide: .devbox/README.md\n`);
   out.write('\n');
+}
+
+/** Offer to install the devbox Agent skill into the repo. Copies the bundled
+ * skills/devbox/SKILL.md to .agents/skills/devbox/SKILL.md so every
+ * collaborator's coding agent picks it up. Skipped in non-interactive (CI)
+ * runs so init stays non-interactive there.
+ *
+ * The skill can always be (re)installed later via the skills CLI, which fetches
+ * it from the gannonh/devbox GitHub repo:
+ *   npx skills add gannonh/devbox --skill devbox -y
+ */
+async function maybeInstallSkill(opts: {
+  out: Writable;
+  stdin: Readable;
+  interactive: boolean;
+  cwd: string;
+}): Promise<void> {
+  const { out, stdin, interactive, cwd } = opts;
+  const target = join(cwd, '.agents', 'skills', 'devbox', 'SKILL.md');
+
+  // Skip in CI / non-interactive runs.
+  if (!interactive) {
+    out.write(
+      '\n[devbox] Agent skill: install later with `npx skills add gannonh/devbox --skill devbox -y`\n',
+    );
+    return;
+  }
+
+  out.write('\n[devbox] Install the devbox Agent skill to this repo? [y/N] ');
+  const rl = createRlInterface({ input: stdin, output: out as NodeJS.WriteStream });
+  let answer = '';
+  try {
+    answer = (await rl.question('')).trim().toLowerCase();
+  } finally {
+    rl.close();
+  }
+
+  if (answer !== 'y' && answer !== 'yes') {
+    out.write(
+      '[devbox] Skipped. Install later with `npx skills add gannonh/devbox --skill devbox -y`\n',
+    );
+    return;
+  }
+
+  // Copy the bundled skill locally, consistent with how init copies templates.
+  const source = join(skillsDir(), 'devbox', 'SKILL.md');
+  if (!existsSync(source)) {
+    out.write(`[devbox] Agent skill: bundled SKILL.md not found at ${source}; skipping.\n`);
+    out.write('  Install later with `npx skills add gannonh/devbox --skill devbox -y`\n');
+    return;
+  }
+  const content = await readFile(source, 'utf-8');
+  await mkdir(join(cwd, '.agents', 'skills', 'devbox'), { recursive: true });
+  await writeFile(target, content);
+  out.write('[devbox] Agent skill installed at .agents/skills/devbox/SKILL.md\n');
+  out.write('[devbox] Reinstall or update later with `npx skills add gannonh/devbox --skill devbox -y`\n');
 }

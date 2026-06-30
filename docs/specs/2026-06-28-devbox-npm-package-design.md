@@ -343,6 +343,14 @@ for v1.
     each do), and an **agent switching** section (comment-toggle in
     `provision.sh` + remove the `~/.pi` mount in `devcontainer.json`). It
     renders as markdown on GitHub.
+15. `init` offers to install a bundled **devbox Agent skill**
+    (`skills/devbox/SKILL.md`) into the repo at `.agents/skills/devbox/SKILL.md`
+    so coding agents working in the repo discover how to use devbox. In a TTY
+    it prompts `y/N`; on `y` it copies the skill locally (no network needed). In
+    a non-interactive (CI) run it skips the prompt and prints the install-later
+    command. The skill is also installable via the `skills` CLI from the
+    `gannonh/devbox` GitHub repo: `npx skills add gannonh/devbox --skill devbox -y`.
+    The skill ships in the npm package (`files` includes `skills`).
 
 ## Implementation phases
 
@@ -366,7 +374,9 @@ for v1.
   Pi-specific comment).
 - Write `templates/README.md`.
 - Implement `src/commands/init.ts` + `src/lib/tokens.ts`.
-- Acceptance tie-in: criteria 1, 2, 14.
+- Bundle `skills/devbox/SKILL.md` (Agent skill) and have `init` offer to copy
+  it to `.agents/skills/devbox/SKILL.md`.
+- Acceptance tie-in: criteria 1, 2, 14, 15.
 
 ### Phase 3 — Launcher commands
 

@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Writable } from 'node:stream';
+import { Writable, Readable } from 'node:stream';
 import { init } from '../src/commands/init.js';
 
 describe('init', () => {
@@ -65,6 +66,72 @@ describe('init', () => {
 
     // Names the boot command verbatim so users know how to start.
     expect(output).toContain('npx @gannonh/devbox <branch>');
+  });
+
+  it('installs the Agent skill when the user answers yes (interactive)', async () => {
+    const chunks: string[] = [];
+    const stderr = new Writable({
+      write(chunk, _enc, cb) {
+        chunks.push(chunk.toString());
+        cb();
+      },
+    });
+    const stdin = Readable.from(['y\n']);
+
+    const result = await init({ force: false, stderr, stdin, interactive: true });
+    expect(result).toBe(0);
+
+    // Skill copied to the project-local agents dir.
+    const skillPath = join(tempDir, '.agents', 'skills', 'devbox', 'SKILL.md');
+    expect(existsSync(skillPath)).toBe(true);
+    const skill = await readFile(skillPath, 'utf-8');
+    expect(skill).toContain('name: devbox');
+
+    // Output confirms the install and shows the install-later command.
+    const output = chunks.join('');
+    expect(output).toContain('.agents/skills/devbox/SKILL.md');
+    expect(output).toContain('npx skills add gannonh/devbox --skill devbox -y');
+  });
+
+  it('skips the skill install when the user answers no (interactive)', async () => {
+    const chunks: string[] = [];
+    const stderr = new Writable({
+      write(chunk, _enc, cb) {
+        chunks.push(chunk.toString());
+        cb();
+      },
+    });
+    const stdin = Readable.from(['n\n']);
+
+    const result = await init({ force: false, stderr, stdin, interactive: true });
+    expect(result).toBe(0);
+
+    // Skill NOT copied.
+    expect(existsSync(join(tempDir, '.agents'))).toBe(false);
+
+    // But the install-later command is still shown.
+    const output = chunks.join('');
+    expect(output).toContain('Skipped');
+    expect(output).toContain('npx skills add gannonh/devbox --skill devbox -y');
+  });
+
+  it('skips the skill prompt in non-interactive (CI) runs and shows the later command', async () => {
+    const chunks: string[] = [];
+    const stderr = new Writable({
+      write(chunk, _enc, cb) {
+        chunks.push(chunk.toString());
+        cb();
+      },
+    });
+
+    const result = await init({ force: false, stderr, interactive: false });
+    expect(result).toBe(0);
+
+    // No skill copied, no prompt asked.
+    expect(existsSync(join(tempDir, '.agents'))).toBe(false);
+    const output = chunks.join('');
+    expect(output).not.toContain('[y/N]');
+    expect(output).toContain('npx skills add gannonh/devbox --skill devbox -y');
   });
 
   it('applies token replacement for repo name in devcontainer.json', async () => {
