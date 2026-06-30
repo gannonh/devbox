@@ -1,6 +1,6 @@
 {
   "name": "@gannonh/devbox",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "One-command isolated worktree dev containers with headed display, Pi agent, Chromium/OAuth, and GitHub-token forwarding.",
   "type": "module",
   "bin": {
