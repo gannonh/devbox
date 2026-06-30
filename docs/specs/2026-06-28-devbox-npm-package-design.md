@@ -232,16 +232,19 @@ Switching agents is a two-file edit: comment-toggle the block in
 
 ### Release workflow design
 
-Two triggers, both producing the same release artifact:
+Single trigger: **manual dispatch** (`workflow_dispatch`). Inputs:
 
-1. **Tag push** (`vX.Y.Z`) — triggers the workflow automatically.
-2. **Manual dispatch** (the primary path) — workflow inputs:
-   - `version` (string, optional): a full semver like `1.2.0`. If empty,
-     bump patch from the last tag.
-   - `dry_run` (boolean, default false): run the full pipeline but skip the
-     final `npm publish`.
+- `version` (string, optional): a full semver like `1.2.0`. If empty,
+  bump patch from the last tag.
+- `dry_run` (boolean, default false): run the full pipeline but skip
+  `npm publish`, tag creation, and GitHub Release creation.
 
-Workflow behavior (both triggers):
+Publish-first ordering: `npm publish` runs *before* the git tag and GitHub
+Release are created, and the tag/release steps gate on `success()`. A failed
+publish leaves no tag and no release page, so there is never a release
+pointing at an unpublished version.
+
+Workflow behavior:
 
 - Resolve the target version: explicit input, or patch bump from the last
   `v*` tag. "Last tag" is resolved via
@@ -249,14 +252,17 @@ Workflow behavior (both triggers):
   is no prior tag and the `version` input is empty, the workflow errors with a
   message instructing the user to provide an explicit version for the first
   release.
-- Sync `package.json` `version` to the target (CI edits the file; tag is
-  source of truth).
-- Create/update the git tag `v<version>` and push it (for manual dispatch
-  only; tag-push trigger already has the tag).
+- Sync `package.json` and `package-lock.json` `version` to the target (CI
+  edits both files; tag is source of truth). Both manifests are committed so
+  re-runs at the same version never hit an empty-commit failure.
 - Build (`tsc`), run tests, lint.
 - `npm publish --access public` (unless `dry_run`).
-- On `dry_run`, publish step is skipped and the run summary shows the version
-  that would have been published.
+- On publish success (non-dry-run): commit both manifests, create + push the
+  `v<version>` tag, then create a GitHub Release titled `v<version>` whose
+  notes provide install instructions (`npx @gannonh/devbox init` or
+  `npm install -g @gannonh/devbox`).
+- On `dry_run`, publish/tag/release are skipped and the run summary shows the
+  version that would have been published.
 
 `NPM_TOKEN` is stored as a repository secret. Provenance/SLSA is out of scope
 for v1.
@@ -313,12 +319,14 @@ for v1.
     forwarding logic.
 11. `npx @gannonh/devbox --help` and per-command help render correctly with
     usage, flags, and examples.
-12. Publish flow: pushing a tag `vX.Y.Z` triggers the release workflow, which
-    syncs `package.json` version to the tag, builds, and publishes public to
-    npm under `@gannonh/devbox`. A manual workflow dispatch with a version
-    input (or empty for patch bump from last tag) and a dry-run checkbox does
-    the same. In both, the git tag is source of truth and `package.json` is
-    updated by CI.
+12. Publish flow: a manual workflow dispatch (with a version input, or empty
+    for patch bump from last tag, and a dry-run checkbox) syncs `package.json`
+    and `package-lock.json` version to the target, builds, and publishes
+    public to npm under `@gannonh/devbox`. The git tag and GitHub Release are
+    created only after `npm publish` succeeds, with release notes providing
+    `npx @gannonh/devbox init` and `npm install -g @gannonh/devbox` install
+    instructions. A failed publish leaves no tag and no release page. The git
+    tag is source of truth and both manifests are updated by CI.
 13. `npx @gannonh/devbox@latest init` works against the published package
     (post-release smoke test): a fresh repo init'd via the published package
     produces a bootable box per criterion 3.
@@ -370,9 +378,10 @@ for v1.
 
 ### Phase 5 — Release workflow
 
-- `.github/workflows/release.yml` with tag-push and `workflow_dispatch`
-  triggers, version resolution, `package.json` sync, build/test/lint,
-  `npm publish --access public`, dry-run support.
+- `.github/workflows/release.yml` with a single `workflow_dispatch` trigger,
+  version resolution, `package.json` + `package-lock.json` sync,
+  build/test/lint, `npm publish --access public` (publish-first), tag + GitHub
+  Release creation gated on publish success, dry-run support.
 - Acceptance tie-in: criterion 12.
 
 ### Phase 6 — End-to-end validation
@@ -493,9 +502,10 @@ code-quality review gates:
    setsid display restart. (3 commits)
 4. **Tests** — closed coverage gaps (containerName, commandExists,
    findRepoRoot/repoName) + init golden-file snapshot. (1 commit)
-5. **Release workflow** — .github/workflows/release.yml with tag-push +
-   manual dispatch, version resolution, package.json sync, build/test/lint,
-   npm publish --access public, dry-run, [skip-publish] recursive-run handling. (1 commit)
+5. **Release workflow** — .github/workflows/release.yml with a single
+   manual-dispatch trigger, version resolution, package.json +
+   package-lock.json sync, build/test/lint, npm publish --access public
+   (publish-first), tag + GitHub Release gated on publish success, dry-run. (1 commit)
 6. **E2E validation** — booted a real box via OrbStack; found and fixed 4
    real integration bugs (bin guard symlink, hardcoded main branch, missing
    .env crash, stale worktree registrations). (4 commits)
