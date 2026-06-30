@@ -2,14 +2,15 @@
 type: Spec
 title: "@gannonh/devbox npm package"
 description: Package the devbox tooling as a TypeScript CLI published to npm under @gannonh/devbox, installable via npx and configurable per-repo through `npx @gannonh/devbox init`.
-status: Approved
+status: Implemented
 approved_at: 2026-06-28T19:24:09Z
+implemented_at: 2026-06-28T23:55:00Z
 ---
 
 # @gannonh/devbox npm package
 
 ## Status
-Approved
+Implemented
 
 ## Goal
 
@@ -464,3 +465,102 @@ new content.
 `update` in v1).
 
 **Blocking questions**: none. All design decisions are resolved.
+
+## Build completion report
+
+**Spec**: `docs/specs/2026-06-28-devbox-npm-package-design.md`
+**Base SHA**: `4b4d77e` (spec approval)
+**Final head SHA**: `77370e7`
+**Build commits**: 15 (6 phase commits + 9 fix commits from review/E2E)
+**Status**: Implemented (spec frontmatter + Status section updated)
+
+### Tasks completed
+
+All 6 implementation phases, each through TDD with spec-compliance and
+code-quality review gates:
+
+1. **Package scaffold + tooling** — package.json, tsconfig, eslint, vitest,
+   src/cli.ts dispatch + help skeleton. (2 commits)
+2. **Templates + init command** — Dockerfile + start-display.sh verbatim from
+   kata-agents; generic provision.sh (lockfile detection, ensure:electron
+   conditional, Pi/Claude Code/Codex agent blocks, opt-in hook, display
+   start); post-create.sh stub; devcontainer.json; README.md; init.ts +
+   tokens.ts with idempotent scaffolding. (2 commits)
+3. **Launcher commands** — ported all 6 bash cmd_* functions to TypeScript;
+   src/lib/{docker,worktree,env,display,log,shell,lockfile,repo,context}.ts;
+   async dispatch; spawnInherit with signal forwarding; containerFor cid
+   lookup; GH_TOKEN persistence; --relative-paths worktree; .git mount;
+   setsid display restart. (3 commits)
+4. **Tests** — closed coverage gaps (containerName, commandExists,
+   findRepoRoot/repoName) + init golden-file snapshot. (1 commit)
+5. **Release workflow** — .github/workflows/release.yml with tag-push +
+   manual dispatch, version resolution, package.json sync, build/test/lint,
+   npm publish, dry-run, [skip-publish] recursive-run handling. (1 commit)
+6. **E2E validation** — booted a real box via OrbStack; found and fixed 4
+   real integration bugs (bin guard symlink, hardcoded main branch, missing
+   .env crash, stale worktree registrations). (4 commits)
+
+Plus 1 final-review fix: git symlink in templates/Dockerfile (port of
+kata-agents f8e43a9) so --relative-paths worktree commits work in-box.
+
+### Files changed
+
+- `package.json`, `package-lock.json`, `tsconfig.json`, `eslint.config.js`,
+  `vitest.config.ts`, `.gitignore`
+- `src/cli.ts`, `src/commands/{init,up,attach,stop,rm,list,url}.ts`
+- `src/lib/{context,display,docker,env,lockfile,log,repo,shell,tokens,worktree}.ts`
+- `templates/{Dockerfile,provision.sh,start-display.sh,post-create.sh,devcontainer.json,README.md}`
+- `.github/workflows/release.yml`
+- `tests/{cli,display,docker,env,init,lockfile,log,main-entry,release,repo,shell,tokens,worktree}.test.ts`
+
+### Tests and verification
+
+- `npm run typecheck` (tsc --noEmit): clean
+- `npm run lint` (eslint .): clean
+- `npm run build` (tsc): clean
+- `npm run test` (vitest run): 114/114 pass across 13 files
+- E2E (real OrbStack box): criteria 3, 8, 9 verified
+  - Criterion 3: box boots, shell in /workspace as `node`, git works,
+    noVNC HTTP 200, `gh auth status` logged in via forwarded GH_TOKEN
+  - Criterion 8: `/usr/bin/chromium` wrapper passes --no-sandbox
+    --disable-gpu --test-type; `xdg-open` launches it; localhost:1455
+    reachable
+  - Criterion 9: Xvfb/x11vnc/websockify running after `devcontainer up`;
+    re-brought up after stop/start via setsid
+
+### Review gates completed
+
+- Per-phase spec compliance review (subagent, independent): all passed
+- Per-phase code quality review (subagent, independent): all passed
+- Adversarial spec review (Plan phase): 3 FAILs found, validated, fixed
+- Final whole-branch review (subagent): 1 blocker found (git symlink),
+  fixed in commit `77370e7`
+- Independent subagent review was used throughout
+
+### Approved deviations
+
+- Renamed `KATA_ELECTRON_NO_SANDBOX` to `DEVBOX_ELECTRON_NO_SANDBOX`
+  (generic package; pre-approved in Phase 2 task prompt).
+- OrbStack `.orb.local` URLs only (no non-OrbStack container IP fallback);
+  matches the bash source of truth.
+
+### Known follow-up issues
+
+- **Criterion 13 deferred**: `npx @gannonh/devbox@latest init` smoke test
+  against the published package requires the first real npm publish via
+  the release workflow. Pending first publish + NPM_TOKEN configuration.
+- **Dockerfile header** still says "Kata Agents — headed dev box";
+  cosmetic, could be genericized for non-Kata users.
+- **Non-OrbStack container IP fallback** not implemented (matches bash;
+  spec risk note acknowledges as future improvement).
+- **`update`/`doctor` commands** deferred to v2 (per spec Out of scope).
+- **Interactive TTY E2E** for spawnInherit (Ctrl-C at a real terminal)
+  not automated; signal forwarding covered by unit test with DI seam.
+- **devcontainer stderr prefixing**: bash prefixes both stdout and stderr
+  with `[devcontainer] `; TS prefixes only stdout. Minor UX gap.
+
+### Whether independent subagent review was used
+
+Yes. Every phase used separate subagents for implementation, spec
+compliance review, and code quality review. The final whole-branch review
+was also a separate subagent. No self-review replaced independent review.
