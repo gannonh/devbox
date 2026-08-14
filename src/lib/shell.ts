@@ -7,6 +7,7 @@
  */
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import type { Writable } from 'node:stream';
 
 export interface ShellRunner {
   /** Run a command, return stdout (trimmed). Throws on non-zero exit. */
@@ -34,7 +35,7 @@ export interface ExecOptions {
   /** If set, stream stdout chunks to this stream (e.g. process.stderr) with
    *  the given prefix, while also capturing into the returned stdout string.
    *  Used for devcontainer up so the user sees build progress live. */
-  streamStdoutTo?: { stream: NodeJS.WriteStream; prefix: string };
+  streamStdoutTo?: { stream: Writable; prefix: string };
 }
 
 export interface ExecResult {
@@ -145,10 +146,16 @@ export function escapeShellSingleQuote(value: string): string {
 }
 
 /**
- * Check if a command is available on the system (like bash's `command -v`).
+ * Check if a command is available through a supplied shell runner.
+ * Providers use this seam so prerequisite failures remain testable without
+ * spawning host commands.
  */
-export async function commandExists(cmd: string): Promise<boolean> {
-  const { execQuiet } = new RealShellRunner();
-  const result = await execQuiet('which', [cmd], { silentStderr: true });
+export async function commandExistsWithRunner(runner: ShellRunner, cmd: string): Promise<boolean> {
+  const result = await runner.execQuiet('which', [cmd], { silentStderr: true });
   return result.code === 0;
+}
+
+/** Check if a command is available on the host. */
+export async function commandExists(cmd: string): Promise<boolean> {
+  return commandExistsWithRunner(new RealShellRunner(), cmd);
 }

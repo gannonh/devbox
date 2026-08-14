@@ -28,6 +28,8 @@ describe('cli dispatch', () => {
     expect(output).toContain('--rm');
     expect(output).toContain('--list');
     expect(output).toContain('--url');
+    expect(output).toContain('--provider local|vercel');
+    expect(output).toContain('--password');
   });
 
   it('-h alias also prints help and exits 0', async () => {
@@ -79,6 +81,8 @@ describe('cli dispatch', () => {
     expect(code).toBe(0);
     const output = stdout + stderr;
     expect(output).toContain('my-feature');
+    expect(output).toContain('--provider local|vercel');
+    expect(output).toContain('not available in this release');
   });
 
   it('--list --help prints list usage and exits 0', async () => {

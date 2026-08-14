@@ -17,7 +17,7 @@ export interface ProviderBranchRequest extends ProviderRequestContext {
   branch: string;
 }
 
-export interface ProviderListRequest extends ProviderRequestContext {}
+export type ProviderListRequest = ProviderRequestContext;
 
 export interface ProviderUrlRequest extends ProviderBranchRequest {
   open: boolean;

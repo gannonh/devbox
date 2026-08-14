@@ -5,7 +5,7 @@ import {
   type DevboxProvider,
   type ProviderRegistry,
 } from '../src/providers/registry.js';
-import type { DisplayCredentialsResult, ProviderActionResult, ProviderBranchRequest, ProviderListRequest, ProviderUrlRequest } from '../src/providers/types.js';
+import type { DisplayCredentialsResult, ProviderActionResult } from '../src/providers/types.js';
 
 function stubProvider(name: 'local' | 'vercel'): DevboxProvider {
   const action = async (): Promise<ProviderActionResult> => ({ exitCode: 0 });
@@ -16,13 +16,13 @@ function stubProvider(name: 'local' | 'vercel'): DevboxProvider {
   });
   return {
     name,
-    up: async (_request: ProviderBranchRequest) => action(),
-    attach: async (_request: ProviderBranchRequest) => action(),
-    stop: async (_request: ProviderBranchRequest) => action(),
-    remove: async (_request: ProviderBranchRequest) => action(),
-    list: async (_request: ProviderListRequest) => action(),
-    url: async (_request: ProviderUrlRequest) => action(),
-    getDisplayCredentials: async (_request: ProviderBranchRequest) => credentials(),
+    up: async () => action(),
+    attach: async () => action(),
+    stop: async () => action(),
+    remove: async () => action(),
+    list: async () => action(),
+    url: async () => action(),
+    getDisplayCredentials: async () => credentials(),
   };
 }
 

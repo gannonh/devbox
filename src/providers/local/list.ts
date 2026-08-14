@@ -15,6 +15,7 @@ interface ContainerRow {
 export async function list(ctx: LauncherContext, stderr?: Writable): Promise<number> {
   const { repoName, runner } = ctx;
 
+  const output = stderr ?? process.stderr;
   if (stderr) setLogStreams({ stderr });
 
   info('devbox containers:');
@@ -28,7 +29,7 @@ export async function list(ctx: LauncherContext, stderr?: Writable): Promise<num
   );
 
   if (!result.stdout.trim()) {
-    process.stderr.write('  (none)\n');
+    output.write('  (none)\n');
     return 0;
   }
 
@@ -44,11 +45,11 @@ export async function list(ctx: LauncherContext, stderr?: Writable): Promise<num
     if (!row.name) continue;
     if (row.state === 'running') {
       const url = `http://${row.name}.orb.local:6080/vnc.html`;
-      process.stderr.write(`  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} `);
-      process.stderr.write(hyperlink(url, url));
-      process.stderr.write('\n');
+      output.write(`  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} `);
+      output.write(hyperlink(url, url));
+      output.write('\n');
     } else {
-      process.stderr.write(
+      output.write(
         `  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} (stopped — start with: devbox ${row.branch})\n`,
       );
     }
