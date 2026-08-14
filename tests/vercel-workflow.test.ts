@@ -30,6 +30,9 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('compression=zstd');
     expect(workflow).toContain('sha-${GITHUB_SHA}');
     expect(workflow).toContain('wait-vcr-ready.mjs');
+    expect(workflow).toContain('timeout-minutes: 45');
+    expect(workflow).toContain('SMOKE_TIMEOUT_MS:');
+    expect(workflow).toContain('SMOKE_HTTP_TIMEOUT_MS:');
     expect(workflow).toContain('Preparing');
     expect(workflow).toContain('Unoptimized');
     expect(workflow).toContain('image_not_ready');
@@ -72,10 +75,11 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('cross-project');
     expect(workflow).toContain('redacted');
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
+    const cleanup = await readFile('scripts/vercel/sandbox-cleanup.mjs', 'utf8');
     expect(smoke).toContain('sessionStates');
     expect(smoke).toContain('finalSessionStatesTerminal');
-    expect(smoke).toContain('resume: false');
-    expect(smoke).toContain('after-delete');
+    expect(cleanup).toContain('resume: false');
+    expect(cleanup).toContain('after-delete');
     for (const stage of ['startup', 'http', 'websocket', 'terminal', 'stop', 'delete']) {
       expect(smoke).toContain(`timed('${stage}'`);
     }
@@ -96,6 +100,8 @@ describe('Vercel image supply-chain workflow', () => {
       exists('scripts/vercel/wait-vcr-ready.mjs'),
       exists('scripts/vercel/smoke-sandbox.mjs'),
       exists('scripts/vercel/smoke-contract.mjs'),
+      exists('scripts/vercel/http-probe.mjs'),
+      exists('scripts/vercel/sandbox-cleanup.mjs'),
       exists('scripts/vercel/assert-project-identity.mjs'),
       exists('scripts/vercel/promote-image.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),

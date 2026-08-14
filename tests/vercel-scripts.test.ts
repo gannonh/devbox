@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -10,6 +11,8 @@ import {
   REQUIRED_SMOKE_CHECKS,
   REQUIRED_SMOKE_TIMINGS,
 } from '../scripts/vercel/smoke-contract.mjs';
+import { fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
+import { verifySandboxDeleted } from '../scripts/vercel/sandbox-cleanup.mjs';
 
 const execFileAsync = promisify(execFile);
 const digest = 'sha256:' + 'a'.repeat(64);
@@ -37,6 +40,8 @@ function validEvidence(role: string, teamId: string, projectId: string) {
     timings: Object.fromEntries(REQUIRED_SMOKE_TIMINGS.map((name) => [name, {
       startedAt: '2026-01-01T00:00:00.000Z',
       finishedAt: '2026-01-01T00:00:00.001Z',
+      startedEpochMs: 1767225600000,
+      finishedEpochMs: 1767225600001,
       durationMs: 1,
       outcome: 'passed',
     }])),
@@ -51,6 +56,7 @@ function validEvidence(role: string, teamId: string, projectId: string) {
       noRunningSessionAfterDelete: true,
       finalSessionStatesTerminal: true,
       residualNonDeletedSnapshots: [],
+      errors: [],
     },
   };
 }
@@ -85,6 +91,86 @@ async function runNode(
 }
 
 describe('Vercel supply-chain script boundaries', () => {
+  it('aborts a hanging HTTP endpoint at the per-request deadline', async () => {
+    const server = createServer(() => {
+      // Deliberately leave the request pending; the helper must abort it.
+    }).listen(0, '127.0.0.1');
+    try {
+      await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not bind');
+      await expect(fetchWithTimeout(`http://127.0.0.1:${address.port}/hang`, {}, 50)).rejects.toThrow(/timed out|aborted/i);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('retries eventual post-delete running states and performs final cleanup', async () => {
+    const targets = [
+      { status: 'running' },
+      { status: 'stopping' },
+    ];
+    const lookups: boolean[] = [];
+    const sessions = [
+      [{ id: 'session-running', status: 'running' }],
+      [{ id: 'session-stopping', status: 'stopping' }],
+    ];
+    let stops = 0;
+    let deletes = 0;
+    const result = await verifySandboxDeleted({
+      timeoutMs: 1_000,
+      maxAttempts: 4,
+      getSandbox: async (options: { resume: boolean }) => {
+        lookups.push(options.resume);
+        const target = targets.shift();
+        if (target) return target;
+        throw { notFound: true };
+      },
+      listSessions: async () => sessions.shift() ?? [],
+      stopSandbox: async () => { stops += 1; },
+      deleteSandbox: async () => { deletes += 1; },
+      sleep: async () => {},
+      isNotFound: (error: unknown) => Boolean((error as { notFound?: boolean }).notFound),
+    });
+    expect(result).toMatchObject({ verified: true, noRunningSession: true });
+    expect(lookups).toEqual([false, false, false]);
+    expect(stops).toBe(2);
+    expect(deletes).toBeGreaterThanOrEqual(2);
+  });
+
+  it('fails closed after bounded final cleanup when deletion never converges', async () => {
+    let lookups = 0;
+    let stops = 0;
+    let deletes = 0;
+    const result = await verifySandboxDeleted({
+      timeoutMs: 1_000,
+      maxAttempts: 2,
+      getSandbox: async (options: { resume: boolean }) => {
+        expect(options.resume).toBe(false);
+        lookups += 1;
+        return { status: 'running' };
+      },
+      listSessions: async () => [{ id: 'still-running', status: 'running' }],
+      stopSandbox: async () => { stops += 1; },
+      deleteSandbox: async () => { deletes += 1; },
+      sleep: async () => {},
+    });
+    expect(result).toMatchObject({ verified: false, noRunningSession: false });
+    expect(lookups).toBeGreaterThanOrEqual(3);
+    expect(stops).toBeGreaterThanOrEqual(3);
+    expect(deletes).toBeGreaterThanOrEqual(3);
+  });
+
+  it('requires executable working-binary probes for image and Sandbox checks', async () => {
+    const status = await readFile('images/vercel/status-devbox.sh', 'utf8');
+    const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
+    for (const probe of ['pi --version', 'claude --version', 'codex --version', 'opencode --version', 'gh --version', 'node --version', 'bun --version', 'python --version', 'chromium --version', 'Xvfb -version', 'fluxbox --version', 'x11vnc -version', 'websockify --version']) {
+      expect(status).toContain(probe);
+      expect(smoke).toContain(probe);
+    }
+    expect(status).toContain('timeout');
+  });
+
   it('accepts only fully-qualified VCR digest references at the smoke boundary', () => {
     expect(parseFullyQualifiedVcrReference(reference)).toEqual({
       registry: 'vcr.vercel.com',
@@ -316,6 +402,50 @@ describe('Vercel supply-chain script boundaries', () => {
           ],
         );
         expect(result.code, variant.name).not.toBe(0);
+      }
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed evidence primitives and cleanup shapes', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-malformed-'));
+    try {
+      const sourcePath = join(temp, 'image.ts');
+      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const variants = [
+        ['empty sandbox ID', (report: any) => { report.sandboxName = ''; }],
+        ['non-HTTPS noVNC URL', (report: any) => { report.noVncUrl = 'http://sandbox.example.test'; }],
+        ['invalid aggregate timestamp', (report: any) => { report.startedAt = 'not-a-date'; }],
+        ['reverse aggregate timestamps', (report: any) => { report.finishedAt = '2025-01-01T00:00:00.000Z'; }],
+        ['negative stage duration', (report: any) => { report.timings.create.durationMs = -1; }],
+        ['malformed cleanup errors', (report: any) => { report.cleanup.errors = { message: 'not-an-array' }; }],
+        ['empty session ID', (report: any) => { report.sessionStates[0].states[0].id = ''; }],
+      ] as const;
+      for (const [name, mutate] of variants) {
+        const publisherPath = join(temp, `${name.replace(/[^a-z]+/gi, '-')}-publisher.json`);
+        const consumerPath = join(temp, `${name.replace(/[^a-z]+/gi, '-')}-consumer.json`);
+        const publisher = validEvidence('publisher', 'publisher-team-id', 'publisher-project-id');
+        mutate(publisher);
+        await writeFile(publisherPath, JSON.stringify(publisher));
+        await writeFile(consumerPath, JSON.stringify(validEvidence('consumer', 'consumer-team-id', 'consumer-project-id')));
+        const result = await runNode(
+          'scripts/vercel/promote-image.mjs',
+          { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+          [
+            '--reference', reference,
+            '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+            '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
+            '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/100#publisher-smoke',
+            '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/101#consumer-smoke',
+            '--publisher-team', 'publisher-team', '--publisher-project', 'publisher-project',
+            '--consumer-team', 'consumer-team', '--consumer-project', 'consumer-project',
+            '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
+            '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
+            '--publisher-evidence', publisherPath, '--consumer-evidence', consumerPath,
+          ],
+        );
+        expect(result.code, name).not.toBe(0);
       }
     } finally {
       await rm(temp, { recursive: true, force: true });

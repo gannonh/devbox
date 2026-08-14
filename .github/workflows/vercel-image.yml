@@ -25,11 +25,18 @@ permissions:
 env:
   VERCEL_IMAGE_REPOSITORY: devbox
   ARTIFACT_DIR: ${{ runner.temp }}/vercel-image-evidence
+  SMOKE_TIMEOUT_MS: '600000'
+  SMOKE_SDK_TIMEOUT_MS: '30000'
+  SMOKE_COMMAND_TIMEOUT_MS: '60000'
+  SMOKE_HTTP_TIMEOUT_MS: '10000'
+  SMOKE_CLEANUP_TIMEOUT_MS: '120000'
+  SMOKE_DELETE_VERIFY_TIMEOUT_MS: '30000'
 
 jobs:
   candidate:
     name: Build, smoke, and propose Vercel image promotion
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4

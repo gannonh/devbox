@@ -2,6 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 const nodeGlobals = {
+  AbortController: 'readonly',
   Buffer: 'readonly',
   URL: 'readonly',
   console: 'readonly',

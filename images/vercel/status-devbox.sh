@@ -4,8 +4,20 @@ set -euo pipefail
 
 REQUIRED_COMMANDS=(
   pi claude codex opencode gh node bun python chromium
-  Xvfb fluxbox x11vnc websockify sudo
+  Xvfb fluxbox x11vnc websockify sudo timeout
 )
+
+probe_binary() {
+  local binary="$1"
+  shift
+  local output
+  if output="$(timeout 5s "${binary}" "$@" 2>&1)"; then
+    printf '[devbox-status] %s=working\n' "${binary}"
+    return 0
+  fi
+  printf '[devbox-status] FAIL: %s probe failed: %s\n' "${binary}" "${output:0:300}" >&2
+  return 1
+}
 
 check_image() {
   local failed=0
@@ -23,6 +35,18 @@ check_image() {
       failed=1
     fi
   done
+  if [[ "${failed}" -eq 0 ]]; then
+    for probe in \
+      'pi --version' 'claude --version' 'codex --version' 'opencode --version' \
+      'gh --version' 'node --version' 'bun --version' 'python --version' \
+      'chromium --version' 'Xvfb -version' 'fluxbox --version' \
+      'x11vnc -version' 'websockify --version'; do
+      # shellcheck disable=SC2086
+      if ! probe_binary ${probe}; then
+        failed=1
+      fi
+    done
+  fi
   if [[ "${failed}" -eq 0 ]]; then
     printf '[devbox-status] image checks passed (user=%s uid=%s)\n' "$(id -un)" "$(id -u)"
   fi

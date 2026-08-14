@@ -40,15 +40,53 @@ const slugPattern = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 for (const key of ['publisher-team', 'publisher-project', 'consumer-team', 'consumer-project']) {
   if (!slugPattern.test(args.get(key))) throw new Error(`--${key} must be a Vercel slug`);
 }
+
+const MAX_EVIDENCE_DURATION_MS = 24 * 60 * 60 * 1000;
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function validHttpsUrl(value) {
+  if (!nonEmptyString(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && nonEmptyString(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function validIsoTimestamp(value) {
+  if (!nonEmptyString(value)) return false;
+  try {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) && date.toISOString() === value;
+  } catch {
+    return false;
+  }
+}
+
+function validTiming(timing) {
+  if (!timing || typeof timing !== 'object' || Array.isArray(timing)) return false;
+  if (!validIsoTimestamp(timing.startedAt) || !validIsoTimestamp(timing.finishedAt)) return false;
+  const startedMs = Date.parse(timing.startedAt);
+  const finishedMs = Date.parse(timing.finishedAt);
+  return Number.isSafeInteger(timing.startedEpochMs) &&
+    Number.isSafeInteger(timing.finishedEpochMs) &&
+    timing.finishedEpochMs >= timing.startedEpochMs &&
+    finishedMs >= startedMs &&
+    Number.isSafeInteger(timing.durationMs) &&
+    timing.durationMs >= 0 &&
+    timing.durationMs <= MAX_EVIDENCE_DURATION_MS &&
+    Math.abs(timing.durationMs - (finishedMs - startedMs)) <= 1_000 &&
+    Math.abs(timing.durationMs - (timing.finishedEpochMs - timing.startedEpochMs)) <= 1_000;
+}
 if (args.get('publisher-team') !== imageInfo.team || args.get('publisher-project') !== imageInfo.project) {
   throw new Error('publisher scope must match the candidate image reference');
 }
 for (const key of ['publisher-url', 'consumer-url']) {
-  try {
-    if (new URL(args.get(key)).protocol !== 'https:') throw new Error('not https');
-  } catch {
-    throw new Error(`--${key} must be an HTTPS URL`);
-  }
+  if (!validHttpsUrl(args.get(key))) throw new Error(`--${key} must be an HTTPS URL`);
 }
 if (args.get('publisher-team') === args.get('consumer-team') && args.get('publisher-project') === args.get('consumer-project')) {
   throw new Error('publisher and consumer scopes must be independent');
@@ -73,68 +111,96 @@ async function readEvidence(path, role, expectedScope, expectedSmokeUrl) {
   if (evidence.imageReference !== reference || evidence.expectedDigest !== imageInfo.digest) {
     throw new Error(`${role} smoke evidence does not prove the exact candidate digest`);
   }
-  if (
-    typeof evidence.startedAt !== 'string' ||
-    typeof evidence.finishedAt !== 'string' ||
-    !Number.isFinite(evidence.durationMs) ||
-    evidence.durationMs < 0
-  ) {
-    throw new Error(`${role} smoke evidence is missing aggregate timing fields`);
+  if (!validTiming({
+    startedAt: evidence.startedAt,
+    finishedAt: evidence.finishedAt,
+    startedEpochMs: Date.parse(evidence.startedAt),
+    finishedEpochMs: Date.parse(evidence.finishedAt),
+    durationMs: evidence.durationMs,
+  })) {
+    throw new Error(`${role} smoke evidence has invalid aggregate timing fields`);
   }
-  if (!evidence.scope || evidence.scope.teamId !== expectedScope.teamId || evidence.scope.projectId !== expectedScope.projectId) {
+  if (
+    !evidence.scope || typeof evidence.scope !== 'object' || Array.isArray(evidence.scope) ||
+    !nonEmptyString(evidence.scope.teamId) || !nonEmptyString(evidence.scope.projectId) ||
+    evidence.scope.teamId !== expectedScope.teamId || evidence.scope.projectId !== expectedScope.projectId
+  ) {
     throw new Error(`${role} smoke evidence scope does not match the reviewed project`);
   }
-  const checks = new Map(Array.isArray(evidence.checks) ? evidence.checks.map((check) => [check.name, check]) : []);
+  if (
+    !Array.isArray(evidence.checks) ||
+    evidence.checks.some((check) => !check || typeof check !== 'object' || !nonEmptyString(check.name) || typeof check.ok !== 'boolean')
+  ) {
+    throw new Error(`${role} smoke evidence contains a malformed named check`);
+  }
+  const checks = new Map(evidence.checks.map((check) => [check.name, check]));
   if (
     evidence.requiredChecksComplete !== true ||
-    checks.size !== (Array.isArray(evidence.checks) ? evidence.checks.length : 0) ||
+    checks.size !== evidence.checks.length ||
     !REQUIRED_SMOKE_CHECKS.every((name) => checks.get(name)?.ok === true)
   ) {
     throw new Error(`${role} smoke evidence is missing a required named check or contains a duplicate/failed check`);
   }
   const timings = evidence.timings;
-  if (!timings || !REQUIRED_SMOKE_TIMINGS.every((name) => {
+  if (!timings || typeof timings !== 'object' || Array.isArray(timings) || !REQUIRED_SMOKE_TIMINGS.every((name) => {
     const timing = timings[name];
-    return timing && timing.outcome === 'passed' && typeof timing.startedAt === 'string' &&
-      typeof timing.finishedAt === 'string' && Number.isFinite(timing.durationMs) && timing.durationMs >= 0;
+    return timing && timing.outcome === 'passed' && validTiming(timing);
   })) {
     throw new Error(`${role} smoke evidence is missing a required successful timing stage`);
   }
   const observations = evidence.sessionStates;
-  const finalStates = observations?.at(-1)?.states;
+  const finalObservation = observations?.at(-1);
+  const finalStates = finalObservation?.states;
+  const deletionMissing = finalObservation?.phase === 'after-delete-missing' && Array.isArray(finalStates) && finalStates.length === 0;
+  const terminalProofStates = deletionMissing
+    ? observations?.slice().reverse().find((observation) =>
+      Array.isArray(observation?.states) && observation.states.length > 0 &&
+      observation.states.every((session) => ['stopped', 'aborted'].includes(session.status)),
+    )?.states
+    : finalStates;
   if (
     !Array.isArray(observations) || observations.length === 0 ||
-    observations.some((observation) => !Array.isArray(observation.states) || observation.states.some((session) => typeof session.id !== 'string' || typeof session.status !== 'string')) ||
-    !Array.isArray(finalStates) || finalStates.length === 0 ||
-    finalStates.some((session) => !['stopped', 'aborted'].includes(session.status))
+    observations.some((observation) =>
+      !observation || typeof observation !== 'object' || !nonEmptyString(observation.phase) ||
+      !Array.isArray(observation.states) ||
+      observation.states.some((session) => !session || !nonEmptyString(session.id) || !nonEmptyString(session.status))
+    ) ||
+    !Array.isArray(terminalProofStates) || terminalProofStates.length === 0 ||
+    terminalProofStates.some((session) => !['stopped', 'aborted'].includes(session.status))
   ) {
     throw new Error(`${role} smoke evidence does not prove terminal stopped/aborted session states`);
   }
   if (
-    typeof evidence.terminalSession?.commandId !== 'string' ||
-    evidence.terminalSession?.state !== 'completed' ||
-    evidence.terminalSession?.exitCode !== 0
+    !evidence.terminalSession || typeof evidence.terminalSession !== 'object' ||
+    !nonEmptyString(evidence.terminalSession.commandId) ||
+    evidence.terminalSession.state !== 'completed' ||
+    evidence.terminalSession.exitCode !== 0
   ) {
     throw new Error(`${role} smoke evidence does not prove a successful terminal command`);
   }
   const cleanup = evidence.cleanup;
+  if (!cleanup || typeof cleanup !== 'object' || Array.isArray(cleanup)) {
+    throw new Error(`${role} smoke evidence is missing cleanup fields`);
+  }
   if (
-    cleanup?.stopped !== true ||
+    cleanup.stopped !== true ||
     cleanup.deleted !== true ||
     cleanup.deletionVerified !== true ||
     cleanup.snapshotsCleaned !== true ||
     cleanup.finalSessionStatesTerminal !== true ||
     cleanup.noRunningSessionAfterDelete !== true ||
     !Array.isArray(cleanup.residualNonDeletedSnapshots) ||
+    cleanup.residualNonDeletedSnapshots.some((snapshot) => !snapshot || !nonEmptyString(snapshot.id) || !nonEmptyString(snapshot.status)) ||
     cleanup.residualNonDeletedSnapshots.length > 0 ||
+    (cleanup.errors !== undefined && (!Array.isArray(cleanup.errors) || cleanup.errors.some((error) => !nonEmptyString(error)))) ||
     (Array.isArray(cleanup.errors) && cleanup.errors.length > 0)
   ) {
     throw new Error(`${role} smoke evidence does not prove Sandbox and snapshot cleanup`);
   }
-  if (typeof evidence.sandboxName !== 'string' || typeof evidence.noVncUrl !== 'string') {
-    throw new Error(`${role} smoke evidence is missing Sandbox identity fields`);
+  if (!nonEmptyString(evidence.sandboxName) || !validHttpsUrl(evidence.noVncUrl)) {
+    throw new Error(`${role} smoke evidence is missing a valid HTTPS Sandbox identity URL`);
   }
-  if (!Array.isArray(evidence.snapshots) || evidence.snapshots.some((snapshot) => typeof snapshot.id !== 'string' || snapshot.status !== 'deleted')) {
+  if (!Array.isArray(evidence.snapshots) || evidence.snapshots.some((snapshot) => !snapshot || !nonEmptyString(snapshot.id) || snapshot.status !== 'deleted')) {
     throw new Error(`${role} smoke evidence contains an undeleted or unidentified snapshot`);
   }
   return evidence;
