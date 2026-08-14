@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { list } from '../src/providers/local/list.js';
+import { up } from '../src/providers/local/up.js';
 import { url } from '../src/providers/local/url.js';
 import type { LauncherContext } from '../src/providers/local/context.js';
 import type { ShellRunner } from '../src/lib/shell.js';
@@ -50,5 +54,47 @@ describe('local command output', () => {
 
     expect(await url(ctx, 'feature', false)).toBe(0);
     expect(output).toBe('http://box.orb.local:6080/vnc.html\n');
+  });
+
+  it('passes the caller stderr stream to devcontainer up', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'devbox-up-'));
+    const worktrees = await mkdtemp(join(tmpdir(), 'devbox-worktrees-'));
+    const worktree = join(worktrees, 'repo-feature');
+    const envFile = join(root, '.env');
+    await mkdir(join(worktree, '.devcontainer'), { recursive: true });
+    await writeFile(join(worktree, '.devcontainer', 'devcontainer.json'), '{}\n');
+    await writeFile(envFile, '');
+
+    let devcontainerStarted = false;
+    let devcontainerOptions: Parameters<ShellRunner['execQuiet']>[2];
+    const shell = runner({
+      exec: vi.fn(async (command: string) => command === 'docker' ? '/box' : ''),
+      execQuiet: vi.fn(async (command: string, args: string[], options) => {
+        if (command === 'which') return { stdout: '/usr/bin/tool\n', code: 0 };
+        if (command === 'devcontainer') {
+          devcontainerStarted = true;
+          devcontainerOptions = options;
+          return { stdout: 'build output\n', code: 0 };
+        }
+        if (command === 'docker' && args[0] === 'ps') {
+          return { stdout: devcontainerStarted && args[1] === '-q' ? 'cid\n' : '', code: 0 };
+        }
+        return { stdout: '', code: 0 };
+      }),
+      spawnInherit: vi.fn().mockResolvedValue(0),
+    });
+    const ctx = context(shell);
+    ctx.repoRoot = root;
+    ctx.repoName = 'repo';
+    ctx.env = { DEVBOX_WORKTREES_DIR: worktrees, DEVBOX_ENV: envFile };
+
+    try {
+      expect(await up(ctx, 'feature')).toBe(0);
+      expect(devcontainerOptions?.stderr).toBe(ctx.stderr);
+      expect(devcontainerOptions?.streamStdoutTo?.stream).toBe(ctx.stderr);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(worktrees, { recursive: true, force: true });
+    }
   });
 });

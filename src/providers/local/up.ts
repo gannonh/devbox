@@ -119,6 +119,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   const devcontainerEnv = { ...env, DEVBOX_ENV: devboxEnv } as Record<string, string>;
   const result = await runner.execQuiet('devcontainer', devcontainerArgs, {
     env: devcontainerEnv,
+    stderr,
     streamStdoutTo: { stream: stderr, prefix: '[devcontainer] ' },
   });
   // devcontainer up streams output; we don't parse it for the cid.
