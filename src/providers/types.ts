@@ -36,6 +36,8 @@ export interface SupportedDisplayCredentials {
 
 export interface UnsupportedDisplayCredentials {
   supported: false;
+  username?: undefined;
+  password?: undefined;
   message: string;
 }
 

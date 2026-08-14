@@ -377,6 +377,7 @@ export function parseCliArgs(args: string[]): ParsedCommand {
       const next = args[parsed.next];
       if (next === '--list' || next === '-l') return parseList(args.slice(parsed.next + 1), parsed.provider);
       if (next === '--help' || next === '-h') return { kind: 'help', scope: 'global' };
+      if (next === '--provider') return usageError('conflicting --provider flags');
       if (next === 'init') return usageError('--provider cannot be used with init');
       if (!next) return usageError('missing branch after --provider');
       if (next.startsWith('-')) return usageError(`branch is required before ${next}`);
@@ -393,6 +394,9 @@ export function parseCliArgs(args: string[]): ParsedCommand {
 
   return parseBranch(first, rest);
 }
+
+/** Alias retained as the parser's public, descriptive entry point. */
+export const parseArgs = parseCliArgs;
 
 export interface DispatchIO {
   stdout: Writable;

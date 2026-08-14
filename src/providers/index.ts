@@ -1,6 +1,7 @@
 export {
   createProviderRegistry,
   defaultProviderRegistry,
+  getProvider,
   resolveProvider,
 } from './registry.js';
 export { createLocalProvider } from './local/provider.js';

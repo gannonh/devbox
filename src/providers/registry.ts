@@ -32,3 +32,5 @@ export function resolveProvider(
 
   return registry[selected as ProviderName];
 }
+
+export const getProvider = resolveProvider;
