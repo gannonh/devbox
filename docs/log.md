@@ -21,3 +21,8 @@
 ## 2026-08-14 (2)
 * **Vercel provider roadmap**: Planned and approved GitHub epic [#2](https://github.com/gannonh/devbox/issues/2) with five dependency-linked phases for provider foundations, a public digest-pinned VCR image, persistent remote workspaces, full noVNC/Chromium security parity, and acceptance convergence. Three adversarial review passes tightened cross-project image proof, scope/auth persistence, terminal signals, cleanup semantics, secret bounds, public-port behavior, and the Node.js runtime floor.
 * **OKF navigation**: Linked the approved epic from the bundle and specs indexes; the GitHub issues remain the source of truth for the new specification.
+
+## 2026-08-14 (3)
+* **Provider foundation**: Added the typed lifecycle boundary and registry for Issue [#3](https://github.com/gannonh/devbox/issues/3), moved Docker/devcontainer lifecycle code under `src/providers/local/`, and preserved local as the default provider.
+* **CLI grammar**: Added `--provider local|vercel`, provider-filtered `--list`, `--password`, stable argument errors, and explicit unsupported results for local display credentials without adding Vercel SDK behavior.
+* **Architecture record**: Accepted [ADR 0001](./adrs/0001-provider-boundary.md) for the provider registry and local-provider isolation.
