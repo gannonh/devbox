@@ -24,8 +24,9 @@ reviewed PR that replaces the bootstrap metadata.
    the Vercel dashboard). Mark it public once, as an explicit operator action:
    `vercel vcr config devbox --project <project> --public true`.
 3. Verify with `vercel vcr inspect devbox --project <project> --format json`.
-   The workflow only verifies that visibility is public; it never changes
-   visibility silently.
+   The workflow accepts boolean/string `true` and `public` visibility values,
+   then verifies the returned repository, publisher project, team IDs, and
+   slugs; it never changes visibility silently.
 4. Store publisher credentials in GitHub Actions secrets:
    `VERCEL_PUBLISHER_TOKEN`, `VERCEL_PUBLISHER_TEAM_ID`,
    `VERCEL_PUBLISHER_PROJECT_ID`, `VERCEL_PUBLISHER_TEAM_SLUG`, and
@@ -38,6 +39,12 @@ reviewed PR that replaces the bootstrap metadata.
    `VERCEL_CONSUMER_PROJECT_SLUG` secrets. The consumer token must not be the
    publisher token. The consumer project needs Sandbox enabled but does not
    need registry write access.
+6. Rotate consumer credentials independently: create a replacement token scoped
+   only to the consumer project/team, update all five `VERCEL_CONSUMER_*`
+   secrets together if the project or team changes, then revoke the old token.
+   Rerun the workflow and require its consumer project/team identity check and
+   exact-digest smoke evidence to pass before considering the rotation valid;
+   never compare or paste token values into logs.
 
 No token, password, source repository, or `.env` file belongs in the image
 context, Dockerfile, checked-in pin, or workflow output.
@@ -52,7 +59,9 @@ context, Dockerfile, checked-in pin, or workflow output.
 - `start-devbox.sh` starts every process explicitly and requires the runtime
   `DEVBOX_NOVNC_PASSWORD`; it is not an image `ENTRYPOINT` or `CMD`.
 - `status-devbox.sh` checks the non-root identity, passwordless sudo, all four
-  agents, Node.js/Bun/Python/Chromium, and display/proxy binaries.
+  agents, Node.js/Bun/Python/Chromium, and display/proxy binaries; runtime mode
+  exits nonzero unless Xvfb, fluxbox, x11vnc, websockify, and the auth proxy
+  are all running.
 - `check-local-image.sh` inspects `Config.User`, `Config.Entrypoint`, and
   `Config.Cmd`, then runs the status check with an explicit command.
 
@@ -93,27 +102,34 @@ The workflow:
 1. Logs Buildx into VCR through `--password-stdin`, builds the immutable
    `sha-<commit>` tag for `linux/amd64` with zstd, and resolves its manifest
    digest.
-2. Verifies the publisher repository is public without changing visibility.
+2. Verifies the returned publisher repository/project/team identity and public
+   visibility without changing it, then verifies the independent consumer
+   project/team identity with the consumer token.
 3. Polls VCR with a bounded deadline. `Preparing` and `image_not_ready` are
    transient observations; `Unoptimized`, authentication failures, and a
    timeout fail with an actionable message and preserved evidence.
-4. Creates a real publisher Sandbox from the exact fully-qualified digest.
-   The smoke starts `/usr/local/bin/devbox-start` explicitly, checks identity,
-   sudo, all agents, Chromium, display processes, authenticated noVNC HTTP and
-   WebSocket access, and a terminal command.
-5. Stops and deletes the Sandbox, records terminal session states, and checks
-   snapshots for absent/deleted status with no non-deleted residual.
+4. Creates a real publisher Sandbox from the exact fully-qualified VCR digest.
+   The smoke boundary rejects tags, bare names, and other registries before an
+   API call. It starts `/usr/local/bin/devbox-start` explicitly, checks
+   identity, sudo, all agents, Chromium, Xvfb, fluxbox, x11vnc, websockify, and
+   the auth proxy, then probes authenticated noVNC HTTP/WebSocket access and a
+   terminal command.
+5. Stops or aborts the Sandbox, enumerates every VM session, requires terminal
+   `stopped`/`aborted` states, verifies deletion, removes residual snapshots,
+   and requires final snapshot cleanup before the gate can pass.
 6. Repeats creation and cleanup with the independent consumer credentials.
-   The consumer uses the same public digest and fails if its team/project pair
-   is identical to the publisher pair.
-7. After both gates pass, opens a promotion PR updating the sole image pin with
-   the candidate digest, base digest, source commit, and separate publisher
-   and consumer smoke URLs. The PR is reviewed and merged by an operator; the
-   candidate workflow cannot auto-merge or release it.
+   The consumer uses the same public digest and fails if its token is empty,
+   reused, or its team/project scope matches the publisher pair.
+7. After both gates pass, the promotion helper consumes the redacted reports
+   and rejects mismatched digests/scopes, failed checks, non-terminal sessions,
+   unsuccessful deletion, or residual snapshots before updating the sole image
+   pin. The PR is reviewed and merged by an operator; the candidate workflow
+   cannot auto-merge or release it.
 
 Artifacts are written under the workflow evidence directory and uploaded only
 after `scripts/vercel/redact-artifacts.mjs` traverses them. Reports retain
-readiness states, stage timings, selected digests, session states, snapshot
+readiness states, structured build/manifest/readiness/startup/HTTP/WebSocket/
+terminal/stop/delete timings, selected digests, session states, snapshot
 statuses, and cleanup evidence without credential values.
 
 ## Pin validation and release
@@ -129,10 +145,11 @@ npm run validate:release
 ```
 
 Release validation rejects floating tags, bare project-relative references,
-malformed digests, missing smoke evidence, a mismatched tested reference, and
-a consumer scope that was not independently proven. A package release must
-therefore use the reviewed pin; a failed or publisher-only candidate cannot
-update it.
+malformed digests, malformed team/project slugs, publisher metadata that does
+not match the parsed image reference, missing smoke evidence, a mismatched
+tested reference, and a consumer scope that was not independently proven. A
+package release must therefore use the reviewed pin; a failed or
+publisher-only candidate cannot update it.
 
 ## Rollback
 

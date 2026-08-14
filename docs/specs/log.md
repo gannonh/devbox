@@ -8,3 +8,6 @@
 
 ## 2026-08-14 (2)
 * **Vercel image supply chain**: Implemented the issue #4 image assets, readiness/smoke/promotion workflow, release pin validation, and operator runbook; live credential-gated execution remains a Verify-time requirement.
+
+## 2026-08-14 (3)
+* **Vercel image supply-chain review fixes**: Hardened process/readiness/credential/identity/session/snapshot gates, made promotion evidence-driven, added structured timing artifacts, and documented consumer credential rotation.

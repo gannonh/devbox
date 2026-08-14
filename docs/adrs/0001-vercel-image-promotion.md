@@ -16,23 +16,28 @@ manifest digest as a required build argument, builds only `linux/amd64` with
 Buildx zstd output, and defines neither `ENTRYPOINT` nor `CMD`; Sandbox startup
 is explicit through `/usr/local/bin/devbox-start`.
 
-A candidate is immutable (`sha-<source-commit>`), waits for VCR readiness, and
-must pass two real Sandbox gates: publisher-project filesystem/runtime checks
-and independent consumer-project public-pull checks. The pin in
-`src/providers/vercel/image.ts` is changed only by a reviewed promotion PR
-that records the candidate digest, base digest, source commit, and both smoke
-URLs. A scheduled Universal-drift check may open that PR but cannot merge or
-release it.
+A candidate is immutable (`sha-<source-commit>`), waits for VCR readiness under
+an enforced child-process deadline, and must pass two real Sandbox gates:
+publisher-project filesystem/runtime checks and independent consumer-project
+public-pull checks. Both credential sets are complete, scoped, and token-distinct;
+returned repository/project/team identity is verified before smoke. Every
+required display/proxy process must be running, every VM session must finish
+`stopped`/`aborted`, and Sandbox/snapshot deletion must be verified. The pin in
+`src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
+consumes redacted publisher/consumer evidence for the exact digest, scopes,
+checks, timings, and cleanup. A scheduled Universal-drift check may open that
+PR but cannot merge or release it.
 
 ## Rationale
 
 VCR prepares custom images asynchronously and Sandbox does not execute Docker
 entrypoint defaults. Digest identity and explicit startup therefore need to be
 validated in the same real Sandbox used for promotion. A separate consumer
-credential set proves that public visibility works across project boundaries,
-not merely through the publisher's private registry permissions. Centralized
-artifact redaction keeps readiness, session, snapshot, timing, and cleanup
-evidence useful without placing credentials in logs or image layers.
+token and project/team identity proves that public visibility works across
+project boundaries, not merely through the publisher's private registry
+permissions. Centralized artifact redaction keeps readiness, session, snapshot,
+stage-timing, and cleanup evidence useful without placing credentials in logs or
+image layers.
 
 ## Consequences
 

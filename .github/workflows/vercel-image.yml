@@ -65,7 +65,43 @@ jobs:
           test -n "${VERCEL_PUBLISHER_PROJECT_ID}" || { echo 'publisher project ID secret is missing' >&2; exit 1; }
           test -n "${VERCEL_PUBLISHER_TEAM_SLUG}" || { echo 'publisher team slug secret is missing' >&2; exit 1; }
           test -n "${VERCEL_PUBLISHER_PROJECT_SLUG}" || { echo 'publisher project slug secret is missing' >&2; exit 1; }
+          slug_re='^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'
+          [[ "${VERCEL_PUBLISHER_TEAM_SLUG}" =~ ${slug_re} ]] || { echo 'publisher team slug is malformed' >&2; exit 1; }
+          [[ "${VERCEL_PUBLISHER_PROJECT_SLUG}" =~ ${slug_re} ]] || { echo 'publisher project slug is malformed' >&2; exit 1; }
           mkdir -p "${ARTIFACT_DIR}"
+
+      - name: Validate independent consumer configuration
+        env:
+          PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
+          CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
+        run: |
+          set -euo pipefail
+          for name in CONSUMER_TOKEN CONSUMER_TEAM_ID CONSUMER_PROJECT_ID CONSUMER_TEAM_SLUG CONSUMER_PROJECT_SLUG; do
+            test -n "${!name}" || { echo "${name} secret is missing" >&2; exit 1; }
+          done
+          if [[ "${PUBLISHER_TOKEN}" == "${CONSUMER_TOKEN}" ]]; then
+            echo 'consumer token must be different from the publisher token' >&2
+            exit 1
+          fi
+          slug_re='^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'
+          [[ "${CONSUMER_TEAM_SLUG}" =~ ${slug_re} ]] || { echo 'consumer team slug is malformed' >&2; exit 1; }
+          [[ "${CONSUMER_PROJECT_SLUG}" =~ ${slug_re} ]] || { echo 'consumer project slug is malformed' >&2; exit 1; }
+          if [[ "${PUBLISHER_TEAM_ID}" == "${CONSUMER_TEAM_ID}" && "${PUBLISHER_PROJECT_ID}" == "${CONSUMER_PROJECT_ID}" ]]; then
+            echo 'consumer credentials must target a different Vercel team or project' >&2
+            exit 1
+          fi
+          if [[ "${PUBLISHER_TEAM_SLUG}" == "${CONSUMER_TEAM_SLUG}" && "${PUBLISHER_PROJECT_SLUG}" == "${CONSUMER_PROJECT_SLUG}" ]]; then
+            echo 'consumer slugs must target a different Vercel team or project' >&2
+            exit 1
+          fi
 
       - name: Resolve pinned Universal base digest
         id: base
@@ -154,11 +190,24 @@ jobs:
           BASE_DIGEST: ${{ steps.selected_base.outputs.digest }}
         run: |
           set -euo pipefail
+          build_started_ms="$(date +%s%3N)"
+          set +e
           docker buildx build \
             --platform linux/amd64 \
             --build-arg "UNIVERSAL_BASE_DIGEST=${BASE_DIGEST#sha256:}" \
             --output "type=image,name=${CANDIDATE_REFERENCE},push=true,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true" \
             images/vercel 2>&1 | node scripts/vercel/redact-artifacts.mjs | tee "${ARTIFACT_DIR}/build.log"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          build_finished_ms="$(date +%s%3N)"
+          build_duration_ms=$((build_finished_ms - build_started_ms))
+          printf '{"stage":"build","startedEpochMs":%s,"finishedEpochMs":%s,"durationMs":%s}\n' \
+            "${build_started_ms}" "${build_finished_ms}" "${build_duration_ms}" > "${ARTIFACT_DIR}/build-timing.json"
+          status=0
+          for code in "${pipeline_status[@]}"; do
+            if [[ "${code}" -ne 0 ]]; then status="${code}"; fi
+          done
+          if [[ "${status}" -ne 0 ]]; then exit "${status}"; fi
 
       - name: Resolve candidate manifest digest
         id: manifest
@@ -167,7 +216,16 @@ jobs:
           CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
         run: |
           set -euo pipefail
+          manifest_started_ms="$(date +%s%3N)"
+          set +e
           docker buildx imagetools inspect "${CANDIDATE_REFERENCE}" > "${ARTIFACT_DIR}/manifest-inspect.log" 2>&1
+          inspect_status=$?
+          set -e
+          manifest_finished_ms="$(date +%s%3N)"
+          manifest_duration_ms=$((manifest_finished_ms - manifest_started_ms))
+          printf '{"stage":"manifest","startedEpochMs":%s,"finishedEpochMs":%s,"durationMs":%s}\n' \
+            "${manifest_started_ms}" "${manifest_finished_ms}" "${manifest_duration_ms}" > "${ARTIFACT_DIR}/manifest-timing.json"
+          if [[ "${inspect_status}" -ne 0 ]]; then exit "${inspect_status}"; fi
           digest="$(awk '/Digest:/ {print $2; exit}' "${ARTIFACT_DIR}/manifest-inspect.log")"
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'candidate manifest digest could not be resolved' >&2; exit 1; }
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
@@ -177,13 +235,45 @@ jobs:
         if: ${{ steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
           VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
         run: |
           set -euo pipefail
           VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel vcr inspect "${VERCEL_IMAGE_REPOSITORY}" \
             --project "${VERCEL_PUBLISHER_PROJECT_ID}" --format json > "${ARTIFACT_DIR}/repository.json"
-          node scripts/vercel/assert-public-repository.mjs < "${ARTIFACT_DIR}/repository.json"
+          node scripts/vercel/assert-public-repository.mjs \
+            --expected-team-id "${VERCEL_PUBLISHER_TEAM_ID}" \
+            --expected-project-id "${VERCEL_PUBLISHER_PROJECT_ID}" \
+            --expected-team-slug "${VERCEL_PUBLISHER_TEAM_SLUG}" \
+            --expected-project-slug "${VERCEL_PUBLISHER_PROJECT_SLUG}" \
+            --expected-repository "${VERCEL_IMAGE_REPOSITORY}" < "${ARTIFACT_DIR}/repository.json"
+
+      - name: Verify consumer project identity
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
+          VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          VERCEL_CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
+        run: |
+          set -euo pipefail
+          VERCEL_TOKEN="${VERCEL_CONSUMER_TOKEN}" vercel project list \
+            --scope "${VERCEL_CONSUMER_TEAM_SLUG}" \
+            --filter "${VERCEL_CONSUMER_PROJECT_SLUG}" \
+            --format json > "${ARTIFACT_DIR}/consumer-project.json"
+          VERCEL_TOKEN="${VERCEL_CONSUMER_TOKEN}" vercel teams list \
+            --format json > "${ARTIFACT_DIR}/consumer-teams.json"
+          node -e "const fs=require('fs'); process.stdout.write(JSON.stringify({projects:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-project.json')),teams:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-teams.json'))}))" \
+            > "${ARTIFACT_DIR}/consumer-identity.json"
+          node scripts/vercel/assert-project-identity.mjs \
+            --expected-team-id "${VERCEL_CONSUMER_TEAM_ID}" \
+            --expected-team-slug "${VERCEL_CONSUMER_TEAM_SLUG}" \
+            --expected-project-id "${VERCEL_CONSUMER_PROJECT_ID}" \
+            --expected-project-slug "${VERCEL_CONSUMER_PROJECT_SLUG}" < "${ARTIFACT_DIR}/consumer-identity.json"
 
       # wait-vcr-ready handles Preparing and image_not_ready as bounded
       # transient states, and fails immediately/actionably on Unoptimized or
@@ -209,6 +299,8 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
           IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.manifest.outputs.digest }}
           EXPECTED_IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          EXPECTED_IMAGE_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           SMOKE_ROLE: publisher
           SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#publisher-smoke
           SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/publisher-smoke.json
@@ -220,21 +312,6 @@ jobs:
 
       # This is the independent cross-project public-consumption gate; it is
       # intentionally separate from the publisher Sandbox credentials.
-      - name: Verify independent consumer scope
-        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
-        env:
-          PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
-          PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
-          CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
-          CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
-        run: |
-          set -euo pipefail
-          test -n "${CONSUMER_TEAM_ID}" && test -n "${CONSUMER_PROJECT_ID}" || { echo 'consumer scope secrets are missing' >&2; exit 1; }
-          if [[ "${PUBLISHER_TEAM_ID}" == "${CONSUMER_TEAM_ID}" && "${PUBLISHER_PROJECT_ID}" == "${CONSUMER_PROJECT_ID}" ]]; then
-            echo 'consumer credentials must target a different Vercel team or project' >&2
-            exit 1
-          fi
-
       - name: Independent consumer Sandbox smoke gate
         if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
@@ -243,6 +320,8 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.manifest.outputs.digest }}
           EXPECTED_IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          EXPECTED_IMAGE_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           SMOKE_ROLE: consumer
           SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#consumer-smoke
           SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/consumer-smoke.json
@@ -260,6 +339,10 @@ jobs:
           PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
           CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
+          PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
           BASE_DIGEST: ${{ steps.selected_base.outputs.digest }}
         run: |
@@ -273,7 +356,11 @@ jobs:
             --publisher-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#publisher-smoke" \
             --consumer-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#consumer-smoke" \
             --publisher-team "${PUBLISHER_TEAM_SLUG}" --publisher-project "${PUBLISHER_PROJECT_SLUG}" \
-            --consumer-team "${CONSUMER_TEAM_SLUG}" --consumer-project "${CONSUMER_PROJECT_SLUG}"
+            --consumer-team "${CONSUMER_TEAM_SLUG}" --consumer-project "${CONSUMER_PROJECT_SLUG}" \
+            --publisher-team-id "${PUBLISHER_TEAM_ID}" --publisher-project-id "${PUBLISHER_PROJECT_ID}" \
+            --consumer-team-id "${CONSUMER_TEAM_ID}" --consumer-project-id "${CONSUMER_PROJECT_ID}" \
+            --publisher-evidence "${ARTIFACT_DIR}/publisher-smoke.json" \
+            --consumer-evidence "${ARTIFACT_DIR}/consumer-smoke.json"
           npm run validate:release
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
