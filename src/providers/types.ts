@@ -67,10 +67,13 @@ export class ProviderUsageError extends Error {
 
 export class ProviderOperationError extends Error {
   readonly exitCode: number;
+  /** True when a provider already rendered the error in its own format. */
+  readonly reported: boolean;
 
-  constructor(message: string, exitCode = 1) {
+  constructor(message: string, exitCode = 1, reported = false) {
     super(message);
     this.name = 'ProviderOperationError';
     this.exitCode = exitCode;
+    this.reported = reported;
   }
 }

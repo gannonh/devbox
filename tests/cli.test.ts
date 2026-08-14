@@ -82,7 +82,7 @@ describe('cli dispatch', () => {
     const output = stdout + stderr;
     expect(output).toContain('my-feature');
     expect(output).toContain('--provider local|vercel');
-    expect(output).toContain('not available in this release');
+    expect(output).toContain('unavailable in this release');
   });
 
   it('--list --help prints list usage and exits 0', async () => {

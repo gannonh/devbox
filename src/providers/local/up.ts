@@ -14,7 +14,7 @@ import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch, ensur
 import { resolveDevboxEnv, resolveGhToken } from './env.js';
 import { hyperlink } from '../../lib/display.js';
 import { info, warn } from '../../lib/log.js';
-import { ProviderOperationError } from '../types.js';
+import { localFailure } from './errors.js';
 import { commandExistsWithRunner, escapeShellSingleQuote } from '../../lib/shell.js';
 import { existsSync } from 'node:fs';
 
@@ -26,9 +26,9 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
 
   // Prerequisite checks (bash: require_cmd).
   const dockerOk = await commandExistsWithRunner(runner, 'docker');
-  if (!dockerOk) throw new ProviderOperationError('required command not found: docker (Docker / OrbStack)');
+  if (!dockerOk) localFailure('required command not found: docker (Docker / OrbStack)');
   const devcontainerOk = await commandExistsWithRunner(runner, 'devcontainer');
-  if (!devcontainerOk) throw new ProviderOperationError('required command not found: devcontainer (npm i -g @devcontainers/cli)');
+  if (!devcontainerOk) localFailure('required command not found: devcontainer (npm i -g @devcontainers/cli)');
 
   const worktreesDir = resolveWorktreesDir(repoRoot, env);
   const path = branchToPath(worktreesDir, repoName, branch);
@@ -76,7 +76,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   // git worktree add only checks out committed files. After `init`, .devbox/
   // and .devcontainer/ are still untracked, so copy them in if missing.
   const configStatus = await ensureWorktreeConfig(repoRoot, path);
-  if (configStatus.status === 'missing') throw new ProviderOperationError(configStatus.message);
+  if (configStatus.status === 'missing') localFailure(configStatus.message);
   if (configStatus.status === 'copied') {
     warn(
       'copied uncommitted .devbox/ and .devcontainer/ into the worktree; commit them so new worktrees pick them up automatically',
@@ -123,12 +123,12 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   });
   // devcontainer up streams output; we don't parse it for the cid.
   if (result.code !== 0) {
-    throw new ProviderOperationError('devcontainer up failed; check output above');
+    localFailure('devcontainer up failed; check output above');
   }
 
   // Look up the container by label (not CLI text parsing).
   cid = await containerFor(runner, branch);
-  if (!cid) throw new ProviderOperationError("container did not come up; check 'devcontainer up' output above");
+  if (!cid) localFailure("container did not come up; check 'devcontainer up' output above");
 
   // Persist GH_TOKEN so every shell is authed.
   if (ghToken) {

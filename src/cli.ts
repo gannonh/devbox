@@ -68,16 +68,24 @@ DESCRIPTION
 const UP_HELP = (branch: string) => `devbox ${branch} — create/boot a box for a branch
 
 USAGE
-  devbox [--provider local|vercel] <branch>
+  devbox [--provider local|vercel] <branch> [ACTION]
+
+ACTIONS
+  --attach|-a    re-enter a running box
+  --stop         stop the box (keeps local resources)
+  --rm           remove the box and local resources
+  --url [--open|-o]  print or open the noVNC URL
+  --password     retrieve labeled display credentials
 
 FLAGS
   --provider local|vercel   select a provider (local is the default)
 
 EXAMPLES
-  devbox ${branch}                  # boot or re-enter a local box
-  devbox ${branch} --attach         # re-enter the running box
-  devbox ${branch} --stop           # stop it
-  devbox --provider vercel ${branch} # reserved; not available in this release`;
+  devbox ${branch}                       # boot or re-enter a local box
+  devbox ${branch} --attach              # re-enter the running box
+  devbox ${branch} --stop                # stop it
+  devbox ${branch} --password            # retrieve credentials if supported
+  devbox --provider vercel ${branch}     # reserved; unavailable in this release`;
 
 const LIST_HELP = `devbox --list — list provider devboxes + noVNC URLs
 
@@ -86,6 +94,10 @@ USAGE
 
 FLAGS
   --provider local|vercel   filter the list by provider (local is the default)
+
+EXAMPLES
+  devbox --list                       # list local boxes
+  devbox --provider local --list      # explicit local provider
 
 DESCRIPTION
   Lists boxes for the selected provider. The Vercel provider is reserved for
@@ -98,7 +110,11 @@ USAGE
 
 DESCRIPTION
   Re-enters a running box for the branch. If the box is stopped, starts it
-  and re-brings the display stack up, then drops into a shell in /workspace.`;
+  and re-brings the display stack up, then drops into a shell in /workspace.
+
+EXAMPLES
+  devbox ${branch} --attach
+  devbox --provider local ${branch} --attach`;
 
 const STOP_HELP = (branch: string) => `devbox ${branch} --stop — stop the box (keeps worktree + container)
 
@@ -107,7 +123,11 @@ USAGE
 
 DESCRIPTION
   Stops the selected provider's box while preserving its local worktree when
-  supported. Re-enter with: devbox ${branch} --attach`;
+  supported. Re-enter with: devbox ${branch} --attach
+
+EXAMPLES
+  devbox ${branch} --stop
+  devbox --provider local ${branch} --stop`;
 
 const RM_HELP = (branch: string) => `devbox ${branch} --rm — remove container, worktree, and branch
 
@@ -116,7 +136,11 @@ USAGE
 
 DESCRIPTION
   Removes the selected provider's box and associated local resources when
-  supported. Uncommitted local work may be lost.`;
+  supported. Uncommitted local work may be lost.
+
+EXAMPLES
+  devbox ${branch} --rm
+  devbox --provider local ${branch} --rm`;
 
 const URL_HELP = (branch: string) => `devbox ${branch} --url — print or open the noVNC URL
 
@@ -124,7 +148,11 @@ USAGE
   devbox [--provider local|vercel] <branch> --url [--open|-o]
 
 FLAGS
-  --open|-o    open the noVNC URL in a browser instead of printing it`;
+  --open|-o    open the noVNC URL in a browser instead of printing it
+
+EXAMPLES
+  devbox ${branch} --url
+  devbox --provider local ${branch} --url --open`;
 
 const PASSWORD_HELP = (branch: string) => `devbox ${branch} --password — retrieve display credentials
 
@@ -133,7 +161,11 @@ USAGE
 
 DESCRIPTION
   Retrieves explicitly supported display credentials and prints labeled
-  username/password fields. Providers may report this action as unsupported.`;
+  username/password fields. Providers may report this action as unsupported.
+
+EXAMPLES
+  devbox ${branch} --password
+  devbox --provider local ${branch} --password`;
 
 const BRANCH_FLAGS = new Set([
   '--attach',
@@ -345,6 +377,7 @@ export function parseCliArgs(args: string[]): ParsedCommand {
       const next = args[parsed.next];
       if (next === '--list' || next === '-l') return parseList(args.slice(parsed.next + 1), parsed.provider);
       if (next === '--help' || next === '-h') return { kind: 'help', scope: 'global' };
+      if (next === 'init') return usageError('--provider cannot be used with init');
       if (!next) return usageError('missing branch after --provider');
       if (next.startsWith('-')) return usageError(`branch is required before ${next}`);
       return parseBranch(next, args.slice(parsed.next + 1), parsed.provider);
@@ -384,6 +417,11 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+function errorWasReported(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'reported' in error
+    && (error as { reported?: unknown }).reported === true;
+}
+
 async function runProviderOperation(
   operation: () => Promise<ProviderActionResult>,
   io: DispatchIO,
@@ -394,7 +432,7 @@ async function runProviderOperation(
     const exitCode = typeof error === 'object' && error !== null && 'exitCode' in error
       ? Number((error as { exitCode?: unknown }).exitCode) || 1
       : 1;
-    io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
+    if (!errorWasReported(error)) io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
     return exitCode;
   }
 }
@@ -416,7 +454,7 @@ async function displayCredentials(
     const exitCode = typeof error === 'object' && error !== null && 'exitCode' in error
       ? Number((error as { exitCode?: unknown }).exitCode) || 1
       : 1;
-    io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
+    if (!errorWasReported(error)) io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
     return exitCode;
   }
 }

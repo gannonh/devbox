@@ -8,13 +8,13 @@ import type { LauncherContext } from './context.js';
 import { containerFor, novncUrlFor } from './docker.js';
 import { hyperlink } from '../../lib/display.js';
 import { info } from '../../lib/log.js';
-import { ProviderOperationError } from '../types.js';
+import { localFailure } from './errors.js';
 
 export async function url(ctx: LauncherContext, branch: string, open: boolean): Promise<number> {
   const { runner, stdout, stderr } = ctx;
   const cid = await containerFor(runner, branch);
   if (!cid) {
-    throw new ProviderOperationError(`no running box for ${branch} (start it with: devbox ${branch})`);
+    localFailure(`no running box for ${branch} (start it with: devbox ${branch})`);
   }
 
   const url = await novncUrlFor(runner, cid);
@@ -23,7 +23,7 @@ export async function url(ctx: LauncherContext, branch: string, open: boolean): 
     info(`opening ${url}`);
     const result = await runner.execQuiet('open', [url], {});
     if (result.code !== 0) {
-      throw new ProviderOperationError(`could not open browser (URL: ${url}) — copy and paste the URL manually`);
+      localFailure(`could not open browser (URL: ${url}) — copy and paste the URL manually`);
     }
     return 0;
   }
