@@ -266,7 +266,7 @@ jobs:
             --filter "${VERCEL_CONSUMER_PROJECT_SLUG}" \
             --format json > "${ARTIFACT_DIR}/consumer-project.json"
           VERCEL_TOKEN="${VERCEL_CONSUMER_TOKEN}" vercel teams list \
-            --format json > "${ARTIFACT_DIR}/consumer-teams.json"
+            --limit 100 --format json > "${ARTIFACT_DIR}/consumer-teams.json"
           node -e "const fs=require('fs'); process.stdout.write(JSON.stringify({projects:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-project.json')),teams:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-teams.json'))}))" \
             > "${ARTIFACT_DIR}/consumer-identity.json"
           node scripts/vercel/assert-project-identity.mjs \
