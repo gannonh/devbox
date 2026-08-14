@@ -13,8 +13,15 @@ const evidencePath = process.env.READINESS_EVIDENCE;
 if (!repository || !tag || !project) {
   throw new Error('VERCEL_IMAGE_REPOSITORY, VERCEL_IMAGE_TAG, and VERCEL_PUBLISHER_PROJECT_ID are required');
 }
+if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+  throw new Error('READINESS_TIMEOUT_MS must be a positive finite number');
+}
+if (!Number.isFinite(pollMs) || pollMs < 0) {
+  throw new Error('READINESS_POLL_MS must be a non-negative finite number');
+}
 
-const startedAt = Date.now();
+const startedAtMs = Date.now();
+const deadlineAtMs = startedAtMs + timeoutMs;
 const observations = [];
 let fixtureIndex = 0;
 let fixtureStates;
@@ -28,14 +35,21 @@ if (process.env.VCR_READINESS_FIXTURE) {
 }
 
 function sleep(ms) {
+  if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function runInspect() {
+function runInspect(deadlineAt) {
   if (fixtureStates) {
     const state = fixtureStates[Math.min(fixtureIndex++, fixtureStates.length - 1)];
-    return Promise.resolve({ code: 0, stdout: JSON.stringify({ status: state }), stderr: '' });
+    return Promise.resolve({ code: 0, stdout: JSON.stringify({ status: state }), stderr: '', timedOut: false });
   }
+
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    return Promise.resolve({ code: null, stdout: '', stderr: '', timedOut: true });
+  }
+
   return new Promise((resolve) => {
     const child = spawn(
       'vercel',
@@ -43,16 +57,33 @@ function runInspect() {
       {
         env: { ...process.env, VERCEL_TELEMETRY_DISABLED: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
       },
     );
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    const deadlineTimer = setTimeout(() => {
+      timedOut = true;
+      // SIGKILL is deliberate: readiness is a hard deadline, so an ignored
+      // SIGTERM or a stuck network request must not keep this job alive. Kill
+      // the process group as well so a shell-spawned network helper cannot
+      // outlive the inspect child.
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    }, Math.max(1, remainingMs));
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      resolve({ ...result, timedOut });
+    };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }));
-    child.on('error', (error) => resolve({ code: 1, stdout, stderr: error.message }));
+    child.on('close', (code) => finish({ code: timedOut ? null : code ?? 1, stdout, stderr }));
+    child.on('error', (error) => finish({ code: 1, stdout, stderr: error.message }));
   });
 }
 
@@ -89,22 +120,43 @@ function classify(result) {
 async function saveReport(finalState) {
   if (!evidencePath) return;
   await mkdir(dirname(evidencePath), { recursive: true });
+  const finishedAtMs = Date.now();
   await writeFile(evidencePath, `${JSON.stringify({
     repository,
     tag,
-    startedAt: new Date(startedAt).toISOString(),
-    finishedAt: new Date().toISOString(),
+    startedAt: new Date(startedAtMs).toISOString(),
+    finishedAt: new Date(finishedAtMs).toISOString(),
     finalState,
+    timings: {
+      readiness: {
+        startedAt: new Date(startedAtMs).toISOString(),
+        finishedAt: new Date(finishedAtMs).toISOString(),
+        durationMs: finishedAtMs - startedAtMs,
+        deadlineMs: timeoutMs,
+        pollMs,
+      },
+    },
     observations,
   }, null, 2)}\n`);
 }
 
-while (Date.now() - startedAt < timeoutMs) {
-  const result = await runInspect();
+while (Date.now() < deadlineAtMs) {
+  const inspectStartedAtMs = Date.now();
+  const result = await runInspect(deadlineAtMs);
   const observation = classify(result);
-  observations.push({ at: new Date().toISOString(), state: observation.state });
-  const normalized = String(observation.state).toLowerCase();
+  const inspectFinishedAtMs = Date.now();
+  observations.push({
+    at: new Date(inspectFinishedAtMs).toISOString(),
+    state: result.timedOut ? 'deadline_exceeded' : observation.state,
+    durationMs: inspectFinishedAtMs - inspectStartedAtMs,
+  });
 
+  if (result.timedOut) {
+    await saveReport('deadline_exceeded');
+    throw new Error(`VCR readiness deadline exceeded after ${timeoutMs}ms; the inspect process was cancelled`);
+  }
+
+  const normalized = String(observation.state).toLowerCase();
   if (normalized === 'ready') {
     await saveReport('Ready');
     console.log('VCR readiness: Ready');
@@ -122,7 +174,10 @@ while (Date.now() - startedAt < timeoutMs) {
     await saveReport('inspect_error');
     throw new Error(observation.detail);
   }
-  await sleep(pollMs);
+
+  const remainingMs = deadlineAtMs - Date.now();
+  if (remainingMs <= 0) break;
+  await sleep(Math.min(pollMs, remainingMs));
 }
 
 const last = observations.at(-1)?.state ?? 'unknown';

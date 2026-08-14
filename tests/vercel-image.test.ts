@@ -51,6 +51,50 @@ describe('Vercel image pin validation', () => {
     expect(result.errors.join(' ')).toContain('uninitialized');
   });
 
+  it('rejects malformed scope metadata and publisher/reference scope mismatches', () => {
+    const malformed = validateVercelImagePin({
+      reference:
+        'vcr.vercel.com/publisher-team/publisher-project/devbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      baseReference:
+        'vcr.vercel.com/vercel/sandbox/universal@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      baseDigest:
+        'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      sourceCommit: '4af448f5daba0f9daf02071250f4f5ad389c80df',
+      publisherSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/100',
+      consumerSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/101',
+      publisher: { team: 'not a slug', project: 'publisher-project' },
+      consumer: { team: 'consumer-team', project: 'consumer-project' },
+      testedReference:
+        'vcr.vercel.com/publisher-team/publisher-project/devbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      publisherSmokeStatus: 'passed',
+      consumerSmokeStatus: 'passed',
+      crossProjectVerified: true,
+    });
+    expect(malformed.ok).toBe(false);
+    expect(malformed.errors.join(' ')).toContain('publisher team must be a Vercel slug');
+
+    const mismatched = validateVercelImagePin({
+      reference:
+        'vcr.vercel.com/publisher-team/publisher-project/devbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      baseReference:
+        'vcr.vercel.com/vercel/sandbox/universal@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      baseDigest:
+        'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      sourceCommit: '4af448f5daba0f9daf02071250f4f5ad389c80df',
+      publisherSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/100',
+      consumerSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/101',
+      publisher: { team: 'different-team', project: 'publisher-project' },
+      consumer: { team: 'consumer-team', project: 'consumer-project' },
+      testedReference:
+        'vcr.vercel.com/publisher-team/publisher-project/devbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      publisherSmokeStatus: 'passed',
+      consumerSmokeStatus: 'passed',
+      crossProjectVerified: true,
+    });
+    expect(mismatched.ok).toBe(false);
+    expect(mismatched.errors.join(' ')).toContain('publisher scope must match image reference');
+  });
+
   it('rejects a floating tag, mismatched smoke reference, and unproven consumer', () => {
     const result = validateVercelImagePin({
       reference: 'devbox:latest',

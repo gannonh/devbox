@@ -44,7 +44,9 @@ async function redactFile(path) {
   const input = await readFile(path, 'utf8');
   try {
     const parsed = JSON.parse(input);
-    await writeFile(path, `${JSON.stringify(redactValue(parsed), null, 2)}\n`);
+    const redacted = redactValue(parsed);
+    if (redacted && typeof redacted === 'object' && !Array.isArray(redacted)) redacted.redacted = true;
+    await writeFile(path, `${JSON.stringify(redacted, null, 2)}\n`);
   } catch {
     await writeFile(path, redactText(input));
   }

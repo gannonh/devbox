@@ -107,6 +107,10 @@ function isHttpsUrl(value: string): boolean {
   }
 }
 
+function isVercelSlug(value: string): boolean {
+  return new RegExp(`^${SLUG}$`).test(value);
+}
+
 function isUninitializedDigest(value: string | undefined): boolean {
   return value === 'sha256:' + '0'.repeat(64);
 }
@@ -164,9 +168,20 @@ export function validateVercelImagePin(pin: VercelImagePin): VercelImagePinValid
 
   if (!pin.publisher.team || !pin.publisher.project) {
     errors.push('publisher scope must include team and project');
+  } else {
+    if (!isVercelSlug(pin.publisher.team)) errors.push('publisher team must be a Vercel slug');
+    if (!isVercelSlug(pin.publisher.project)) errors.push('publisher project must be a Vercel slug');
   }
   if (!pin.consumer.team || !pin.consumer.project) {
     errors.push('consumer scope must include team and project');
+  } else {
+    if (!isVercelSlug(pin.consumer.team)) errors.push('consumer team must be a Vercel slug');
+    if (!isVercelSlug(pin.consumer.project)) errors.push('consumer project must be a Vercel slug');
+  }
+  if (reference) {
+    if (pin.publisher.team !== reference.team || pin.publisher.project !== reference.project) {
+      errors.push('publisher scope must match image reference team and project');
+    }
   }
   if (
     pin.publisher.team === pin.consumer.team &&

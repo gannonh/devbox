@@ -40,12 +40,25 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('VERCEL_CONSUMER_TOKEN');
     expect(workflow).toContain('VERCEL_PUBLISHER_PROJECT_ID');
     expect(workflow).toContain('VERCEL_CONSUMER_PROJECT_ID');
+    expect(workflow).toContain('VERCEL_CONSUMER_TOKEN');
+    expect(workflow).toContain('VERCEL_CONSUMER_TEAM_SLUG');
+    expect(workflow).toContain('VERCEL_CONSUMER_PROJECT_SLUG');
+    expect(workflow).toContain('consumer token must be different');
+    expect(workflow).toContain('assert-public-repository.mjs');
+    expect(workflow).toContain('assert-project-identity.mjs');
+    expect(workflow).toContain('vercel teams list');
+    expect(workflow).toContain('--expected-team-id');
+    expect(workflow).toContain('--expected-project-id');
     expect(workflow).toContain('smoke-sandbox.mjs');
     expect(workflow).toContain('SMOKE_ROLE: publisher');
     expect(workflow).toContain('SMOKE_ROLE: consumer');
     expect(workflow).toContain('EXPECTED_IMAGE_DIGEST');
     expect(workflow).toContain('snapshot');
     expect(workflow).toContain('deleted');
+    expect(workflow).toContain('--publisher-evidence');
+    expect(workflow).toContain('--consumer-evidence');
+    expect(workflow).toContain('build-timing.json');
+    expect(workflow).toContain('manifest-timing.json');
   });
 
   it('redacts workflow evidence and promotes only after both smoke gates', async () => {
@@ -53,6 +66,13 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('redact-artifacts.mjs');
     expect(workflow).toContain('promote-image.mjs');
     expect(workflow).toContain('cross-project');
+    expect(workflow).toContain('redacted');
+    const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
+    expect(smoke).toContain('sessionStates');
+    expect(smoke).toContain('finalSessionStatesTerminal');
+    for (const stage of ['startup', 'http', 'websocket', 'terminal', 'stop', 'delete']) {
+      expect(smoke).toContain(`timed('${stage}'`);
+    }
     expect(workflow).toMatch(/if: \$\{\{ success\(\)/);
     expect(workflow).toContain('contents: write');
     expect(workflow).toContain('pull-requests: write');
@@ -63,6 +83,8 @@ describe('Vercel image supply-chain workflow', () => {
       exists('scripts/vercel/resolve-universal-digest.mjs'),
       exists('scripts/vercel/wait-vcr-ready.mjs'),
       exists('scripts/vercel/smoke-sandbox.mjs'),
+      exists('scripts/vercel/smoke-contract.mjs'),
+      exists('scripts/vercel/assert-project-identity.mjs'),
       exists('scripts/vercel/promote-image.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),
     ]);

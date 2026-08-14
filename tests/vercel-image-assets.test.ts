@@ -36,6 +36,12 @@ describe('Vercel image assets', () => {
     expect(startup).toContain('websockify');
     expect(startup).toContain('DEVBOX_NOVNC_PASSWORD');
     expect(status).toContain('sudo -n true');
+    expect(status).toContain('exit "${failed}"');
+    expect(status).toContain('%s=running');
+    expect(status).toContain('%s=stopped');
+    for (const process of ['Xvfb', 'fluxbox', 'x11vnc', 'websockify', 'auth-proxy']) {
+      expect(status).toContain(process);
+    }
     expect(status).toContain('pi');
     expect(status).toContain('claude');
     expect(status).toContain('codex');

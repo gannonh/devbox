@@ -2,16 +2,17 @@
 /**
  * Real Vercel Sandbox smoke gate for one credential scope.
  *
- * The publisher and consumer jobs invoke this script independently.  It never
+ * The publisher and consumer jobs invoke this script independently. It never
  * prints token/password values and always attempts to stop/delete the Sandbox,
- * then checks that matching snapshots are absent or deleted.
+ * verify terminal VM sessions, then clean up matching snapshots.
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import net from 'node:net';
 import tls from 'node:tls';
-import { Sandbox, Snapshot } from '@vercel/sandbox';
+import { APIError, Sandbox, Snapshot } from '@vercel/sandbox';
+import { parseFullyQualifiedVcrReference } from './smoke-contract.mjs';
 
 const role = process.env.SMOKE_ROLE;
 const image = process.env.IMAGE_REF;
@@ -21,36 +22,81 @@ const smokeUrl = process.env.SMOKE_URL ?? '';
 const projectId = process.env.VERCEL_PROJECT_ID;
 const teamId = process.env.VERCEL_TEAM_ID;
 const token = process.env.VERCEL_TOKEN;
-if (!role || !image || !expectedDigest || !projectId || !teamId || !reportPath) {
-  throw new Error('SMOKE_ROLE, IMAGE_REF, EXPECTED_IMAGE_DIGEST, VERCEL_PROJECT_ID, VERCEL_TEAM_ID, and SMOKE_REPORT are required');
+if (!role || !image || !expectedDigest || !projectId || !teamId || !token || !reportPath) {
+  throw new Error('SMOKE_ROLE, IMAGE_REF, EXPECTED_IMAGE_DIGEST, VERCEL_TOKEN, VERCEL_PROJECT_ID, VERCEL_TEAM_ID, and SMOKE_REPORT are required');
 }
+if (!['publisher', 'consumer'].includes(role)) throw new Error('SMOKE_ROLE must be publisher or consumer');
 if (!/^sha256:[a-f0-9]{64}$/.test(expectedDigest)) throw new Error('EXPECTED_IMAGE_DIGEST must be a full sha256 digest');
-const imageMatch = /@(?<digest>sha256:[a-f0-9]{64})$/.exec(image);
-if (!imageMatch || imageMatch.groups.digest !== expectedDigest) {
+const imageInfo = parseFullyQualifiedVcrReference(image);
+if (imageInfo.digest !== expectedDigest) {
   throw new Error('Sandbox smoke must use the exact candidate digest, not a tag or different reference');
+}
+if (process.env.EXPECTED_IMAGE_TEAM_SLUG && imageInfo.team !== process.env.EXPECTED_IMAGE_TEAM_SLUG) {
+  throw new Error('Sandbox smoke image team does not match the expected publisher scope');
+}
+if (process.env.EXPECTED_IMAGE_PROJECT_SLUG && imageInfo.project !== process.env.EXPECTED_IMAGE_PROJECT_SLUG) {
+  throw new Error('Sandbox smoke image project does not match the expected publisher scope');
 }
 
 const credentials = { token, teamId, projectId };
-const startedAt = Date.now();
+const startedAtMs = Date.now();
 const password = randomBytes(24).toString('base64url');
 const username = 'devbox-smoke';
+const terminalStates = new Set(['stopped', 'aborted']);
 const report = {
+  redacted: false,
   role,
-  imageReference: image.replace(/@sha256:.+$/, '@[digest]'),
+  scope: { teamId, projectId },
+  imageReference: image,
   expectedDigest,
   smokeUrl,
-  startedAt: new Date().toISOString(),
+  startedAt: new Date(startedAtMs).toISOString(),
   checks: [],
   timings: {},
   sessionStates: [],
   snapshots: [],
-  cleanup: { stopped: false, deleted: false, residualNonDeletedSnapshots: [] },
+  cleanup: {
+    stopped: false,
+    deleted: false,
+    deletionVerified: false,
+    snapshotsCleaned: false,
+    residualNonDeletedSnapshots: [],
+  },
 };
 let sandbox;
 
 function check(name, ok, detail = '') {
   report.checks.push({ name, ok, detail: String(detail).slice(0, 500) });
   if (!ok) throw new Error(`${name} failed`);
+}
+
+async function timed(stage, operation) {
+  const startedStageAtMs = Date.now();
+  const timing = {
+    startedAt: new Date(startedStageAtMs).toISOString(),
+    startedEpochMs: startedStageAtMs,
+  };
+  report.timings[stage] = timing;
+  try {
+    const result = await operation();
+    const finishedStageAtMs = Date.now();
+    Object.assign(timing, {
+      finishedAt: new Date(finishedStageAtMs).toISOString(),
+      finishedEpochMs: finishedStageAtMs,
+      durationMs: finishedStageAtMs - startedStageAtMs,
+      outcome: 'passed',
+    });
+    return result;
+  } catch (error) {
+    const finishedStageAtMs = Date.now();
+    Object.assign(timing, {
+      finishedAt: new Date(finishedStageAtMs).toISOString(),
+      finishedEpochMs: finishedStageAtMs,
+      durationMs: finishedStageAtMs - startedStageAtMs,
+      outcome: 'failed',
+    });
+    throw error;
+  }
 }
 
 async function command(cmd, args = [], options = {}) {
@@ -85,7 +131,7 @@ function probeWebSocket(url, authorization) {
         'Connection: Upgrade',
         'Upgrade: websocket',
         `Authorization: Basic ${authorization}`,
-        `Sec-WebSocket-Key: ${key}`,
+        'Sec-WebSocket-Key: ' + key,
         'Sec-WebSocket-Version: 13',
         '\r\n',
       ].join('\r\n'));
@@ -102,19 +148,61 @@ async function listSnapshots() {
   return result.toArray();
 }
 
+async function listSessions(phase) {
+  const result = await sandbox.listSessions({ limit: 100, sortOrder: 'asc' });
+  const sessions = await result.toArray();
+  const states = sessions.map((session) => ({
+    id: session.id,
+    status: session.status,
+    observedAt: new Date().toISOString(),
+  }));
+  report.sessionStates.push({ phase, states });
+  return states;
+}
+
+function isNotFound(error) {
+  return error instanceof APIError && [404, 410].includes(error.response.status);
+}
+
+async function verifyDeleted() {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const existing = await Sandbox.get({ ...credentials, name: sandbox.name });
+      if (attempt === 4) return { verified: false, status: existing.status };
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    } catch (error) {
+      if (isNotFound(error)) return { verified: true };
+      throw error;
+    }
+  }
+  return { verified: false };
+}
+
+function finalSessionStatesAreTerminal() {
+  const observations = report.sessionStates.flatMap((observation) => observation.states);
+  if (observations.length === 0) return false;
+  const finalObservation = report.sessionStates.at(-1)?.states ?? [];
+  return finalObservation.length > 0 && finalObservation.every((session) => terminalStates.has(session.status));
+}
+
+function markCleanupFailure(name, detail) {
+  report.cleanup[name] = false;
+  report.cleanup.errors ??= [];
+  report.cleanup.errors.push(String(detail).slice(0, 500));
+  report.failed = true;
+}
+
 try {
-  report.timings.createStartedAt = new Date().toISOString();
-  sandbox = await Sandbox.create({
+  sandbox = await timed('create', () => Sandbox.create({
     ...credentials,
     image,
     ports: [6081],
     persistent: false,
     timeout: 10 * 60 * 1000,
     tags: { 'devbox-image': `smoke-${role}` },
-  });
-  report.timings.createdAt = new Date().toISOString();
+  }));
   report.sandboxName = sandbox.name;
-  report.sessionStates.push(sandbox.status);
+  await timed('session-create', () => listSessions('created'));
   check('image digest', sandbox.image?.endsWith(`@${expectedDigest}`), 'Sandbox resolved the candidate digest');
 
   const identity = await command('id', ['-u']);
@@ -130,78 +218,122 @@ try {
     check(`binary ${binary}`, found.exitCode === 0, found.stdout.trim());
   }
 
-  const start = await sandbox.runCommand({
-    cmd: '/usr/local/bin/devbox-start',
-    env: { DEVBOX_NOVNC_USER: username, DEVBOX_NOVNC_PASSWORD: password },
-    detached: true,
+  const startResult = await timed('startup', async () => {
+    const start = await sandbox.runCommand({
+      cmd: '/usr/local/bin/devbox-start',
+      env: { DEVBOX_NOVNC_USER: username, DEVBOX_NOVNC_PASSWORD: password },
+      detached: true,
+    });
+    return start.wait();
   });
-  const startResult = await start.wait();
   check('explicit startup', startResult.exitCode === 0, 'startup command completed');
-  report.sessionStates.push(sandbox.status);
 
   const status = await command('/usr/local/bin/devbox-status');
-  check('display and proxy processes', status.exitCode === 0 && /Xvfb=running/.test(status.stdout) && /auth-proxy=running/.test(status.stdout), status.stdout);
+  const requiredProcesses = ['Xvfb=running', 'fluxbox=running', 'x11vnc=running', 'websockify=running', 'auth-proxy=running'];
+  check(
+    'display and proxy processes',
+    status.exitCode === 0 && requiredProcesses.every((process) => status.stdout.includes(process)),
+    `${status.stdout}\n${status.stderr}`,
+  );
 
   const domain = sandbox.domain(6081);
   report.noVncUrl = domain;
   const authorization = Buffer.from(`${username}:${password}`).toString('base64');
-  const unauthorized = await fetch(`${domain}/vnc.html`);
-  check('noVNC rejects unauthenticated HTTP', unauthorized.status === 401, `status=${unauthorized.status}`);
-  const authorized = await fetch(`${domain}/vnc.html`, { headers: { Authorization: `Basic ${authorization}` } });
-  check('authenticated noVNC HTTP', authorized.status === 200, `status=${authorized.status}`);
-  const websocketStatus = await probeWebSocket(domain, authorization);
+  await timed('http', async () => {
+    const unauthorized = await fetch(`${domain}/vnc.html`);
+    check('noVNC rejects unauthenticated HTTP', unauthorized.status === 401, `status=${unauthorized.status}`);
+    const authorized = await fetch(`${domain}/vnc.html`, { headers: { Authorization: `Basic ${authorization}` } });
+    check('authenticated noVNC HTTP', authorized.status === 200, `status=${authorized.status}`);
+  });
+  const websocketStatus = await timed('websocket', () => probeWebSocket(domain, authorization));
   check('authenticated noVNC WebSocket', websocketStatus.includes('101'), websocketStatus);
 
-  const terminal = await sandbox.runCommand({ cmd: 'bash', args: ['-lc', 'printf terminal-ready'], detached: true });
-  const terminalResult = await terminal.wait();
-  check('terminal session', terminalResult.exitCode === 0 && (await terminalResult.stdout()).includes('terminal-ready'));
-  report.terminalSession = { commandId: terminal.id, exitCode: terminalResult.exitCode, state: sandbox.status };
-  report.sessionStates.push(sandbox.status);
+  const terminalRun = await timed('terminal', async () => {
+    const terminal = await sandbox.runCommand({ cmd: 'bash', args: ['-lc', 'printf terminal-ready'], detached: true });
+    return { commandId: terminal.cmdId, result: await terminal.wait() };
+  });
+  const terminalOutput = await terminalRun.result.stdout();
+  check('terminal session', terminalRun.result.exitCode === 0 && terminalOutput.includes('terminal-ready'));
+  report.terminalSession = {
+    commandId: terminalRun.commandId,
+    exitCode: terminalRun.result.exitCode,
+    state: terminalRun.result.exitCode === 0 ? 'completed' : 'failed',
+  };
+  await timed('session-terminal', () => listSessions('after-terminal'));
 } catch (error) {
   report.error = error instanceof Error ? error.message : String(error);
   report.failed = true;
 } finally {
   if (sandbox) {
     try {
-      if (sandbox.status === 'running') await sandbox.stop();
-      report.cleanup.stopped = sandbox.status === 'stopped';
-      report.sessionStates.push(sandbox.status);
+      await timed('stop', async () => {
+        if (!terminalStates.has(sandbox.status)) await sandbox.stop();
+        const finalStates = await listSessions('after-stop');
+        report.cleanup.stopped = finalStates.length > 0 && finalStates.every((session) => terminalStates.has(session.status));
+        if (!report.cleanup.stopped) throw new Error('not every final Sandbox session is stopped or aborted');
+      });
     } catch (error) {
-      report.cleanup.stopError = error instanceof Error ? error.message : String(error);
-      report.failed = true;
+      markCleanupFailure('stopped', error instanceof Error ? error.message : error);
     }
+
     try {
-      const snapshots = await listSnapshots();
-      report.snapshots = snapshots.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+      await timed('snapshot-cleanup', async () => {
+        const snapshots = await listSnapshots();
+        report.snapshots = snapshots.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        for (const snapshot of snapshots.filter((item) => item.status !== 'deleted')) {
+          await snapshot.delete();
+        }
+        const residual = await listSnapshots();
+        report.snapshots = residual.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        report.cleanup.residualNonDeletedSnapshots = residual
+          .filter((snapshot) => snapshot.status !== 'deleted')
+          .map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
+        if (!report.cleanup.snapshotsCleaned) throw new Error('non-deleted snapshot residual remains');
+      });
     } catch (error) {
-      report.cleanup.snapshotListError = error instanceof Error ? error.message : String(error);
-      report.failed = true;
+      markCleanupFailure('snapshotsCleaned', error instanceof Error ? error.message : error);
     }
+
     try {
-      await sandbox.delete();
-      report.cleanup.deleted = true;
+      await timed('delete', async () => {
+        await sandbox.delete();
+        report.cleanup.deleted = true;
+        const verification = await verifyDeleted();
+        report.cleanup.deletionVerified = verification.verified;
+        if (!report.cleanup.deletionVerified) throw new Error('Sandbox deletion could not be verified');
+        const residualAfterDelete = await listSnapshots();
+        report.snapshots = residualAfterDelete.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        report.cleanup.residualNonDeletedSnapshots = residualAfterDelete
+          .filter((snapshot) => snapshot.status !== 'deleted')
+          .map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
+        if (!report.cleanup.snapshotsCleaned) throw new Error('snapshot residual remains after Sandbox deletion');
+      });
     } catch (error) {
-      report.cleanup.deleteError = error instanceof Error ? error.message : String(error);
-    }
-    try {
-      const residual = await Snapshot.list({ ...credentials, name: sandbox.name, limit: 100 });
-      const residualSnapshots = await residual.toArray();
-      report.cleanup.residualNonDeletedSnapshots = residualSnapshots
-        .filter((snapshot) => snapshot.status !== 'deleted')
-        .map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
-      if (report.cleanup.residualNonDeletedSnapshots.length > 0) report.failed = true;
-    } catch (error) {
-      report.cleanup.residualListError = error instanceof Error ? error.message : String(error);
-      report.failed = true;
+      markCleanupFailure('deleted', error instanceof Error ? error.message : error);
+      report.cleanup.deletionVerified = false;
     }
   }
+  report.cleanup.finalSessionStatesTerminal = finalSessionStatesAreTerminal();
+  if (!report.cleanup.finalSessionStatesTerminal) report.failed = true;
   report.finishedAt = new Date().toISOString();
-  report.durationMs = Date.now() - startedAt;
+  report.durationMs = Date.now() - startedAtMs;
   await mkdir(dirname(reportPath), { recursive: true });
-  // Password never enters the report; redact once more as defense in depth.
+  // Password never enters the report; the artifact redaction step adds the
+  // final redacted marker before promotion consumes this evidence.
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 }
 
-if (report.failed || report.checks.some((item) => !item.ok) || !report.cleanup.deleted || report.cleanup.residualNonDeletedSnapshots.length > 0) {
+if (
+  report.failed ||
+  report.checks.some((item) => !item.ok) ||
+  !report.cleanup.stopped ||
+  !report.cleanup.deleted ||
+  !report.cleanup.deletionVerified ||
+  !report.cleanup.snapshotsCleaned ||
+  !report.cleanup.finalSessionStatesTerminal ||
+  report.cleanup.residualNonDeletedSnapshots.length > 0
+) {
   process.exitCode = 1;
 }

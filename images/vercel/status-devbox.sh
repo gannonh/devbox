@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Image/runtime status checks.  This command never prints credential values.
+# Image/runtime status checks. This command never prints credential values.
 set -euo pipefail
 
 REQUIRED_COMMANDS=(
@@ -30,20 +30,35 @@ check_image() {
 }
 
 if [[ "${1:-}" == '--check-image' ]]; then
-  check_image
-  exit $?
+  if check_image; then
+    exit 0
+  fi
+  exit 1
 fi
 
-check_image
+if ! check_image; then
+  exit 1
+fi
+
+failed=0
 for process in Xvfb fluxbox x11vnc websockify; do
-  if pgrep -x "${process}" >/dev/null 2>&1; then
+  if [[ "${process}" == 'websockify' ]]; then
+    process_running="$(pgrep -f '[w]ebsockify' || true)"
+  else
+    process_running="$(pgrep -x "${process}" || true)"
+  fi
+  if [[ -n "${process_running}" ]]; then
     printf '[devbox-status] %s=running\n' "${process}"
   else
     printf '[devbox-status] %s=stopped\n' "${process}"
+    failed=1
   fi
 done
-if pgrep -f 'basic-auth-proxy.mjs' >/dev/null 2>&1; then
+if pgrep -f '[b]asic-auth-proxy.mjs' >/dev/null 2>&1; then
   printf '[devbox-status] auth-proxy=running\n'
 else
   printf '[devbox-status] auth-proxy=stopped\n'
+  failed=1
 fi
+
+exit "${failed}"
