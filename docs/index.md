@@ -13,6 +13,11 @@ okf_version: "0.1"
 ## ADRs
 
 * [ADRs index](/adrs/index.md) - architecture decisions and history.
+* [Digest-pinned Vercel image promotion](/adrs/0001-vercel-image-promotion.md) - public digest pin, dual-project smoke, and reviewed promotion.
+
+## Runbooks
+
+* [Vercel image supply chain](/runbooks/vercel-image-supply-chain.md) - publisher setup, candidate smoke, promotion, rollback, and cleanup.
 
 ## History
 
