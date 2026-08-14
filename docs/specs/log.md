@@ -11,3 +11,6 @@
 
 ## 2026-08-14 (3)
 * **Build hardening**: Added deterministic clean packaging, missing-executable runner handling, and caller-owned devcontainer stderr routing to the Issue #3 implementation.
+
+## 2026-08-14 (4)
+* **Roadmap status**: Marked Issue [#3](https://github.com/gannonh/devbox/issues/3) implemented with acceptance evidence complete in [PR #8](https://github.com/gannonh/devbox/pull/8), awaiting maintainer sign-off/merge; identified #4 as the remaining active Build phase and preserved #5 → #6 → #7 dependency order.

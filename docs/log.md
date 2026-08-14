@@ -31,3 +31,6 @@
 * **Quality hardening**: Cleaned `dist` before builds and packs, handled missing child executables through the runner error boundary, and routed devcontainer stderr to caller-owned streams with regression coverage.
 * **Spec navigation**: Updated the implemented package design's source paths to the local provider layout and cross-linked ADR 0001.
 * **Residual risk**: The one-shot CLI still uses a module-global logger stream; converting it to a request-bound logger remains deferred to avoid widening the parity refactor.
+
+## 2026-08-14 (5)
+* **Roadmap correction**: Updated the specs roadmap to show #3 implemented with complete acceptance evidence in open PR #8 (awaiting sign-off/merge), #4 as the remaining active Build phase, and #5 → #6 → #7 dependency order unchanged.
