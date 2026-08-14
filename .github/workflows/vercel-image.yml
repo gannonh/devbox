@@ -1,0 +1,308 @@
+name: Vercel image supply chain
+
+# A scheduled run may detect Universal drift, but it follows the same reviewed
+# candidate/smoke/PR path as a manual run.  Nothing in this workflow merges or
+# releases a promotion PR.
+on:
+  workflow_dispatch:
+    inputs:
+      universal_digest:
+        description: 'Optional sha256:<64 hex> Universal digest (otherwise resolve it in Sandbox)'
+        required: false
+        type: string
+      readiness_timeout_minutes:
+        description: 'Bounded VCR readiness deadline'
+        required: false
+        default: '15'
+        type: string
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  VERCEL_IMAGE_REPOSITORY: devbox
+  ARTIFACT_DIR: ${{ runner.temp }}/vercel-image-evidence
+
+jobs:
+  candidate:
+    name: Build, smoke, and propose Vercel image promotion
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate scoped publisher configuration
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+        run: |
+          set -euo pipefail
+          test -n "${VERCEL_PUBLISHER_TOKEN}" || { echo 'publisher token secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_TEAM_ID}" || { echo 'publisher team ID secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_PROJECT_ID}" || { echo 'publisher project ID secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_TEAM_SLUG}" || { echo 'publisher team slug secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_PROJECT_SLUG}" || { echo 'publisher project slug secret is missing' >&2; exit 1; }
+          mkdir -p "${ARTIFACT_DIR}"
+
+      - name: Resolve pinned Universal base digest
+        id: base
+        if: ${{ github.event_name != 'schedule' || github.event.inputs.universal_digest == '' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          BASE_DIGEST_EVIDENCE: ${{ runner.temp }}/vercel-image-evidence/base-digest.json
+          INPUT_UNIVERSAL_DIGEST: ${{ github.event.inputs.universal_digest }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_UNIVERSAL_DIGEST}" ]]; then
+            base_digest="${INPUT_UNIVERSAL_DIGEST#sha256:}"
+          else
+            base_digest="$(node scripts/vercel/resolve-universal-digest.mjs)"
+            base_digest="${base_digest#sha256:}"
+          fi
+          [[ "${base_digest}" =~ ^[a-f0-9]{64}$ ]] || { echo 'Universal base resolver returned a malformed digest' >&2; exit 1; }
+          echo "digest=sha256:${base_digest}" >> "$GITHUB_OUTPUT"
+          printf '{"selectedBaseDigest":"sha256:%s"}\n' "${base_digest}" > "${ARTIFACT_DIR}/selected-base.json"
+
+      - name: Read scheduled base digest
+        id: scheduled_base
+        if: ${{ github.event_name == 'schedule' && github.event.inputs.universal_digest == '' }}
+        run: |
+          set -euo pipefail
+          # The scheduled path resolves the digest in the preceding step's
+          # helper; this step only makes the output name explicit for evidence.
+          test -s "${ARTIFACT_DIR}/selected-base.json"
+          digest="$(node -e "const fs=require('fs'); const v=JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/selected-base.json')); process.stdout.write(v.selectedBaseDigest)")"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Select candidate base output
+        id: selected_base
+        run: |
+          set -euo pipefail
+          digest="${{ steps.base.outputs.digest || steps.scheduled_base.outputs.digest }}"
+          test -n "${digest}" || { echo 'no Universal base digest was resolved' >&2; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect scheduled Universal drift
+        id: drift
+        run: |
+          set -euo pipefail
+          selected="${{ steps.selected_base.outputs.digest }}"
+          current="$(grep -oE "vcr\\.vercel\\.com/vercel/sandbox/universal@sha256:[a-f0-9]{64}" src/providers/vercel/image.ts | head -1 | sed 's/.*@//')"
+          if [[ "${{ github.event_name }}" == 'schedule' && -n "${current}" && "${current}" == "${selected}" ]]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            echo 'Universal digest unchanged; no candidate is required.'
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare immutable candidate reference
+        id: candidate
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+        run: |
+          set -euo pipefail
+          tag="sha-${GITHUB_SHA}"
+          reference="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}:${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "reference=${reference}" >> "$GITHUB_OUTPUT"
+          printf '{"candidateTag":"%s","candidateReference":"%s"}\n' "${tag}" "${reference}" > "${ARTIFACT_DIR}/candidate.json"
+
+      - name: Authenticate Buildx to VCR
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # Password is piped to Docker and the login output is kept out of the
+          # action log.  The token is never passed as a command-line argument.
+          printf '%s' "${VERCEL_PUBLISHER_TOKEN}" | docker login vcr.vercel.com \
+            --username "${VERCEL_PUBLISHER_TEAM_ID}" --password-stdin \
+            > "${ARTIFACT_DIR}/docker-login.log" 2>&1
+
+      - name: Build and push linux/amd64 zstd candidate
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
+          BASE_DIGEST: ${{ steps.selected_base.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg "UNIVERSAL_BASE_DIGEST=${BASE_DIGEST#sha256:}" \
+            --output "type=image,name=${CANDIDATE_REFERENCE},push=true,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true" \
+            images/vercel 2>&1 | node scripts/vercel/redact-artifacts.mjs | tee "${ARTIFACT_DIR}/build.log"
+
+      - name: Resolve candidate manifest digest
+        id: manifest
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${CANDIDATE_REFERENCE}" > "${ARTIFACT_DIR}/manifest-inspect.log" 2>&1
+          digest="$(awk '/Digest:/ {print $2; exit}' "${ARTIFACT_DIR}/manifest-inspect.log")"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'candidate manifest digest could not be resolved' >&2; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          printf '{"candidateDigest":"%s"}\n' "${digest}" > "${ARTIFACT_DIR}/selected-candidate.json"
+
+      - name: Verify publisher repository is public
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel vcr inspect "${VERCEL_IMAGE_REPOSITORY}" \
+            --project "${VERCEL_PUBLISHER_PROJECT_ID}" --format json > "${ARTIFACT_DIR}/repository.json"
+          node scripts/vercel/assert-public-repository.mjs < "${ARTIFACT_DIR}/repository.json"
+
+      # wait-vcr-ready handles Preparing and image_not_ready as bounded
+      # transient states, and fails immediately/actionably on Unoptimized or
+      # authentication errors.
+      - name: Poll VCR readiness
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_IMAGE_TAG: ${{ steps.candidate.outputs.tag }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
+          READINESS_TIMEOUT_MS: ${{ fromJSON(github.event.inputs.readiness_timeout_minutes || '15') * 60 * 1000 }}
+          READINESS_EVIDENCE: ${{ runner.temp }}/vercel-image-evidence/readiness.json
+        run: node scripts/vercel/wait-vcr-ready.mjs
+
+      # smoke-sandbox records terminal session state and snapshot statuses;
+      # cleanup requires the Sandbox deleted and no non-deleted snapshot residual.
+      - name: Publisher Sandbox smoke gate
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          SMOKE_ROLE: publisher
+          SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#publisher-smoke
+          SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/publisher-smoke.json
+        run: node scripts/vercel/smoke-sandbox.mjs
+
+      - name: Redact publisher evidence
+        if: ${{ always() && steps.drift.outputs.skip != 'true' }}
+        run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      # This is the independent cross-project public-consumption gate; it is
+      # intentionally separate from the publisher Sandbox credentials.
+      - name: Verify independent consumer scope
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
+        env:
+          PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "${CONSUMER_TEAM_ID}" && test -n "${CONSUMER_PROJECT_ID}" || { echo 'consumer scope secrets are missing' >&2; exit 1; }
+          if [[ "${PUBLISHER_TEAM_ID}" == "${CONSUMER_TEAM_ID}" && "${PUBLISHER_PROJECT_ID}" == "${CONSUMER_PROJECT_ID}" ]]; then
+            echo 'consumer credentials must target a different Vercel team or project' >&2
+            exit 1
+          fi
+
+      - name: Independent consumer Sandbox smoke gate
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          SMOKE_ROLE: consumer
+          SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#consumer-smoke
+          SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/consumer-smoke.json
+        run: node scripts/vercel/smoke-sandbox.mjs
+
+      - name: Redact all evidence
+        if: always()
+        run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      - name: Open reviewed promotion PR
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
+          CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
+          CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          BASE_DIGEST: ${{ steps.selected_base.outputs.digest }}
+        run: |
+          set -euo pipefail
+          branch="vercel-image/${GITHUB_SHA}"
+          git switch --create "${branch}"
+          node scripts/vercel/promote-image.mjs \
+            --reference "vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}@${CANDIDATE_DIGEST}" \
+            --base-reference "vcr.vercel.com/vercel/sandbox/universal@${BASE_DIGEST}" \
+            --source-commit "${GITHUB_SHA}" \
+            --publisher-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#publisher-smoke" \
+            --consumer-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#consumer-smoke" \
+            --publisher-team "${PUBLISHER_TEAM_SLUG}" --publisher-project "${PUBLISHER_PROJECT_SLUG}" \
+            --consumer-team "${CONSUMER_TEAM_SLUG}" --consumer-project "${CONSUMER_PROJECT_SLUG}"
+          npm run validate:release
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/providers/vercel/image.ts
+          git commit -m "chore(vercel): promote image ${GITHUB_SHA}" -m "Refs #4"
+          git push --set-upstream origin "${branch}"
+          gh pr create \
+            --base main \
+            --head "${branch}" \
+            --title "chore(vercel): promote image ${GITHUB_SHA}" \
+            --body "$(cat <<EOF
+          ## Vercel image promotion
+
+          This PR is opened only after the publisher and independent consumer smoke gates pass for the exact digest.
+
+          - Candidate: \`vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}@${CANDIDATE_DIGEST}\`
+          - Universal base: \`vcr.vercel.com/vercel/sandbox/universal@${BASE_DIGEST}\`
+          - Publisher smoke: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#publisher-smoke
+          - Independent consumer smoke: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#consumer-smoke
+
+          Review and merge this PR manually; the scheduled workflow never auto-merges or releases it.
+          EOF
+          )"
+
+      - name: Upload redacted evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vercel-image-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/vercel-image-evidence
+          if-no-files-found: warn
+          retention-days: 30

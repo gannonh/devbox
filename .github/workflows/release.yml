@@ -107,6 +107,9 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Validate Vercel image pin
+        run: npm run validate:release
+
       # --- Publish ------------------------------------------------------------
       # PUBLISH BEFORE TAG/RELEASE. If this step fails, the tag and GitHub
       # Release are never created, so there is no release pointing at an

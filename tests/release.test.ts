@@ -105,6 +105,7 @@ describe('release workflow contract', () => {
     expect(wfStr).toMatch(/npm run build/);
     expect(wfStr).toMatch(/npm run test/);
     expect(wfStr).toMatch(/npm run lint/);
+    expect(wfStr).toMatch(/npm run validate:release/);
   });
 
   it('stages both package.json and package-lock.json in the version commit', async () => {
