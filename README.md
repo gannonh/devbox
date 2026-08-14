@@ -6,7 +6,14 @@ Each box is a full developer environment: Node/Bun, git, gh, ripgrep, fd, fzf, t
 
 ## Quickstart
 
-In any repo:
+From this repo:
+
+ ```bash
+   npm run build
+   node dist/cli.js --help
+ ```
+
+From any other repo:
 
 ```bash
 npx @gannonh/devbox init      # scaffold .devbox/ + .devcontainer/ config
