@@ -22,8 +22,8 @@ export const defaultProviderRegistry: ProviderRegistry = createProviderRegistry(
 
 /** Resolve a provider name, preserving local as the CLI default. */
 export function resolveProvider(
-  name: string | undefined,
-  registry: ProviderRegistry,
+  name?: string,
+  registry: ProviderRegistry = defaultProviderRegistry,
 ): DevboxProvider {
   const selected = name ?? 'local';
   if (selected !== 'local' && selected !== 'vercel') {
