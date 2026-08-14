@@ -25,4 +25,43 @@ export function parseFullyQualifiedVcrReference(value) {
   };
 }
 
+export const REQUIRED_SMOKE_CHECKS = Object.freeze([
+  'image digest',
+  'non-root user',
+  'expected non-root identity',
+  'passwordless sudo',
+  'binary pi',
+  'binary claude',
+  'binary codex',
+  'binary opencode',
+  'binary gh',
+  'binary node',
+  'binary bun',
+  'binary python',
+  'binary chromium',
+  'binary Xvfb',
+  'binary fluxbox',
+  'binary x11vnc',
+  'binary websockify',
+  'explicit startup',
+  'display and proxy processes',
+  'noVNC rejects unauthenticated HTTP',
+  'authenticated noVNC HTTP',
+  'authenticated noVNC WebSocket',
+  'terminal session',
+]);
+
+export const REQUIRED_SMOKE_TIMINGS = Object.freeze([
+  'create',
+  'session-create',
+  'startup',
+  'http',
+  'websocket',
+  'terminal',
+  'session-terminal',
+  'stop',
+  'snapshot-cleanup',
+  'delete',
+]);
+
 export { FULL_VCR_REFERENCE };

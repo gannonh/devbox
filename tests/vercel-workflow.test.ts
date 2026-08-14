@@ -25,6 +25,7 @@ describe('Vercel image supply-chain workflow', () => {
   it('builds an amd64 zstd immutable candidate and waits for readiness', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('docker/setup-buildx-action');
+    expect(workflow).toContain('vercel@58.11.0');
     expect(workflow).toContain('--platform linux/amd64');
     expect(workflow).toContain('compression=zstd');
     expect(workflow).toContain('sha-${GITHUB_SHA}');
@@ -45,6 +46,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('VERCEL_CONSUMER_PROJECT_SLUG');
     expect(workflow).toContain('consumer token must be different');
     expect(workflow).toContain('assert-public-repository.mjs');
+    expect(workflow).toContain('--scope "${VERCEL_PUBLISHER_TEAM_SLUG}"');
     expect(workflow).toContain('assert-project-identity.mjs');
     expect(workflow).toContain('vercel teams list');
     expect(workflow).toContain('--expected-team-id');
@@ -64,18 +66,28 @@ describe('Vercel image supply-chain workflow', () => {
   it('redacts workflow evidence and promotes only after both smoke gates', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('redact-artifacts.mjs');
+    expect(workflow).toContain('id: redact_final');
+    expect(workflow).toContain("if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}");
     expect(workflow).toContain('promote-image.mjs');
     expect(workflow).toContain('cross-project');
     expect(workflow).toContain('redacted');
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
     expect(smoke).toContain('sessionStates');
     expect(smoke).toContain('finalSessionStatesTerminal');
+    expect(smoke).toContain('resume: false');
+    expect(smoke).toContain('after-delete');
     for (const stage of ['startup', 'http', 'websocket', 'terminal', 'stop', 'delete']) {
       expect(smoke).toContain(`timed('${stage}'`);
     }
     expect(workflow).toMatch(/if: \$\{\{ success\(\)/);
     expect(workflow).toContain('contents: write');
     expect(workflow).toContain('pull-requests: write');
+  });
+
+  it('documents the audited Vercel CLI version contract', async () => {
+    const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
+    expect(runbook).toContain('58.11.0');
+    expect(runbook).toContain('CLI version');
   });
 
   it('ships the workflow helper scripts', async () => {
@@ -101,6 +113,7 @@ describe('Vercel image supply-chain workflow', () => {
             VERCEL_IMAGE_REPOSITORY: 'devbox',
             VERCEL_IMAGE_TAG: 'fixture',
             VERCEL_PUBLISHER_PROJECT_ID: 'project',
+            VERCEL_PUBLISHER_TEAM_SLUG: 'publisher-team',
             VCR_READINESS_FIXTURE: '["Preparing"]',
             READINESS_TIMEOUT_MS: '20',
             READINESS_POLL_MS: '1',

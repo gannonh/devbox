@@ -5,12 +5,55 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { parseFullyQualifiedVcrReference } from '../scripts/vercel/smoke-contract.mjs';
+import {
+  parseFullyQualifiedVcrReference,
+  REQUIRED_SMOKE_CHECKS,
+  REQUIRED_SMOKE_TIMINGS,
+} from '../scripts/vercel/smoke-contract.mjs';
 
 const execFileAsync = promisify(execFile);
 const digest = 'sha256:' + 'a'.repeat(64);
 const baseDigest = 'sha256:' + 'b'.repeat(64);
 const reference = `vcr.vercel.com/publisher-team/publisher-project/devbox@${digest}`;
+
+function validEvidence(role: string, teamId: string, projectId: string) {
+  return {
+    redacted: true,
+    failed: false,
+    role,
+    scope: { teamId, projectId },
+    imageReference: reference,
+    expectedDigest: digest,
+    startedAt: '2026-01-01T00:00:00.000Z',
+    finishedAt: '2026-01-01T00:00:00.001Z',
+    durationMs: 1,
+    smokeUrl: role === 'publisher'
+      ? 'https://github.com/gannonh/devbox/actions/runs/100#publisher-smoke'
+      : 'https://github.com/gannonh/devbox/actions/runs/101#consumer-smoke',
+    sandboxName: `${role}-sandbox`,
+    noVncUrl: `https://${role}.example.test`,
+    checks: REQUIRED_SMOKE_CHECKS.map((name) => ({ name, ok: true })),
+    requiredChecksComplete: true,
+    timings: Object.fromEntries(REQUIRED_SMOKE_TIMINGS.map((name) => [name, {
+      startedAt: '2026-01-01T00:00:00.000Z',
+      finishedAt: '2026-01-01T00:00:00.001Z',
+      durationMs: 1,
+      outcome: 'passed',
+    }])),
+    sessionStates: [{ phase: 'after-stop', states: [{ id: `${role}-session`, status: 'stopped' }] }],
+    terminalSession: { commandId: `${role}-command`, exitCode: 0, state: 'completed' },
+    snapshots: [],
+    cleanup: {
+      stopped: true,
+      deleted: true,
+      deletionVerified: true,
+      snapshotsCleaned: true,
+      noRunningSessionAfterDelete: true,
+      finalSessionStatesTerminal: true,
+      residualNonDeletedSnapshots: [],
+    },
+  };
+}
 
 async function runNode(
   script: string,
@@ -60,21 +103,35 @@ describe('Vercel supply-chain script boundaries', () => {
     try {
       const result = await runNode('scripts/vercel/assert-public-repository.mjs', {
         ...process.env,
-        EXPECTED_TEAM_ID: 'team-id',
         EXPECTED_PROJECT_ID: 'project-id',
-        EXPECTED_TEAM_SLUG: 'publisher-team',
-        EXPECTED_PROJECT_SLUG: 'publisher-project',
         EXPECTED_REPOSITORY: 'devbox',
       },
       [],
       JSON.stringify({
-        public: 'true',
+        id: 'repo-id',
+        projectId: 'project-id',
         name: 'devbox',
-        project: { id: 'project-id', slug: 'publisher-project' },
-        owner: { id: 'team-id', slug: 'publisher-team' },
+        public: 'true',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-02T00:00:00.000Z',
       }),
       );
       expect(result.code).toBe(0);
+      const mixed = await runNode('scripts/vercel/assert-public-repository.mjs', {
+        ...process.env,
+        EXPECTED_PROJECT_ID: 'project-id',
+        EXPECTED_REPOSITORY: 'devbox',
+      },
+      [],
+      JSON.stringify({
+        id: 'repo-id',
+        projectId: 'wrong-project',
+        name: 'devbox',
+        public: true,
+        project: { id: 'project-id' },
+      }),
+      );
+      expect(mixed.code).not.toBe(0);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -99,6 +156,44 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(result.code).toBe(0);
   });
 
+  it('rejects mixed project/team identity objects', async () => {
+    const result = await runNode(
+      'scripts/vercel/assert-project-identity.mjs',
+      {
+        ...process.env,
+        EXPECTED_TEAM_ID: 'team-id',
+        EXPECTED_TEAM_SLUG: 'team-slug',
+        EXPECTED_PROJECT_ID: 'project-id',
+        EXPECTED_PROJECT_SLUG: 'project-slug',
+      },
+      [],
+      JSON.stringify({
+        projects: {
+          projects: [
+            { id: 'project-id', name: 'project-slug', accountId: 'other-team' },
+            { id: 'other-project', name: 'other-project', accountId: 'team-id' },
+          ],
+        },
+        teams: { teams: [{ id: 'team-id', slug: 'other-slug' }, { id: 'other-team', slug: 'team-slug' }] },
+      }),
+    );
+    expect(result.code).not.toBe(0);
+  });
+
+  it('requires publisher team scope for readiness polling', async () => {
+    const result = await runNode('scripts/vercel/wait-vcr-ready.mjs', {
+      ...process.env,
+      VERCEL_IMAGE_REPOSITORY: 'devbox',
+      VERCEL_IMAGE_TAG: 'fixture',
+      VERCEL_PUBLISHER_PROJECT_ID: 'project-id',
+      VCR_READINESS_FIXTURE: '["Ready"]',
+      READINESS_TIMEOUT_MS: '100',
+      READINESS_POLL_MS: '1',
+    });
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('VERCEL_PUBLISHER_TEAM_SLUG');
+  });
+
   it('kills a VCR inspect child at the readiness deadline', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-ready-'));
     const bin = join(temp, 'bin');
@@ -118,6 +213,7 @@ describe('Vercel supply-chain script boundaries', () => {
         VERCEL_IMAGE_REPOSITORY: 'devbox',
         VERCEL_IMAGE_TAG: 'fixture',
         VERCEL_PUBLISHER_PROJECT_ID: 'project-id',
+        VERCEL_PUBLISHER_TEAM_SLUG: 'publisher-team',
         READINESS_TIMEOUT_MS: '80',
         READINESS_POLL_MS: '1',
         READINESS_EVIDENCE: join(temp, 'readiness.json'),
@@ -130,6 +226,15 @@ describe('Vercel supply-chain script boundaries', () => {
     }
   });
 
+  it('fails redaction on an unreadable artifact path', async () => {
+    const result = await runNode(
+      'scripts/vercel/redact-artifacts.mjs',
+      process.env,
+      ['/tmp/vercel-redaction-path-that-does-not-exist'],
+    );
+    expect(result.code).not.toBe(0);
+  });
+
   it('promotes only after both redacted evidence reports prove exact cleanup', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-valid-'));
     try {
@@ -137,20 +242,13 @@ describe('Vercel supply-chain script boundaries', () => {
       const source = await readFile('src/providers/vercel/image.ts', 'utf8');
       await writeFile(sourcePath, source);
       const evidence = (role: string, teamId: string, projectId: string) => ({
-        redacted: true,
-        role,
-        scope: { teamId, projectId },
-        imageReference: reference,
-        expectedDigest: digest,
-        checks: [{ name: 'all', ok: true }],
-        sessionStates: [{ phase: 'after-stop', states: [{ id: `${role}-session`, status: 'stopped' }] }],
-        terminalSession: { commandId: `${role}-command`, exitCode: 0, state: 'completed' },
-        snapshots: [],
+        ...validEvidence(role, teamId, projectId),
         cleanup: {
           stopped: true,
           deleted: true,
           deletionVerified: true,
           snapshotsCleaned: true,
+          noRunningSessionAfterDelete: true,
           finalSessionStatesTerminal: true,
           residualNonDeletedSnapshots: [],
         },
@@ -179,6 +277,46 @@ describe('Vercel supply-chain script boundaries', () => {
       const promoted = await readFile(sourcePath, 'utf8');
       expect(promoted).toContain("publisherSmokeStatus: 'passed'");
       expect(promoted).toContain('crossProjectVerified: true');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects minimal, failed, URL-mismatched, and timing-incomplete evidence', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-forgery-'));
+    try {
+      const sourcePath = join(temp, 'image.ts');
+      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const consumer = validEvidence('consumer', 'consumer-team-id', 'consumer-project-id');
+      const variants = [
+        { name: 'minimal', report: { redacted: true } },
+        { name: 'failed', report: { ...validEvidence('publisher', 'publisher-team-id', 'publisher-project-id'), failed: true } },
+        { name: 'URL mismatch', report: { ...validEvidence('publisher', 'publisher-team-id', 'publisher-project-id'), smokeUrl: 'https://wrong.example.test' } },
+        { name: 'timing incomplete', report: (() => { const report = validEvidence('publisher', 'publisher-team-id', 'publisher-project-id'); delete report.timings.create; return report; })() },
+      ];
+      for (const variant of variants) {
+        const publisherPath = join(temp, `${variant.name.replace(/[^a-z]+/gi, '-')}-publisher.json`);
+        const consumerPath = join(temp, `${variant.name.replace(/[^a-z]+/gi, '-')}-consumer.json`);
+        await writeFile(publisherPath, JSON.stringify(variant.report));
+        await writeFile(consumerPath, JSON.stringify(consumer));
+        const result = await runNode(
+          'scripts/vercel/promote-image.mjs',
+          { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+          [
+            '--reference', reference,
+            '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+            '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
+            '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/100#publisher-smoke',
+            '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/101#consumer-smoke',
+            '--publisher-team', 'publisher-team', '--publisher-project', 'publisher-project',
+            '--consumer-team', 'consumer-team', '--consumer-project', 'consumer-project',
+            '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
+            '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
+            '--publisher-evidence', publisherPath, '--consumer-evidence', consumerPath,
+          ],
+        );
+        expect(result.code, variant.name).not.toBe(0);
+      }
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

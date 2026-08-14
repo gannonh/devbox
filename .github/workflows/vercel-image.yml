@@ -45,8 +45,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Vercel CLI
-        run: npm install --global vercel@latest
+      - name: Install audited Vercel CLI
+        # Keep VCR JSON/scope behavior reproducible; update only with a reviewed audit.
+        run: npm install --global vercel@58.11.0 --no-audit --no-fund
 
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
@@ -231,24 +232,44 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           printf '{"candidateDigest":"%s"}\n' "${digest}" > "${ARTIFACT_DIR}/selected-candidate.json"
 
-      - name: Verify publisher repository is public
+      - name: Verify publisher project identity
         if: ${{ steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
-          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
           VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
           VERCEL_PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+        run: |
+          set -euo pipefail
+          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel project list \
+            --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" \
+            --filter "${VERCEL_PUBLISHER_PROJECT_SLUG}" \
+            --format json > "${ARTIFACT_DIR}/publisher-project.json"
+          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel teams list \
+            --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --limit 100 --format json > "${ARTIFACT_DIR}/publisher-teams.json"
+          node -e "const fs=require('fs'); process.stdout.write(JSON.stringify({projects:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/publisher-project.json')),teams:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/publisher-teams.json'))}))" \
+            > "${ARTIFACT_DIR}/publisher-identity.json"
+          node scripts/vercel/assert-project-identity.mjs \
+            --expected-team-id "${VERCEL_PUBLISHER_TEAM_ID}" \
+            --expected-team-slug "${VERCEL_PUBLISHER_TEAM_SLUG}" \
+            --expected-project-id "${VERCEL_PUBLISHER_PROJECT_ID}" \
+            --expected-project-slug "${VERCEL_PUBLISHER_PROJECT_SLUG}" < "${ARTIFACT_DIR}/publisher-identity.json"
+
+      - name: Verify publisher repository is public
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
           VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
         run: |
           set -euo pipefail
           VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel vcr inspect "${VERCEL_IMAGE_REPOSITORY}" \
-            --project "${VERCEL_PUBLISHER_PROJECT_ID}" --format json > "${ARTIFACT_DIR}/repository.json"
+            --project "${VERCEL_PUBLISHER_PROJECT_ID}" \
+            --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --format json > "${ARTIFACT_DIR}/repository.json"
           node scripts/vercel/assert-public-repository.mjs \
-            --expected-team-id "${VERCEL_PUBLISHER_TEAM_ID}" \
             --expected-project-id "${VERCEL_PUBLISHER_PROJECT_ID}" \
-            --expected-team-slug "${VERCEL_PUBLISHER_TEAM_SLUG}" \
-            --expected-project-slug "${VERCEL_PUBLISHER_PROJECT_SLUG}" \
             --expected-repository "${VERCEL_IMAGE_REPOSITORY}" < "${ARTIFACT_DIR}/repository.json"
 
       - name: Verify consumer project identity
@@ -266,7 +287,7 @@ jobs:
             --filter "${VERCEL_CONSUMER_PROJECT_SLUG}" \
             --format json > "${ARTIFACT_DIR}/consumer-project.json"
           VERCEL_TOKEN="${VERCEL_CONSUMER_TOKEN}" vercel teams list \
-            --limit 100 --format json > "${ARTIFACT_DIR}/consumer-teams.json"
+            --scope "${VERCEL_CONSUMER_TEAM_SLUG}" --limit 100 --format json > "${ARTIFACT_DIR}/consumer-teams.json"
           node -e "const fs=require('fs'); process.stdout.write(JSON.stringify({projects:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-project.json')),teams:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-teams.json'))}))" \
             > "${ARTIFACT_DIR}/consumer-identity.json"
           node scripts/vercel/assert-project-identity.mjs \
@@ -284,6 +305,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_IMAGE_TAG: ${{ steps.candidate.outputs.tag }}
           VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
           READINESS_TIMEOUT_MS: ${{ fromJSON(github.event.inputs.readiness_timeout_minutes || '15') * 60 * 1000 }}
           READINESS_EVIDENCE: ${{ runner.temp }}/vercel-image-evidence/readiness.json
@@ -307,6 +329,7 @@ jobs:
         run: node scripts/vercel/smoke-sandbox.mjs
 
       - name: Redact publisher evidence
+        id: redact_publisher
         if: ${{ always() && steps.drift.outputs.skip != 'true' }}
         run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
 
@@ -328,11 +351,20 @@ jobs:
         run: node scripts/vercel/smoke-sandbox.mjs
 
       - name: Redact all evidence
+        id: redact_final
         if: always()
-        run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+        run: |
+          set +e
+          node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+          status=$?
+          if [[ "${status}" -ne 0 ]]; then
+            # Never leave a partially redacted directory eligible for upload.
+            rm -rf "${ARTIFACT_DIR}"
+            exit "${status}"
+          fi
 
       - name: Open reviewed promotion PR
-        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.redact_final.outcome == 'success' && steps.drift.outputs.skip != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
@@ -386,7 +418,7 @@ jobs:
           )"
 
       - name: Upload redacted evidence
-        if: always()
+        if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}
         uses: actions/upload-artifact@v4
         with:
           name: vercel-image-evidence-${{ github.run_id }}

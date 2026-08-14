@@ -12,7 +12,10 @@ import { dirname } from 'node:path';
 import net from 'node:net';
 import tls from 'node:tls';
 import { APIError, Sandbox, Snapshot } from '@vercel/sandbox';
-import { parseFullyQualifiedVcrReference } from './smoke-contract.mjs';
+import {
+  parseFullyQualifiedVcrReference,
+  REQUIRED_SMOKE_CHECKS,
+} from './smoke-contract.mjs';
 
 const role = process.env.SMOKE_ROLE;
 const image = process.env.IMAGE_REF;
@@ -60,6 +63,7 @@ const report = {
     deleted: false,
     deletionVerified: false,
     snapshotsCleaned: false,
+    noRunningSessionAfterDelete: false,
     residualNonDeletedSnapshots: [],
   },
 };
@@ -148,8 +152,8 @@ async function listSnapshots() {
   return result.toArray();
 }
 
-async function listSessions(phase) {
-  const result = await sandbox.listSessions({ limit: 100, sortOrder: 'asc' });
+async function listSessions(phase, target = sandbox) {
+  const result = await target.listSessions({ limit: 100, sortOrder: 'asc' });
   const sessions = await result.toArray();
   const states = sessions.map((session) => ({
     id: session.id,
@@ -167,15 +171,19 @@ function isNotFound(error) {
 async function verifyDeleted() {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      const existing = await Sandbox.get({ ...credentials, name: sandbox.name });
-      if (attempt === 4) return { verified: false, status: existing.status };
+      // resume:false is essential: this lookup must never create a fresh VM
+      // session while checking eventual deletion consistency.
+      const existing = await Sandbox.get({ ...credentials, name: sandbox.name, resume: false });
+      const states = await listSessions('after-delete-lookup', existing);
+      const running = states.some((session) => !terminalStates.has(session.status));
+      if (running || attempt === 4) return { verified: false, noRunningSession: !running, status: existing.status };
       await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
     } catch (error) {
-      if (isNotFound(error)) return { verified: true };
+      if (isNotFound(error)) return { verified: true, noRunningSession: true };
       throw error;
     }
   }
-  return { verified: false };
+  return { verified: false, noRunningSession: false };
 }
 
 function finalSessionStatesAreTerminal() {
@@ -301,7 +309,10 @@ try {
         report.cleanup.deleted = true;
         const verification = await verifyDeleted();
         report.cleanup.deletionVerified = verification.verified;
-        if (!report.cleanup.deletionVerified) throw new Error('Sandbox deletion could not be verified');
+        report.cleanup.noRunningSessionAfterDelete = verification.noRunningSession === true;
+        if (!report.cleanup.deletionVerified || !report.cleanup.noRunningSessionAfterDelete) {
+          throw new Error('Sandbox deletion or no-running-session verification failed');
+        }
         const residualAfterDelete = await listSnapshots();
         report.snapshots = residualAfterDelete.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
         report.cleanup.residualNonDeletedSnapshots = residualAfterDelete
@@ -313,10 +324,12 @@ try {
     } catch (error) {
       markCleanupFailure('deleted', error instanceof Error ? error.message : error);
       report.cleanup.deletionVerified = false;
+      report.cleanup.noRunningSessionAfterDelete = false;
     }
   }
   report.cleanup.finalSessionStatesTerminal = finalSessionStatesAreTerminal();
-  if (!report.cleanup.finalSessionStatesTerminal) report.failed = true;
+  report.requiredChecksComplete = REQUIRED_SMOKE_CHECKS.every((name) => report.checks.some((check) => check.name === name && check.ok === true));
+  if (!report.cleanup.finalSessionStatesTerminal || !report.requiredChecksComplete) report.failed = true;
   report.finishedAt = new Date().toISOString();
   report.durationMs = Date.now() - startedAtMs;
   await mkdir(dirname(reportPath), { recursive: true });
@@ -331,8 +344,10 @@ if (
   !report.cleanup.stopped ||
   !report.cleanup.deleted ||
   !report.cleanup.deletionVerified ||
+  !report.cleanup.noRunningSessionAfterDelete ||
   !report.cleanup.snapshotsCleaned ||
   !report.cleanup.finalSessionStatesTerminal ||
+  !report.requiredChecksComplete ||
   report.cleanup.residualNonDeletedSnapshots.length > 0
 ) {
   process.exitCode = 1;

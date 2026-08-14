@@ -7,11 +7,12 @@ import { dirname } from 'node:path';
 const repository = process.env.VERCEL_IMAGE_REPOSITORY;
 const tag = process.env.VERCEL_IMAGE_TAG;
 const project = process.env.VERCEL_PUBLISHER_PROJECT_ID;
+const teamSlug = process.env.VERCEL_PUBLISHER_TEAM_SLUG;
 const timeoutMs = Number(process.env.READINESS_TIMEOUT_MS ?? 15 * 60 * 1000);
 const pollMs = Number(process.env.READINESS_POLL_MS ?? 15_000);
 const evidencePath = process.env.READINESS_EVIDENCE;
-if (!repository || !tag || !project) {
-  throw new Error('VERCEL_IMAGE_REPOSITORY, VERCEL_IMAGE_TAG, and VERCEL_PUBLISHER_PROJECT_ID are required');
+if (!repository || !tag || !project || !teamSlug) {
+  throw new Error('VERCEL_IMAGE_REPOSITORY, VERCEL_IMAGE_TAG, VERCEL_PUBLISHER_PROJECT_ID, and VERCEL_PUBLISHER_TEAM_SLUG are required');
 }
 if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
   throw new Error('READINESS_TIMEOUT_MS must be a positive finite number');
@@ -53,7 +54,7 @@ function runInspect(deadlineAt) {
   return new Promise((resolve) => {
     const child = spawn(
       'vercel',
-      ['vcr', 'tag', 'inspect', repository, tag, '--project', project, '--format', 'json'],
+      ['vcr', 'tag', 'inspect', repository, tag, '--project', project, '--scope', teamSlug, '--format', 'json'],
       {
         env: { ...process.env, VERCEL_TELEMETRY_DISABLED: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
