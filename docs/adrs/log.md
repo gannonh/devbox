@@ -11,3 +11,6 @@
 
 ## 2026-08-14 (3)
 * **Second review corrections**: Accepted flat VCR repository correlation, explicit CLI team scoping, non-resuming deletion verification, complete named evidence checks/timings/URLs, fail-closed artifact publication, and the audited CLI version pin.
+
+## 2026-08-14 (4)
+* **Smoke liveness and evidence semantics**: Accepted explicit HTTP/SDK/smoke/cleanup deadlines, bounded executable tool probes, eventual non-resuming deletion recovery, and strict nonempty/HTTPS/timestamp/timing/cleanup-error evidence validation.

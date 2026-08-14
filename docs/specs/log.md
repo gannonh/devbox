@@ -14,3 +14,6 @@
 
 ## 2026-08-14 (4)
 * **Vercel image supply-chain second review fixes**: Corrected flat repository identity handling, scoped all CLI/readiness calls, prevented deletion verification from resuming Sandboxes, rejected forged/minimal promotion reports, withheld artifacts on redaction failure, and pinned the audited CLI.
+
+## 2026-08-14 (5)
+* **Vercel image supply-chain third review fixes**: Added deterministic hanging-endpoint coverage, bounded HTTP/SDK/smoke/cleanup execution, eventual deletion retries and recovery, executable working-binary probes, and malformed primitive evidence rejection.

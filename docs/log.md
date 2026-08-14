@@ -30,3 +30,6 @@
 
 ## 2026-08-14 (5)
 * **Vercel image supply-chain second review fixes**: Correlated the documented flat VCR repository response with explicitly scoped project/team responses, pinned the audited Vercel CLI, made deletion lookup non-resuming, strengthened named-check/timing/URL evidence validation, and made artifact publication fail closed on redaction errors.
+
+## 2026-08-14 (6)
+* **Vercel image supply-chain smoke liveness hardening**: Added abortable HTTP and bounded SDK/smoke/cleanup deadlines, eventual-consistency deletion recovery with final stop/delete attempts, executable version probes for required tools, and strict evidence primitive validation with malformed fixtures; credentialed live verification remains outside the local boundary.

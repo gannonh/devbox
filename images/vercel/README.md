@@ -37,7 +37,9 @@ docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \
   /usr/local/bin/devbox-start
 ```
 
-Run the local contract check before pushing:
+Run the local contract check before pushing; it executes bounded version probes
+for the agents, runtimes, Chromium, `gh`, and display/proxy tools rather than
+only checking that their paths exist:
 
 ```sh
 images/vercel/check-local-image.sh devbox-vercel:local

@@ -24,12 +24,18 @@ and an explicit publisher/consumer team scope. The flat repository response is
 correlated by repository ID/name/project ID, while separately scoped project
 and team responses correlate project account ID to one team ID/slug. Both
 credential sets are complete, scoped, and token-distinct; returned identity is
-verified before smoke. Every required display/proxy process must be running,
-every VM session must finish `stopped`/`aborted`, and Sandbox/snapshot deletion
-must be verified without resuming a Sandbox. The pin in
+verified before smoke. Every required display/proxy process must be running, every required runtime
+and display binary must pass a bounded version probe, every VM session must
+finish `stopped`/`aborted`, and Sandbox/snapshot deletion must be verified
+without resuming a Sandbox. Eventual post-delete `running`/`stopping` responses
+receive bounded stop/delete retries and a final re-enumeration before the gate
+fails closed. HTTP probes, SDK operations, smoke execution, and cleanup all
+have explicit deadlines. The pin in
 `src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
 consumes redacted publisher/consumer evidence for the exact digest, URLs,
-complete named checks, timings, scopes, and cleanup. Evidence upload fails
+complete named checks, timings, scopes, and cleanup. Promotion also rejects
+empty IDs/URLs, non-HTTPS noVNC URLs, malformed or unordered ISO timestamps,
+insane durations, and malformed cleanup-error arrays. Evidence upload fails
 closed if redaction fails. A scheduled Universal-drift check may open that PR
 but cannot merge or release it.
 

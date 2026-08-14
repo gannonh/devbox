@@ -61,10 +61,11 @@ context, Dockerfile, checked-in pin, or workflow output.
   x11vnc, noVNC/websockify, and the Basic Auth HTTP/WebSocket proxy.
 - `start-devbox.sh` starts every process explicitly and requires the runtime
   `DEVBOX_NOVNC_PASSWORD`; it is not an image `ENTRYPOINT` or `CMD`.
-- `status-devbox.sh` checks the non-root identity, passwordless sudo, all four
-  agents, Node.js/Bun/Python/Chromium, and display/proxy binaries; runtime mode
-  exits nonzero unless Xvfb, fluxbox, x11vnc, websockify, and the auth proxy
-  are all running.
+- `status-devbox.sh` checks the non-root identity and passwordless sudo, then
+  runs bounded five-second `--version`/`-version` probes for all four agents,
+  Node.js/Bun/Python/Chromium, `gh`, and the display/proxy binaries; runtime
+  mode also exits nonzero unless Xvfb, fluxbox, x11vnc, websockify, and the auth
+  proxy are all running.
 - `check-local-image.sh` inspects `Config.User`, `Config.Entrypoint`, and
   `Config.Cmd`, then runs the status check with an explicit command.
 
@@ -102,6 +103,12 @@ short-lived Sandbox, compares it with the checked-in base digest, and skips
 unchanged runs. A changed digest follows exactly the same path and never
 merges a PR automatically.
 
+The candidate job has a 45-minute GitHub Actions timeout. It gives each HTTP
+request 10 seconds, ordinary SDK calls 30 seconds, commands 60 seconds, each
+smoke gate 10 minutes, deletion verification 30 seconds, and cleanup 2
+minutes; these `SMOKE_*` bounds are intentionally explicit and should only be
+changed with a reviewed contract update.
+
 The workflow:
 
 1. Installs the audited `vercel@58.11.0` CLI, then logs Buildx into VCR
@@ -118,13 +125,18 @@ The workflow:
 4. Creates a real publisher Sandbox from the exact fully-qualified VCR digest.
    The smoke boundary rejects tags, bare names, and other registries before an
    API call. It starts `/usr/local/bin/devbox-start` explicitly, checks
-   identity, sudo, all agents, Chromium, Xvfb, fluxbox, x11vnc, websockify, and
-   the auth proxy, then probes authenticated noVNC HTTP/WebSocket access and a
-   terminal command.
+   identity, sudo, bounded executable version probes for all agents/runtimes,
+   `gh`/Chromium/display tools, and the auth proxy, then probes authenticated
+   noVNC HTTP/WebSocket access and a terminal command. Each HTTP request has a
+   ten-second abortable deadline; SDK operations and the whole smoke have
+   bounded deadlines, with cleanup using its own hard deadline.
 5. Stops or aborts the Sandbox, enumerates every VM session, requires terminal
-   `stopped`/`aborted` states, verifies deletion with a non-resuming lookup,
-   proves no new running session appeared, removes residual snapshots, and
-   requires final snapshot cleanup before the gate can pass.
+   `stopped`/`aborted` states, verifies deletion with repeated non-resuming
+   lookups, and treats eventual `running`/`stopping` responses as transient:
+   it attempts another stop/delete, re-enumerates sessions, and performs a
+   final bounded cleanup attempt before failing closed. It proves no new
+   running session appeared, removes residual snapshots, and requires final
+   snapshot cleanup before the gate can pass.
 6. Repeats creation and cleanup with the independent consumer credentials.
    The consumer uses the same public digest and fails if its token is empty,
    reused, or its team/project scope matches the publisher pair.
@@ -139,8 +151,10 @@ after the final `scripts/vercel/redact-artifacts.mjs` step succeeds; a redaction
 failure removes/withholds the directory. Reports retain readiness states,
 structured build/manifest/readiness/startup/HTTP/WebSocket/terminal/stop/delete
 timings, selected digests, session states, snapshot statuses, and cleanup
-evidence without credential values. Promotion requires every named smoke check,
-the exact smoke URL, successful timings, and complete identity/cleanup fields.
+recovery evidence without credential values. Promotion requires every named
+smoke check, the exact smoke URL, nonempty IDs, HTTPS noVNC URLs, ordered ISO
+stage/aggregate timestamps with sane durations, valid cleanup-error arrays,
+and complete identity/cleanup fields.
 
 ## Pin validation and release
 
