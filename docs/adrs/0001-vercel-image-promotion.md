@@ -19,14 +19,19 @@ is explicit through `/usr/local/bin/devbox-start`.
 A candidate is immutable (`sha-<source-commit>`), waits for VCR readiness under
 an enforced child-process deadline, and must pass two real Sandbox gates:
 publisher-project filesystem/runtime checks and independent consumer-project
-public-pull checks. Both credential sets are complete, scoped, and token-distinct;
-returned repository/project/team identity is verified before smoke. Every
-required display/proxy process must be running, every VM session must finish
-`stopped`/`aborted`, and Sandbox/snapshot deletion must be verified. The pin in
+public-pull checks. All VCR CLI calls use the audited `vercel@58.11.0` version
+and an explicit publisher/consumer team scope. The flat repository response is
+correlated by repository ID/name/project ID, while separately scoped project
+and team responses correlate project account ID to one team ID/slug. Both
+credential sets are complete, scoped, and token-distinct; returned identity is
+verified before smoke. Every required display/proxy process must be running,
+every VM session must finish `stopped`/`aborted`, and Sandbox/snapshot deletion
+must be verified without resuming a Sandbox. The pin in
 `src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
-consumes redacted publisher/consumer evidence for the exact digest, scopes,
-checks, timings, and cleanup. A scheduled Universal-drift check may open that
-PR but cannot merge or release it.
+consumes redacted publisher/consumer evidence for the exact digest, URLs,
+complete named checks, timings, scopes, and cleanup. Evidence upload fails
+closed if redaction fails. A scheduled Universal-drift check may open that PR
+but cannot merge or release it.
 
 ## Rationale
 
@@ -35,9 +40,10 @@ entrypoint defaults. Digest identity and explicit startup therefore need to be
 validated in the same real Sandbox used for promotion. A separate consumer
 token and project/team identity proves that public visibility works across
 project boundaries, not merely through the publisher's private registry
-permissions. Centralized artifact redaction keeps readiness, session, snapshot,
-stage-timing, and cleanup evidence useful without placing credentials in logs or
-image layers.
+permissions. Direct repository/project/team correlations avoid accepting
+unrelated identity fields from one aggregate response. Centralized artifact
+redaction keeps readiness, session, snapshot, stage-timing, and cleanup evidence
+useful without placing credentials in logs or image layers.
 
 ## Consequences
 

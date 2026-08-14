@@ -8,3 +8,6 @@
 
 ## 2026-08-14 (2)
 * **Promotion evidence hardening**: Recorded the enforced readiness deadline, independent token/scope identity checks, all-process runtime gate, terminal/session and snapshot cleanup proof, redacted evidence consumption, and structured stage timings.
+
+## 2026-08-14 (3)
+* **Second review corrections**: Accepted flat VCR repository correlation, explicit CLI team scoping, non-resuming deletion verification, complete named evidence checks/timings/URLs, fail-closed artifact publication, and the audited CLI version pin.

@@ -11,3 +11,6 @@
 
 ## 2026-08-14 (3)
 * **Vercel image supply-chain review fixes**: Hardened process/readiness/credential/identity/session/snapshot gates, made promotion evidence-driven, added structured timing artifacts, and documented consumer credential rotation.
+
+## 2026-08-14 (4)
+* **Vercel image supply-chain second review fixes**: Corrected flat repository identity handling, scoped all CLI/readiness calls, prevented deletion verification from resuming Sandboxes, rejected forged/minimal promotion reports, withheld artifacts on redaction failure, and pinned the audited CLI.

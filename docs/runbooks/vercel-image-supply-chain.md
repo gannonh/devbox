@@ -20,13 +20,16 @@ reviewed PR that replaces the bootstrap metadata.
 1. Create or select a dedicated Vercel **publisher project** and team. The VCR
    repository belongs to that project; use a stable repository name such as
    `devbox`.
-2. Create the repository with `vercel vcr add devbox --project <project>` (or
+2. Create the repository with `vercel vcr add devbox --project <project-id> --scope <team-slug>` (or
    the Vercel dashboard). Mark it public once, as an explicit operator action:
-   `vercel vcr config devbox --project <project> --public true`.
-3. Verify with `vercel vcr inspect devbox --project <project> --format json`.
-   The workflow accepts boolean/string `true` and `public` visibility values,
-   then verifies the returned repository, publisher project, team IDs, and
-   slugs; it never changes visibility silently.
+   `vercel vcr config devbox --project <project-id> --scope <team-slug> --public true`.
+3. Verify with the audited CLI version contract (`vercel@58.11.0`) and an explicit team scope:
+   `vercel vcr inspect devbox --project <project-id> --scope <team-slug> --format json`.
+   The flat repository response is correlated by repository `id`, `name`, and
+   `projectId`; public visibility accepts boolean/string `true` or `public`.
+   Separately run scoped `vercel project list --scope <team-slug> --format json`
+   and `vercel teams list --scope <team-slug> --format json` to correlate project `accountId` and
+   team `id`/`slug`; the workflow never changes visibility silently.
 4. Store publisher credentials in GitHub Actions secrets:
    `VERCEL_PUBLISHER_TOKEN`, `VERCEL_PUBLISHER_TEAM_ID`,
    `VERCEL_PUBLISHER_PROJECT_ID`, `VERCEL_PUBLISHER_TEAM_SLUG`, and
@@ -71,6 +74,8 @@ Resolve a base digest with a scoped Vercel credential, then build locally:
 export VERCEL_TOKEN=... # shell environment only; never paste into logs
 export VERCEL_TEAM_ID=...
 export VERCEL_PROJECT_ID=...
+export VERCEL_PUBLISHER_TEAM_SLUG=...
+# VCR CLI calls in CI also pass --scope "$VERCEL_PUBLISHER_TEAM_SLUG".
 export BASE_DIGEST_EVIDENCE="$PWD/.vercel-image-evidence/base.json"
 base_digest="$(node scripts/vercel/resolve-universal-digest.mjs)"
 docker buildx build \
@@ -99,13 +104,15 @@ merges a PR automatically.
 
 The workflow:
 
-1. Logs Buildx into VCR through `--password-stdin`, builds the immutable
-   `sha-<commit>` tag for `linux/amd64` with zstd, and resolves its manifest
-   digest.
-2. Verifies the returned publisher repository/project/team identity and public
-   visibility without changing it, then verifies the independent consumer
-   project/team identity with the consumer token.
-3. Polls VCR with a bounded deadline. `Preparing` and `image_not_ready` are
+1. Installs the audited `vercel@58.11.0` CLI, then logs Buildx into VCR
+   through `--password-stdin`, builds the immutable `sha-<commit>` tag for
+   `linux/amd64` with zstd, and resolves its manifest digest.
+2. Verifies the flat publisher repository response with an explicit
+   `--scope <publisher-team-slug>`, then correlates the publisher project/team
+   through scoped project/team responses without unioning unrelated objects;
+   the independent consumer project/team is checked with the consumer token.
+3. Polls VCR with the explicit publisher team scope and a bounded deadline.
+   `Preparing` and `image_not_ready` are
    transient observations; `Unoptimized`, authentication failures, and a
    timeout fail with an actionable message and preserved evidence.
 4. Creates a real publisher Sandbox from the exact fully-qualified VCR digest.
@@ -115,8 +122,9 @@ The workflow:
    the auth proxy, then probes authenticated noVNC HTTP/WebSocket access and a
    terminal command.
 5. Stops or aborts the Sandbox, enumerates every VM session, requires terminal
-   `stopped`/`aborted` states, verifies deletion, removes residual snapshots,
-   and requires final snapshot cleanup before the gate can pass.
+   `stopped`/`aborted` states, verifies deletion with a non-resuming lookup,
+   proves no new running session appeared, removes residual snapshots, and
+   requires final snapshot cleanup before the gate can pass.
 6. Repeats creation and cleanup with the independent consumer credentials.
    The consumer uses the same public digest and fails if its token is empty,
    reused, or its team/project scope matches the publisher pair.
@@ -127,10 +135,12 @@ The workflow:
    cannot auto-merge or release it.
 
 Artifacts are written under the workflow evidence directory and uploaded only
-after `scripts/vercel/redact-artifacts.mjs` traverses them. Reports retain
-readiness states, structured build/manifest/readiness/startup/HTTP/WebSocket/
-terminal/stop/delete timings, selected digests, session states, snapshot
-statuses, and cleanup evidence without credential values.
+after the final `scripts/vercel/redact-artifacts.mjs` step succeeds; a redaction
+failure removes/withholds the directory. Reports retain readiness states,
+structured build/manifest/readiness/startup/HTTP/WebSocket/terminal/stop/delete
+timings, selected digests, session states, snapshot statuses, and cleanup
+evidence without credential values. Promotion requires every named smoke check,
+the exact smoke URL, successful timings, and complete identity/cleanup fields.
 
 ## Pin validation and release
 
