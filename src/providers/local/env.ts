@@ -5,7 +5,7 @@
  * GH_TOKEN: explicit GH_TOKEN, else GITHUB_TOKEN, else `gh auth token`
  */
 import { basename } from 'node:path';
-import type { ShellRunner } from './shell.js';
+import type { ShellRunner } from '../../lib/shell.js';
 
 /**
  * Resolve the .env file path for the repo.

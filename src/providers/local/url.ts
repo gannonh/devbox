@@ -4,10 +4,10 @@
  * --url:  prints bare URL to stdout (pipe-friendly), clickable hint on stderr.
  * --open: opens the URL in a browser.
  */
-import type { LauncherContext } from '../lib/context.js';
-import { containerFor, novncUrlFor } from '../lib/docker.js';
-import { hyperlink } from '../lib/display.js';
-import { info, die } from '../lib/log.js';
+import type { LauncherContext } from './context.js';
+import { containerFor, novncUrlFor } from './docker.js';
+import { hyperlink } from '../../lib/display.js';
+import { info, die } from '../../lib/log.js';
 
 export async function url(ctx: LauncherContext, branch: string, open: boolean): Promise<number> {
   const { runner } = ctx;

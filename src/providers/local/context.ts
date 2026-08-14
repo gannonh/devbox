@@ -5,7 +5,7 @@
  * and environment. Commands are thin: they call lib/ functions and format
  * output.
  */
-import type { ShellRunner } from './shell.js';
+import type { ShellRunner } from '../../lib/shell.js';
 
 export interface LauncherContext {
   repoRoot: string;

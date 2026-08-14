@@ -1,9 +1,9 @@
 /**
  * devbox list — list devbox containers + noVNC URLs.
  */
-import type { LauncherContext } from '../lib/context.js';
-import { hyperlink } from '../lib/display.js';
-import { info, setLogStreams } from '../lib/log.js';
+import type { LauncherContext } from './context.js';
+import { hyperlink } from '../../lib/display.js';
+import { info, setLogStreams } from '../../lib/log.js';
 import type { Writable } from 'node:stream';
 
 interface ContainerRow {

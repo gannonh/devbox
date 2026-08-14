@@ -8,8 +8,8 @@
 import { existsSync } from 'node:fs';
 import { cp } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { ShellRunner } from './shell.js';
-import { warn } from './log.js';
+import type { ShellRunner } from '../../lib/shell.js';
+import { warn } from '../../lib/log.js';
 
 export interface WorktreeConfig {
   repoRoot: string;

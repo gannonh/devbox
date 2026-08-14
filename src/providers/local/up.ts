@@ -7,14 +7,14 @@
  *   3. Fresh box: create worktree, run devcontainer up, persist GH_TOKEN,
  *      print ready banner, exec into shell.
  */
-import type { LauncherContext } from '../lib/context.js';
+import type { LauncherContext } from './context.js';
 import { dirname } from 'node:path';
-import { containerFor, containerForAll, containerName } from '../lib/docker.js';
-import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch, ensureWorktreeConfig, resolveWorktreeStartPoint } from '../lib/worktree.js';
-import { resolveDevboxEnv, resolveGhToken } from '../lib/env.js';
-import { hyperlink } from '../lib/display.js';
-import { info, warn, die } from '../lib/log.js';
-import { commandExists, escapeShellSingleQuote } from '../lib/shell.js';
+import { containerFor, containerForAll, containerName } from './docker.js';
+import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch, ensureWorktreeConfig, resolveWorktreeStartPoint } from './worktree.js';
+import { resolveDevboxEnv, resolveGhToken } from './env.js';
+import { hyperlink } from '../../lib/display.js';
+import { info, warn, die } from '../../lib/log.js';
+import { commandExists, escapeShellSingleQuote } from '../../lib/shell.js';
 import { existsSync } from 'node:fs';
 
 const CYAN = '\x1b[0;36m';
@@ -164,7 +164,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
  * Exec into the container's shell. Uses spawn with inherited stdio so the
  * user gets an interactive shell. Signal forwarding is handled by spawnInherit.
  */
-function execIntoShell(runner: import('../lib/shell.js').ShellRunner, cid: string, tty: boolean): Promise<number> {
+function execIntoShell(runner: import('../../lib/shell.js').ShellRunner, cid: string, tty: boolean): Promise<number> {
   const ttyFlag = tty ? '-it' : '-i';
   // Split ttyFlag for docker exec: -it -> ['-it'], but docker accepts it as one arg.
   return runner.spawnInherit('docker', ['exec', ttyFlag, '-w', '/workspace', '-u', 'node', cid, 'bash', '-l'], {});

@@ -1,10 +1,10 @@
 /**
  * devbox rm — remove container, worktree, and branch.
  */
-import type { LauncherContext } from '../lib/context.js';
-import { containerForAll } from '../lib/docker.js';
-import { branchToPath, resolveWorktreesDir, removeWorktree, deleteBranch, branchExists } from '../lib/worktree.js';
-import { info, warn } from '../lib/log.js';
+import type { LauncherContext } from './context.js';
+import { containerForAll } from './docker.js';
+import { branchToPath, resolveWorktreesDir, removeWorktree, deleteBranch, branchExists } from './worktree.js';
+import { info, warn } from '../../lib/log.js';
 import { existsSync } from 'node:fs';
 
 export async function rm(ctx: LauncherContext, branch: string): Promise<number> {

@@ -9,7 +9,7 @@
  * version only uses .orb.local (no real IP fallback despite a comment about
  * it); we match that. A non-OrbStack fallback is a future improvement.
  */
-import type { ShellRunner } from './shell.js';
+import type { ShellRunner } from '../../lib/shell.js';
 
 /**
  * Format the id-label used to tag containers for a branch.
