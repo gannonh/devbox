@@ -8,6 +8,7 @@ okf_version: "0.1"
 
 * [Specs roadmap](/specs/index.md) - active, planned, blocked, and completed work.
 * [@gannonh/devbox npm package](/specs/2026-06-28-devbox-npm-package-design.md) - implemented package spec and build report.
+* [Cloud devboxes on Vercel Sandbox](https://github.com/gannonh/devbox/issues/2) - approved GitHub epic for the first cloud provider; its five sub-issues are linked from the [specs roadmap](/specs/index.md).
 
 ## ADRs
 
