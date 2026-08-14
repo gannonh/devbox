@@ -238,18 +238,20 @@ async function maybeInstallSkill(opts: {
     return;
   }
 
-  out.write('\n[devbox] Install the devbox Agent skill to this repo? [y/N] ');
+  const prompt = '\n[devbox] Install the devbox Agent skill to this repo? [y/N]\n';
   const rl = createRlInterface({ input: stdin, output: out as NodeJS.WriteStream });
   let answer = '';
   try {
-    answer = (await rl.question('')).trim().toLowerCase();
+    // Prompt includes a newline so line-buffered terminals (and Cursor) show
+    // it instead of waiting on a partial stderr line. Enter defaults to no.
+    answer = (await rl.question(prompt)).trim().toLowerCase();
   } finally {
     rl.close();
   }
 
   if (answer !== 'y' && answer !== 'yes') {
     out.write(
-      '[devbox] Skipped. Install later with `npx skills add gannonh/devbox --skill devbox -y`\n',
+      '[devbox] Agent skill install skipped. Install later with `npx skills add gannonh/devbox --skill devbox -y`\n',
     );
     return;
   }

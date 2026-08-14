@@ -170,7 +170,11 @@ flowchart LR
 - **`lib/docker.ts`** — `containerFor(branch)`, `containerForAll(branch)`,
   `novncUrlFor(cid)`, the label format `devbox.branch=<branch>`.
 - **`lib/worktree.ts`** — `branchToPath(branch)`, worktree add/remove with
-  `--relative-paths`, branch existence checks.
+  `--relative-paths`, branch existence checks, default-branch resolution
+  (origin HEAD is `refs/remotes/origin/<branch>`), start-point resolution
+  (`origin/<default>` after fetch, `DEVBOX_START_POINT=local` escape hatch),
+  and copying uncommitted `.devbox/` + `.devcontainer/` into a worktree when
+  `devcontainer.json` is missing.
 - **`lib/env.ts`** — resolve `DEVBOX_ENV` (explicit env, else
   `$HOME/dotfiles/repos/<repo>/.env`); resolve `GH_TOKEN` (explicit env, else
   `gh auth token`).
@@ -288,7 +292,16 @@ for v1.
 3. `npx @gannonh/devbox <branch>` in an init'd repo boots a working box:
    creates the worktree, runs `devcontainer up`, drops the user into a shell
    in `/workspace` as the non-root user. noVNC, Vite, and GitHub-token
-   forwarding all work as in kata-agents today.
+   forwarding all work as in kata-agents today. New branches start from
+   `origin/<default>` after a best-effort fetch (not the local default
+   branch). Fetch failure or a missing origin ref falls back to the local
+   default with a warning. If local `<default>` has commits origin does not,
+   the worktree still starts from origin and warns. `DEVBOX_START_POINT=local`
+   restores the local default. If `init` has been run but `.devbox/` /
+   `.devcontainer/` are not yet committed, `up` copies them into the new
+   worktree (git worktree add only checks out committed files) and warns the
+   user to commit. If those files are missing from both the worktree and the
+   source checkout, `up` errors and tells the user to run `init` first.
 4. All launcher subcommands work: `--attach` (re-enter running box),
    `--stop` (stop, keep worktree), `--rm` (remove container + worktree +
    branch), `--list` (list boxes with noVNC URLs), `--url`/`--open` (print/
@@ -346,7 +359,9 @@ for v1.
 15. `init` offers to install a bundled **devbox Agent skill**
     (`skills/devbox/SKILL.md`) into the repo at `.agents/skills/devbox/SKILL.md`
     so coding agents working in the repo discover how to use devbox. In a TTY
-    it prompts `y/N`; on `y` it copies the skill locally (no network needed). In
+    it prints a full-line `y/N` prompt via readline (so line-buffered terminals
+    show it); on `y` it copies the skill locally (no network needed). Enter or
+    `n` prints `Agent skill install skipped` plus the install-later command. In
     a non-interactive (CI) run it skips the prompt and prints the install-later
     command. The skill is also installable via the `skills` CLI from the
     `gannonh/devbox` GitHub repo: `npx skills add gannonh/devbox --skill devbox -y`.

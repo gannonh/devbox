@@ -54,7 +54,7 @@ Read `.devbox/README.md` for the full per-file guide.
 npx @gannonh/devbox <branch>
 ```
 
-This creates a git worktree for the branch, boots the container, provisions it (installs deps from the lockfile, sets up the agent, starts the display), and drops into a shell in `/workspace` as the non-root `node` user. The first run pulls the base image and provisions, so it takes a few minutes; subsequent boots are fast.
+This creates a git worktree for the branch from `origin/<default>` after fetch (not the local default branch; `DEVBOX_START_POINT=local` to override), boots the container, provisions it (installs deps from the lockfile, sets up the agent, starts the display), and drops into a shell in `/workspace` as the non-root `node` user. The first run pulls the base image and provisions, so it takes a few minutes; subsequent boots are fast.
 
 If a box for the branch is already running, this re-enters it. If it's stopped, it starts it and re-brings the display up.
 

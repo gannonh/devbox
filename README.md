@@ -24,7 +24,7 @@ Open the headed display in your browser (the `init` output and the ready banner 
 
 ## What it does
 
-- **One command, ready to work.** `npx @gannonh/devbox <branch>` creates a git worktree, builds the image, boots the container, and drops you into a shell in `/workspace` as a non-root user.
+- **One command, ready to work.** `npx @gannonh/devbox <branch>` creates a git worktree from `origin/<default>` (after fetch; `DEVBOX_START_POINT=local` to use the local default instead), builds the image, boots the container, and drops you into a shell in `/workspace` as a non-root user.
 - **Per-worktree isolation.** Each worktree gets its own container with its own network namespace, so concurrent worktrees never collide on ports. OrbStack exposes each container at `<container>.orb.local:<port>`.
 - **Headed display via noVNC.** Xvfb + fluxbox + x11vnc + noVNC run inside the box; view the desktop in any browser. Electron apps render there.
 - **Coding agent built in.** Pi is the default. Claude Code and Codex ship as commented-out blocks in `provision.sh` — switch by commenting out Pi and uncommenting your choice.

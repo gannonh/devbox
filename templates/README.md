@@ -87,6 +87,9 @@ Code** or **Codex**:
   script should read this env var and pass `--no-sandbox` when it's set.
 - For a native VNC client instead of the browser, point it at
   `<container-name>.orb.local:5900`.
+- New boxes start from `origin/<default>` after fetch, not your local
+  default branch. Set `DEVBOX_START_POINT=local` to use the local branch
+  instead.
 - Template drift: if you want to pick up changes from a newer version of
   `@gannonh/devbox`, re-run `npx @gannonh/devbox init --force`. An `update`
   command is planned for a future release.

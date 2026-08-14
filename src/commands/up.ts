@@ -10,7 +10,7 @@
 import type { LauncherContext } from '../lib/context.js';
 import { dirname } from 'node:path';
 import { containerFor, containerForAll, containerName } from '../lib/docker.js';
-import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch } from '../lib/worktree.js';
+import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch, ensureWorktreeConfig, resolveWorktreeStartPoint } from '../lib/worktree.js';
 import { resolveDevboxEnv, resolveGhToken } from '../lib/env.js';
 import { hyperlink } from '../lib/display.js';
 import { info, warn, die } from '../lib/log.js';
@@ -59,16 +59,27 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
 
   // 3. Fresh box: create the worktree.
   if (!existsSync(path)) {
-    info(`creating worktree ${branch} -> ${path}`);
     // Fetch latest default branch (best-effort, don't fail if offline).
     const base = await defaultBranch(runner, repoRoot);
     const fetchResult = await runner.execQuiet('git', ['fetch', 'origin', base], { cwd: repoRoot, silentStderr: true });
-    if (fetchResult.code !== 0) {
-      warn(`git fetch origin ${base} failed (offline?); using local default branch: ${base}`);
-    }
-    await createWorktree(runner, { repoRoot, path, branch });
+    const start = await resolveWorktreeStartPoint(runner, repoRoot, env, {
+      fetched: fetchResult.code === 0,
+    });
+    if (start.warning) warn(start.warning);
+    info(`creating worktree ${branch} from ${start.ref} -> ${path}`);
+    await createWorktree(runner, { repoRoot, path, branch, startPoint: start.ref });
   } else {
     info(`worktree exists at ${path}, reusing`);
+  }
+
+  // git worktree add only checks out committed files. After `init`, .devbox/
+  // and .devcontainer/ are still untracked, so copy them in if missing.
+  const configStatus = await ensureWorktreeConfig(repoRoot, path);
+  if (configStatus.status === 'missing') die(configStatus.message);
+  if (configStatus.status === 'copied') {
+    warn(
+      'copied uncommitted .devbox/ and .devcontainer/ into the worktree; commit them so new worktrees pick them up automatically',
+    );
   }
 
   // .env check.

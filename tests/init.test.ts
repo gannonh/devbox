@@ -89,6 +89,7 @@ describe('init', () => {
 
     // Output confirms the install and shows the install-later command.
     const output = chunks.join('');
+    expect(output).toContain('Install the devbox Agent skill to this repo? [y/N]');
     expect(output).toContain('.agents/skills/devbox/SKILL.md');
     expect(output).toContain('npx skills add gannonh/devbox --skill devbox -y');
   });
@@ -111,8 +112,27 @@ describe('init', () => {
 
     // But the install-later command is still shown.
     const output = chunks.join('');
-    expect(output).toContain('Skipped');
+    expect(output).toContain('Install the devbox Agent skill to this repo? [y/N]');
+    expect(output).toContain('Agent skill install skipped');
     expect(output).toContain('npx skills add gannonh/devbox --skill devbox -y');
+  });
+
+  it('skips the skill install on empty enter (interactive)', async () => {
+    const chunks: string[] = [];
+    const stderr = new Writable({
+      write(chunk, _enc, cb) {
+        chunks.push(chunk.toString());
+        cb();
+      },
+    });
+    const stdin = Readable.from(['\n']);
+
+    const result = await init({ force: false, stderr, stdin, interactive: true });
+    expect(result).toBe(0);
+    expect(existsSync(join(tempDir, '.agents'))).toBe(false);
+    const output = chunks.join('');
+    expect(output).toContain('Install the devbox Agent skill to this repo? [y/N]');
+    expect(output).toContain('Agent skill install skipped');
   });
 
   it('skips the skill prompt in non-interactive (CI) runs and shows the later command', async () => {
