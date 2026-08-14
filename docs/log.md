@@ -26,3 +26,8 @@
 * **Provider foundation**: Added the typed lifecycle boundary and registry for Issue [#3](https://github.com/gannonh/devbox/issues/3), moved Docker/devcontainer lifecycle code under `src/providers/local/`, and preserved local as the default provider.
 * **CLI grammar**: Added `--provider local|vercel`, provider-filtered `--list`, `--password`, stable argument errors, and explicit unsupported results for local display credentials without adding Vercel SDK behavior.
 * **Architecture record**: Accepted [ADR 0001](./adrs/0001-provider-boundary.md) for the provider registry and local-provider isolation.
+
+## 2026-08-14 (4)
+* **Quality hardening**: Cleaned `dist` before builds and packs, handled missing child executables through the runner error boundary, and routed devcontainer stderr to caller-owned streams with regression coverage.
+* **Spec navigation**: Updated the implemented package design's source paths to the local provider layout and cross-linked ADR 0001.
+* **Residual risk**: The one-shot CLI still uses a module-global logger stream; converting it to a request-bound logger remains deferred to avoid widening the parity refactor.

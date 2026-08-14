@@ -8,3 +8,6 @@
 
 ## 2026-08-14 (2)
 * **Provider foundation**: Issue [#3](https://github.com/gannonh/devbox/issues/3) implementation is staged as a typed registry boundary with local lifecycle parity; Vercel remains an explicit unavailable provider until its later phases.
+
+## 2026-08-14 (3)
+* **Build hardening**: Added deterministic clean packaging, missing-executable runner handling, and caller-owned devcontainer stderr routing to the Issue #3 implementation.

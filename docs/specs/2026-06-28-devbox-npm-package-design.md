@@ -118,23 +118,29 @@ flowchart LR
   eslint config
   vitest config
   src/
-    cli.ts                # arg parse, dispatch, --help
+    cli.ts                # provider-aware arg parse, registry dispatch, --help
     commands/
       init.ts             # scaffold .devbox/ + .devcontainer/
-      up.ts               # worktree + devcontainer up + GH token + shell
-      attach.ts           # re-enter running box
-      stop.ts
-      rm.ts
-      list.ts
-      url.ts              # --url / --open
+    providers/
+      types.ts            # provider-neutral lifecycle and credential contract
+      registry.ts         # the only CLI-to-provider dispatch point
+      local/              # Docker/devcontainer implementation and local helpers
+        provider.ts       # adapts local lifecycle commands to DevboxProvider
+        up.ts             # worktree + devcontainer up + GH token + shell
+        attach.ts         # re-enter running box
+        stop.ts
+        rm.ts
+        list.ts
+        url.ts            # --url / --open
+        docker.ts         # container lookup by label, name, noVNC URL
+        worktree.ts       # branch->path math, --relative-paths add
+        env.ts            # DEVBOX_ENV + GH_TOKEN forwarding logic
     lib/
-      docker.ts           # container lookup by label, name, noVNC URL
-      worktree.ts         # branch->path math, --relative-paths add
-      env.ts              # DEVBOX_ENV + GH_TOKEN forwarding logic
       display.ts          # OSC 8 hyperlink helper
       log.ts              # info/warn/error/die with color
-      shell.ts            # exec helpers (docker, devcontainer, git)
+      shell.ts            # generic process execution seam
       lockfile.ts         # detect package manager from lockfile
+      repo.ts             # shared repository root/name facts
       tokens.ts           # template token replacement
   templates/
     Dockerfile
@@ -152,36 +158,40 @@ flowchart LR
 
 ### Component responsibilities
 
-- **`cli.ts`** — parse argv, route to a command module, render `--help` and
-  per-command help. Thin; no business logic.
+- **`cli.ts`** — parse provider/action argv once, resolve the provider registry,
+  render `--help` and per-command help, and pass provider-neutral requests.
 - **`commands/init.ts`** — resolve `templates/`, copy files into the target
   repo's `.devbox/` and `.devcontainer/`, apply token replacement (repo name
   in `devcontainer.json` `name` field and README). Idempotent: detect
   existing `.devbox/` and prompt or error unless `--force`.
-- **`commands/up.ts`** — port of `cmd_up` from `devbox.sh`: worktree creation
-  with `--relative-paths`, `devcontainer up` with `--id-label` + `.git` mount
-  + `--remote-env GH_TOKEN`, container lookup, GH_TOKEN persistence to
+- **`providers/local/up.ts`** — port of `cmd_up` from `devbox.sh`: worktree
+  creation with `--relative-paths`, `devcontainer up` with `--id-label` + `.git`
+  mount + `--remote-env GH_TOKEN`, container lookup, GH_TOKEN persistence to
   `/etc/profile.d/gh-token.sh`, ready banner with OSC 8 links, then `exec`
   into `docker exec -it -w /workspace -u node <cid> bash -l`.
-- **`commands/attach.ts`** — re-enter a running box (or start a stopped one
-  and re-bring the display up via `setsid`).
-- **`commands/{stop,rm,list,url}.ts`** — direct ports of the equivalent
+- **`providers/local/attach.ts`** — re-enter a running box (or start a stopped
+  one and re-bring the display up via `setsid`).
+- **`providers/local/{stop,rm,list,url}.ts`** — direct ports of the equivalent
   `cmd_*` functions.
-- **`lib/docker.ts`** — `containerFor(branch)`, `containerForAll(branch)`,
-  `novncUrlFor(cid)`, the label format `devbox.branch=<branch>`.
-- **`lib/worktree.ts`** — `branchToPath(branch)`, worktree add/remove with
-  `--relative-paths`, branch existence checks, default-branch resolution
-  (origin HEAD is `refs/remotes/origin/<branch>`), start-point resolution
-  (`origin/<default>` after fetch, `DEVBOX_START_POINT=local` escape hatch),
-  and copying uncommitted `.devbox/` + `.devcontainer/` into a worktree when
-  `devcontainer.json` is missing.
-- **`lib/env.ts`** — resolve `DEVBOX_ENV` (explicit env, else
+- **`providers/local/docker.ts`** — `containerFor(branch)`,
+  `containerForAll(branch)`, `novncUrlFor(cid)`, and the
+  `devbox.branch=<branch>` label.
+- **`providers/local/worktree.ts`** — `branchToPath(branch)`, worktree
+  add/remove with `--relative-paths`, branch existence checks, default-branch
+  resolution (origin HEAD is `refs/remotes/origin/<branch>`), start-point
+  resolution (`origin/<default>` after fetch, `DEVBOX_START_POINT=local`
+  escape hatch), and copying uncommitted `.devbox/` + `.devcontainer/` into a
+  worktree when `devcontainer.json` is missing.
+- **`providers/local/env.ts`** — resolve `DEVBOX_ENV` (explicit env, else
   `$HOME/dotfiles/repos/<repo>/.env`); resolve `GH_TOKEN` (explicit env, else
   `gh auth token`).
 - **`lib/display.ts`** — `hyperlink(url, text)` OSC 8 emitter.
 - **`lib/lockfile.ts`** — given a dir, return `bun`/`pnpm`/`npm`/`none` based
   on which lockfile is present.
 - **`lib/tokens.ts`** — `replaceTokens(template, { repoName })`.
+
+The provider boundary and local-provider move are recorded in
+[ADR 0001](../adrs/0001-provider-boundary.md) and implemented for Issue [#3](https://github.com/gannonh/devbox/issues/3).
 - **`templates/`** — the actual files `init` copies. Kept as real files so
   `${localEnv:...}` tokens in `devcontainer.json` stay literal (no string
   escaping) and templates are diffable.
