@@ -45,7 +45,8 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('vcr tag inspect');
     expect(workflow).toContain('manifestDigest');
     expect(workflow).toContain('git fetch origin');
-    expect(workflow).toContain('gh pr view --head');
+    expect(workflow).toContain('gh pr list --state open --head');
+    expect(workflow).not.toContain('gh pr view --head');
     expect(workflow).toContain('git diff --cached --quiet');
   });
 
@@ -96,6 +97,7 @@ describe('Vercel image supply-chain workflow', () => {
     const cleanup = await readFile('scripts/vercel/sandbox-cleanup.mjs', 'utf8');
     expect(smoke).toContain('sessionStates');
     expect(smoke).toContain('finalSessionStatesTerminal');
+    expect(smoke).toContain('discoveryConverged');
     expect(smoke).toContain('recoverOwnedResources');
     expect(smoke).toContain('devbox-run');
     expect(cleanup).toContain('resume: false');
@@ -113,6 +115,11 @@ describe('Vercel image supply-chain workflow', () => {
     const imageReadme = await readFile('images/vercel/README.md', 'utf8');
     expect(runbook).toContain('sandbox list --all');
     expect(runbook).toContain('sandbox snapshots list');
+    expect(runbook).toContain('vercel@58.11.0 sandbox snapshots delete');
+    expect(runbook).toContain('devbox-smoke-publisher-');
+    expect(runbook).toContain('devbox-smoke-consumer-');
+    expect(runbook).toContain('base-digest-probe-');
+    expect(runbook).toContain('RESOLVER_TAG');
     expect(runbook).toContain('--scope');
     expect(runbook).toContain('--tag');
     expect(runbook).toContain('sleep infinity');

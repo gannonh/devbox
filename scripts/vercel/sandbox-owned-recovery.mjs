@@ -42,6 +42,38 @@ function validateOptions({ timeoutMs, operationTimeoutMs, maxAttempts, backoffMs
 }
 
 /**
+ * Apply the final owned-resource observation to a smoke-style evidence report.
+ * Transient cleanup observations belong in recovery history; only errors that
+ * survive the final reconciliation are copied into cleanup.errors.
+ */
+export function applyOwnedRecoveryEvidence(report, recovery) {
+  if (!report || typeof report !== 'object' || !report.cleanup || typeof report.cleanup !== 'object') {
+    throw new TypeError('smoke evidence report with cleanup is required');
+  }
+  if (!recovery || typeof recovery !== 'object') throw new TypeError('owned recovery result is required');
+  report.cleanup.ownedRecovery = recovery;
+  report.snapshots = Array.isArray(recovery.finalSnapshots)
+    ? recovery.finalSnapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }))
+    : [];
+  report.cleanup.residualNonDeletedSnapshots = Array.isArray(recovery.residualSnapshots)
+    ? recovery.residualSnapshots
+    : [];
+  report.cleanup.snapshotsCleaned = recovery.snapshotsCleaned === true;
+  report.cleanup.discoveryConverged = recovery.discoveryConverged === true;
+  if (recovery.errors?.length === 0 && recovery.snapshotsCleaned === true && recovery.discoveryConverged === true && Array.isArray(report.cleanup.recovery)) {
+    const unreconciled = report.cleanup.recovery.filter((event) => event?.outcome !== 'pending-reconciliation');
+    if (unreconciled.length > 0) report.cleanup.recovery = unreconciled;
+    else delete report.cleanup.recovery;
+  }
+  if (Array.isArray(recovery.errors) && recovery.errors.length > 0) {
+    report.cleanup.errors ??= [];
+    report.cleanup.errors.push(...recovery.errors);
+    report.failed = true;
+  }
+  return report;
+}
+
+/**
  * Discover and clean only resources matching the caller's owned name/tag
  * query. Snapshot.list returns plain metadata in @vercel/sandbox 3.x, so the
  * deleteSnapshot callback must resolve each metadata id to a Snapshot instance
@@ -49,7 +81,9 @@ function validateOptions({ timeoutMs, operationTimeoutMs, maxAttempts, backoffMs
  *
  * Discovery deliberately runs through a bounded grace window. A create request
  * can be accepted remotely after the local create promise is aborted, so one
- * empty list or 404 is never treated as conclusive.
+ * empty list is never treated as conclusive. Collection discovery failures,
+ * including broad API 404s, remain errors rather than being interpreted as an
+ * empty collection.
  */
 export async function recoverOwnedResources({
   listSandboxes,
@@ -72,21 +106,29 @@ export async function recoverOwnedResources({
   validateOptions({ timeoutMs, operationTimeoutMs, maxAttempts, backoffMs });
 
   const deadline = Date.now() + timeoutMs;
-  const errors = [];
+  const permanentErrors = [];
+  const sandboxOperationErrors = new Map();
+  const snapshotOperationErrors = new Map();
   const recoveredSandboxes = [];
   const deletedSnapshots = [];
   const discoveredSandboxNames = new Set();
-  const recoveredSandboxNames = new Set();
   let lastSandboxes = [];
   let lastSnapshots = [];
+  let finalSandboxes = [];
+  let finalSnapshots = [];
   let sandboxDiscoveryErrors = 0;
   let snapshotDiscoveryErrors = 0;
+  let finalSandboxListingSucceeded = false;
+  let finalSnapshotListingSucceeded = false;
   let attempts = 0;
 
   const remaining = () => Math.max(0, deadline - Date.now());
   const recordError = (operation, error) => {
     const detail = `${operation}: ${errorMessage(error)}`.slice(0, 500);
-    errors.push(detail);
+    permanentErrors.push(detail);
+  };
+  const recordOperationError = (map, id, operation, error) => {
+    map.set(id, `${operation}: ${errorMessage(error)}`.slice(0, 500));
   };
   const call = (operation, label) => {
     const timeout = Math.min(operationTimeoutMs, remaining());
@@ -94,22 +136,38 @@ export async function recoverOwnedResources({
     return boundedCall(operation, label, { signal, timeoutMs: timeout });
   };
 
-  async function discoverSandboxes() {
+  async function listOwnedSandboxes(final = false) {
     try {
       const result = await call(
-        (requestSignal) => listSandboxes({ signal: requestSignal, attempt: attempts }),
-        'owned Sandbox discovery',
+        (requestSignal) => listSandboxes({ signal: requestSignal, attempt: attempts, final }),
+        final ? 'final owned Sandbox discovery' : 'owned Sandbox discovery',
       );
-      lastSandboxes = Array.isArray(result) ? result : [];
+      return { ok: true, items: Array.isArray(result) ? result : [] };
     } catch (error) {
-      if (isNotFound(error)) {
-        lastSandboxes = [];
-      } else {
-        sandboxDiscoveryErrors += 1;
-        lastSandboxes = [];
-        recordError('sandbox discovery', error);
-      }
+      sandboxDiscoveryErrors += 1;
+      recordError(final ? 'final sandbox discovery' : 'sandbox discovery', error);
+      return { ok: false, items: [] };
     }
+  }
+
+  async function listOwnedSnapshots(final = false) {
+    try {
+      const result = await call(
+        (requestSignal) => listSnapshots({ signal: requestSignal, attempt: attempts, final }),
+        final ? 'final owned snapshot discovery' : 'owned snapshot discovery',
+      );
+      return { ok: true, items: Array.isArray(result) ? result : [] };
+    } catch (error) {
+      snapshotDiscoveryErrors += 1;
+      recordError(final ? 'final snapshot discovery' : 'snapshot discovery', error);
+      return { ok: false, items: [] };
+    }
+  }
+
+  async function discoverSandboxes() {
+    const discovered = await listOwnedSandboxes();
+    lastSandboxes = discovered.items;
+    if (!discovered.ok) return;
 
     for (const sandbox of lastSandboxes) {
       if (!sandbox || typeof sandbox.name !== 'string' || sandbox.name.length === 0) {
@@ -117,60 +175,51 @@ export async function recoverOwnedResources({
         continue;
       }
       discoveredSandboxNames.add(sandbox.name);
-      if (recoveredSandboxNames.has(sandbox.name)) continue;
       try {
         await call(
           (requestSignal) => recoverSandbox(sandbox.name, { signal: requestSignal, attempt: attempts, sandbox }),
           `owned Sandbox ${sandbox.name} recovery`,
         );
-        recoveredSandboxNames.add(sandbox.name);
+        sandboxOperationErrors.delete(sandbox.name);
         if (!recoveredSandboxes.includes(sandbox.name)) recoveredSandboxes.push(sandbox.name);
       } catch (error) {
         if (isNotFound(error)) {
-          recoveredSandboxNames.add(sandbox.name);
+          sandboxOperationErrors.delete(sandbox.name);
           if (!recoveredSandboxes.includes(sandbox.name)) recoveredSandboxes.push(sandbox.name);
         } else {
-          recordError(`sandbox ${sandbox.name} recovery`, error);
+          recordOperationError(sandboxOperationErrors, sandbox.name, `sandbox ${sandbox.name} recovery`, error);
         }
       }
     }
   }
 
   async function reconcileSnapshots() {
-    try {
-      const result = await call(
-        (requestSignal) => listSnapshots({ signal: requestSignal, attempt: attempts }),
-        'owned snapshot discovery',
-      );
-      lastSnapshots = Array.isArray(result) ? result : [];
-    } catch (error) {
-      if (isNotFound(error)) {
-        lastSnapshots = [];
-      } else {
-        snapshotDiscoveryErrors += 1;
-        lastSnapshots = [];
-        recordError('snapshot discovery', error);
-      }
-      return;
-    }
+    const discovered = await listOwnedSnapshots();
+    lastSnapshots = discovered.items;
+    if (!discovered.ok) return;
 
     for (const snapshot of lastSnapshots) {
       if (!snapshot || typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
         recordError('snapshot discovery', new Error('returned an unidentified resource'));
         continue;
       }
-      if (snapshot.status === 'deleted') continue;
+      if (snapshot.status === 'deleted') {
+        snapshotOperationErrors.delete(snapshot.id);
+        continue;
+      }
       try {
         await call(
           (requestSignal) => deleteSnapshot(snapshot, { signal: requestSignal, attempt: attempts }),
           `owned snapshot ${snapshot.id} deletion`,
         );
+        snapshotOperationErrors.delete(snapshot.id);
         if (!deletedSnapshots.includes(snapshot.id)) deletedSnapshots.push(snapshot.id);
       } catch (error) {
         if (isNotFound(error)) {
+          snapshotOperationErrors.delete(snapshot.id);
           if (!deletedSnapshots.includes(snapshot.id)) deletedSnapshots.push(snapshot.id);
         } else {
-          recordError(`snapshot ${snapshot.id} cleanup`, error);
+          recordOperationError(snapshotOperationErrors, snapshot.id, `snapshot ${snapshot.id} cleanup`, error);
         }
       }
     }
@@ -193,27 +242,63 @@ export async function recoverOwnedResources({
     }
   }
 
-  const residualSandboxes = lastSandboxes
-    .filter((sandbox) => sandbox && typeof sandbox.name === 'string' && !recoveredSandboxNames.has(sandbox.name))
-    .map((sandbox) => ({ name: sandbox.name, status: sandbox.status }));
-  const residualSnapshots = lastSnapshots
-    .filter((snapshot) => snapshot && snapshot.status !== 'deleted')
-    .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
-  if (residualSnapshots.length > 0) {
-    for (const snapshot of residualSnapshots) {
-      recordError('snapshot residual', new Error(`${snapshot.id} remains ${snapshot.status}`));
-    }
+  // Always take an independent final listing. A successful recovery callback
+  // is not evidence that the collection has converged; the owned name/id must
+  // disappear from this fresh observation before residuals can be suppressed.
+  if (remaining() > 0) {
+    const finalSandboxResult = await listOwnedSandboxes(true);
+    finalSandboxes = finalSandboxResult.items;
+    finalSandboxListingSucceeded = finalSandboxResult.ok;
+    const finalSnapshotResult = await listOwnedSnapshots(true);
+    finalSnapshots = finalSnapshotResult.items;
+    finalSnapshotListingSucceeded = finalSnapshotResult.ok;
   }
+
+  const malformedFinalSandboxes = finalSandboxes.filter(
+    (sandbox) => !sandbox || typeof sandbox.name !== 'string' || sandbox.name.length === 0,
+  );
+  const malformedFinalSnapshots = finalSnapshots.filter(
+    (snapshot) => !snapshot || typeof snapshot.id !== 'string' || snapshot.id.length === 0,
+  );
+  for (const sandbox of malformedFinalSandboxes) {
+    recordError('final sandbox discovery', new Error(`returned an unidentified resource: ${errorMessage(sandbox)}`));
+  }
+  for (const snapshot of malformedFinalSnapshots) {
+    recordError('final snapshot discovery', new Error(`returned an unidentified resource: ${errorMessage(snapshot)}`));
+  }
+  for (const sandbox of finalSandboxes) {
+    if (sandbox && typeof sandbox.name === 'string') discoveredSandboxNames.add(sandbox.name);
+  }
+  const residualSandboxes = finalSandboxes
+    .filter((sandbox) => sandbox && typeof sandbox.name === 'string' && sandbox.name.length > 0)
+    .map((sandbox) => ({ name: sandbox.name, status: sandbox.status }));
+  const residualSnapshots = finalSnapshots
+    .filter((snapshot) => snapshot && typeof snapshot.id === 'string' && snapshot.id.length > 0 && snapshot.status !== 'deleted')
+    .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
+
+  for (const residual of residualSandboxes) {
+    const operationError = sandboxOperationErrors.get(residual.name);
+    if (operationError) permanentErrors.push(operationError);
+    recordError('sandbox residual', new Error(`${residual.name} remains ${residual.status ?? 'present'}`));
+  }
+  for (const residual of residualSnapshots) {
+    const operationError = snapshotOperationErrors.get(residual.id);
+    if (operationError) permanentErrors.push(operationError);
+    recordError('snapshot residual', new Error(`${residual.id} remains ${residual.status}`));
+  }
+  const errors = permanentErrors;
 
   return {
     attempts,
-    discoveryConverged: attempts > 0 && sandboxDiscoveryErrors === 0 && residualSandboxes.length === 0,
+    discoveryConverged: attempts > 0 && finalSandboxListingSucceeded && sandboxDiscoveryErrors === 0 && malformedFinalSandboxes.length === 0 && residualSandboxes.length === 0,
     recoveredSandboxes,
     discoveredSandboxes: [...discoveredSandboxNames],
+    finalSandboxes,
     residualSandboxes,
     deletedSnapshots,
+    finalSnapshots,
     residualSnapshots,
-    snapshotsCleaned: attempts > 0 && snapshotDiscoveryErrors === 0 && residualSnapshots.length === 0,
+    snapshotsCleaned: attempts > 0 && finalSnapshotListingSucceeded && snapshotDiscoveryErrors === 0 && malformedFinalSnapshots.length === 0 && residualSnapshots.length === 0,
     errors,
   };
 }

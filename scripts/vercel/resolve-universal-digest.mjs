@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { APIError, Sandbox, Snapshot } from '@vercel/sandbox';
 import { boundedCall, verifySandboxDeleted } from './sandbox-cleanup.mjs';
 import { recoverOwnedResources } from './sandbox-owned-recovery.mjs';
+import { deleteListedSnapshot } from './snapshot-cleanup.mjs';
 
 function positiveTimeout(name, fallback) {
   const value = Number(process.env[name] ?? fallback);
@@ -37,7 +38,7 @@ const report = {
   credentials: { scopedProject: Boolean(credentials.projectId), tokenSupplied: Boolean(credentials.token) },
   ownedName,
   ownedTag,
-  cleanup: { stopAttempted: false, deleteAttempted: false, deletionVerified: false, snapshotsCleaned: false, errors: [] },
+  cleanup: { stopAttempted: false, deleteAttempted: false, deletionVerified: false, discoveryConverged: false, snapshotsCleaned: false, errors: [] },
 };
 const probeController = new AbortController();
 const probeTimer = setTimeout(() => probeController.abort(new Error(`Universal digest probe timed out after ${probeTimeoutMs}ms`)), probeTimeoutMs);
@@ -45,6 +46,7 @@ const probeSignal = probeController.signal;
 let activeDeadlineAt = startedEpochMs + probeTimeoutMs;
 let sandbox;
 let primaryVerification;
+let evidenceWriteError;
 
 function isNotFound(error) {
   return error instanceof APIError && [404, 410].includes(error.response.status);
@@ -61,45 +63,19 @@ function remaining(signal) {
 }
 
 async function listOwnedSandboxes(signal) {
-  try {
-    return await boundedCall(
-      (requestSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: requestSignal })
-        .then((page) => page.toArray())
-        .then((sandboxes) => sandboxes.filter((item) => item.name === ownedName)),
-      'owned Sandbox discovery',
-      { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
-    );
-  } catch (error) {
-    if (isNotFound(error)) return [];
-    throw error;
-  }
+  return boundedCall(
+    (requestSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: requestSignal })
+      .then((page) => page.toArray())
+      .then((sandboxes) => sandboxes.filter((item) => item.name === ownedName)),
+    'owned Sandbox discovery',
+    { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
+  );
 }
 
 async function listOwnedSnapshots(signal) {
-  try {
-    return await boundedCall(
-      (requestSignal) => Snapshot.list({ ...credentials, name: ownedName, limit: 100, signal: requestSignal }).then((page) => page.toArray()),
-      'owned snapshot discovery',
-      { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
-    );
-  } catch (error) {
-    if (isNotFound(error)) return [];
-    throw error;
-  }
-}
-
-async function deleteListedSnapshot(snapshot, signal, label = 'snapshot') {
-  if (!snapshot || typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
-    throw new Error(`${label} metadata has no id`);
-  }
-  const instance = await boundedCall(
-    (requestSignal) => Snapshot.get({ ...credentials, snapshotId: snapshot.id, signal: requestSignal }),
-    `${label} ${snapshot.id} lookup`,
-    { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
-  );
-  await boundedCall(
-    (requestSignal) => instance.delete({ signal: requestSignal }),
-    `${label} ${snapshot.id} deletion`,
+  return boundedCall(
+    (requestSignal) => Snapshot.list({ ...credentials, name: ownedName, limit: 100, signal: requestSignal }).then((page) => page.toArray()),
+    'owned snapshot discovery',
     { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
   );
 }
@@ -131,7 +107,13 @@ async function recoverOwned(signal) {
       if (!result.verified || !result.noRunningSession) throw new Error(`owned Sandbox ${name} was not fully deleted`);
     },
     listSnapshots: ({ signal: requestSignal }) => listOwnedSnapshots(requestSignal),
-    deleteSnapshot: (snapshot, { signal: requestSignal }) => deleteListedSnapshot(snapshot, requestSignal, 'owned snapshot'),
+    deleteSnapshot: (snapshot, { signal: requestSignal }) => deleteListedSnapshot({
+      snapshot,
+      signal: requestSignal,
+      timeoutMs: Math.min(sdkTimeoutMs, remaining(requestSignal)),
+      label: 'owned snapshot',
+      getSnapshot: (snapshotId, getSignal) => Snapshot.get({ ...credentials, snapshotId, signal: getSignal }),
+    }),
     signal,
     isNotFound,
   });
@@ -139,6 +121,7 @@ async function recoverOwned(signal) {
   report.cleanup.ownedSandboxesRecovered = recovery.recoveredSandboxes;
   report.cleanup.ownedSnapshotsDeleted = recovery.deletedSnapshots;
   report.cleanup.residualSnapshots = recovery.residualSnapshots;
+  report.cleanup.finalSnapshots = recovery.finalSnapshots;
   report.cleanup.snapshotsCleaned = recovery.snapshotsCleaned;
   report.cleanup.discoveryConverged = recovery.discoveryConverged;
   return recovery;
@@ -219,13 +202,19 @@ try {
   report.finishedAt = new Date().toISOString();
   report.durationMs = Date.now() - startedEpochMs;
   if (reportPath) {
-    await mkdir(dirname(reportPath), { recursive: true }).catch(() => {});
-    await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`).catch(() => {});
+    try {
+      await mkdir(dirname(reportPath), { recursive: true });
+      await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    } catch (error) {
+      evidenceWriteError = error;
+    }
   }
 }
 
-if (!report.digest || report.cleanup.errors.length > 0 || !report.cleanup.snapshotsCleaned || !report.cleanup.deletionVerified) {
+if (!report.digest || report.cleanup.errors.length > 0 || !report.cleanup.snapshotsCleaned || !report.cleanup.deletionVerified || evidenceWriteError) {
   process.exitCode = 1;
-  if (!report.error) report.error = 'Universal digest probe cleanup or resolution failed';
-  if (!reportPath) console.error(report.error);
+  if (!report.error) report.error = report.cleanup.errors[0] ?? 'Universal digest probe cleanup or resolution failed';
+  const messages = [report.error];
+  if (evidenceWriteError) messages.push(`evidence write failed: ${evidenceWriteError instanceof Error ? evidenceWriteError.message : String(evidenceWriteError)}`);
+  console.error(messages.join('; '));
 }

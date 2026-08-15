@@ -39,3 +39,6 @@
 
 ## 2026-08-15
 * **Vercel image SDK-shaped cleanup correction**: Updated smoke, lost-handle recovery, and Universal digest cleanup for the pinned Sandbox 3.0.0 `Snapshot.list()` metadata shape by resolving IDs through `Snapshot.get`; added bounded delayed-discovery polling and residual snapshot convergence evidence. Credentialed live verification remains outside the local boundary.
+
+## 2026-08-15 (2)
+* **Vercel image final quality cleanup**: Made collection discovery and final Sandbox/snapshot listings authoritative and fail closed, normalized delayed snapshot evidence after convergence, added actual SDK list/get/delete behavior coverage, restricted promotion PR reuse to open PRs, pinned role-specific orphan commands, and made resolver evidence writes required.

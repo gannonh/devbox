@@ -121,7 +121,8 @@ The workflow serializes candidate runs with a non-canceling concurrency group.
 The candidate tag includes both source commit and selected base digest; an
 existing tag is reused only after its `manifestDigest` matches the inspected
 candidate digest, and a mismatch fails closed. Promotion reuses an existing
-branch/PR instead of creating duplicate proposals.
+open branch PR instead of creating duplicate proposals; closed or merged PRs
+are not treated as reusable.
 
 The workflow:
 
@@ -153,16 +154,19 @@ The workflow:
    plain metadata, so cleanup resolves each `id` with `Snapshot.get` before
    bounded instance deletion and records that metadata `id` in evidence. After
    a lost create handle, owned name/tag discovery and snapshot listings poll
-   through the independent cleanup deadline; final snapshot cleanup requires
-   every matching item to be absent or `deleted`, otherwise residual IDs/statuses
-   are recorded and the gate fails closed.
+   through the independent cleanup deadline; collection 404s are errors, not
+   empty results. A fresh final owned Sandbox listing must omit the exact
+   recovered name, and the final snapshot listing is authoritative: every
+   matching item must be absent or `deleted`; recoverable intermediate errors
+   are cleared only after that convergence, otherwise residual IDs/statuses are
+   recorded and the gate fails closed.
 6. Repeats creation and cleanup with the independent consumer credentials.
    The consumer uses the same public digest and fails if its token is empty,
    reused, or its team/project scope matches the publisher pair.
 7. After both gates pass, the promotion helper consumes the redacted reports
    and rejects mismatched digests/scopes, failed checks, non-terminal sessions,
-   unsuccessful deletion, or residual snapshots before updating the sole image
-   pin. The PR is reviewed and merged by an operator; the candidate workflow
+   unsuccessful deletion, missing final owned-resource convergence, or residual
+   snapshots before updating the sole image pin. The PR is reviewed and merged by an operator; the candidate workflow
    cannot auto-merge or release it.
 
 Artifacts are written under the workflow evidence directory and uploaded only
@@ -206,26 +210,57 @@ the rollback (or any later image pin).
 ## Orphan cleanup
 
 A failed smoke run attempts cleanup in `finally`, but operators should inspect
-for leftovers using the consumer or publisher project credentials:
+for leftovers with the matching publisher or consumer project credentials.
+The CLI is pinned to the audited version used by CI:
 
 ```sh
 export VERCEL_TOKEN='...' # shell environment only; never paste into logs
 export VERCEL_TEAM_ID='<team-id>'
 export VERCEL_PROJECT_ID='<project-id>'
 export VERCEL_TEAM_SLUG='<team-slug>'
-npx vercel sandbox list --all \
+export OWNED_SMOKE_TAG='<devbox-run-tag-from-report>'
+export OWNED_SMOKE_NAME='<exact-name-from-report>'
+
+# Publisher-owned smoke resources.
+npx vercel@58.11.0 sandbox list --all \
   --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
   --name-prefix 'devbox-smoke-publisher-' \
-  --tag 'devbox-run=<owned-tag-from-report>'
-npx vercel sandbox snapshots list \
+  --tag "devbox-run=${OWNED_SMOKE_TAG}"
+npx vercel@58.11.0 sandbox snapshots list \
   --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
-  --name '<owned-smoke-sandbox-name>'
-npx vercel sandbox remove '<owned-smoke-sandbox-name>' \
+  --name "${OWNED_SMOKE_NAME}"
+
+# Consumer-owned smoke resources: repeat with consumer credentials and report tag/name.
+# --name-prefix 'devbox-smoke-consumer-' --tag "devbox-run=${OWNED_SMOKE_TAG}"
+npx vercel@58.11.0 sandbox list --all \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
+  --name-prefix 'devbox-smoke-consumer-' \
+  --tag "devbox-run=${OWNED_SMOKE_TAG}"
+npx vercel@58.11.0 sandbox snapshots list \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
+  --name "${OWNED_SMOKE_NAME}"
+
+# Universal resolver probe resources, using the resolver report's exact name/tag.
+export RESOLVER_NAME='<base-digest-probe-name-from-report>'
+export RESOLVER_TAG='<base-digest-probe-tag-from-report>'
+npx vercel@58.11.0 sandbox list --all \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
+  --name-prefix 'base-digest-probe-' \
+  --tag "devbox-run=${RESOLVER_TAG}"
+npx vercel@58.11.0 sandbox snapshots list \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
+  --name "${RESOLVER_NAME}"
+
+# Delete only IDs/names confirmed by the matching report and listing.
+npx vercel@58.11.0 sandbox snapshots delete '<snapshot-id-from-list>' \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}"
+npx vercel@58.11.0 sandbox remove "${OWNED_SMOKE_NAME}" \
   --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}"
 ```
 
-Review the uploaded `publisher-smoke.json` and `consumer-smoke.json` first.
-Use the matching token/team/project scope and the unique `devbox-run` tag
-recorded in the report; delete only matching smoke Sandboxes and snapshots,
-never named user workspaces. Re-run the workflow after cleanup and confirm
-there is no non-deleted matching snapshot.
+Review the uploaded `publisher-smoke.json`, `consumer-smoke.json`, and
+`base-digest-evidence.json` first. Use the matching token/team/project scope
+and the unique `devbox-run` tag recorded in each report; delete only matching
+publisher, consumer, or resolver Sandboxes and snapshot IDs, never named user
+workspaces. Re-run the workflow after cleanup and confirm every matching
+snapshot is absent or explicitly `deleted`.

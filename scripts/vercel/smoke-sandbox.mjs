@@ -18,7 +18,11 @@ import {
 } from './smoke-contract.mjs';
 import { fetchWithTimeout } from './http-probe.mjs';
 import { TERMINAL_SESSION_STATES, verifySandboxDeleted, boundedCall } from './sandbox-cleanup.mjs';
-import { recoverOwnedResources } from './sandbox-owned-recovery.mjs';
+import {
+  applyOwnedRecoveryEvidence,
+  recoverOwnedResources,
+} from './sandbox-owned-recovery.mjs';
+import { deleteListedSnapshot } from './snapshot-cleanup.mjs';
 
 const role = process.env.SMOKE_ROLE;
 const image = process.env.IMAGE_REF;
@@ -88,6 +92,7 @@ const report = {
     stopped: false,
     deleted: false,
     deletionVerified: false,
+    discoveryConverged: false,
     snapshotsCleaned: false,
     noRunningSessionAfterDelete: false,
     residualNonDeletedSnapshots: [],
@@ -237,21 +242,6 @@ async function listSnapshots(signal, targetName = sandbox.name) {
   return result.toArray();
 }
 
-async function deleteListedSnapshot(snapshot, signal, label = 'snapshot') {
-  if (!snapshot || typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
-    throw new Error(`${label} metadata has no id`);
-  }
-  const instance = await boundedCall(
-    (requestSignal) => Snapshot.get({ ...credentials, snapshotId: snapshot.id, signal: requestSignal }),
-    `${label} ${snapshot.id} lookup`,
-    { signal, timeoutMs: sdkTimeoutMs },
-  );
-  await boundedCall(
-    (requestSignal) => instance.delete({ signal: requestSignal }),
-    `${label} ${snapshot.id} deletion`,
-    { signal, timeoutMs: sdkTimeoutMs },
-  );
-}
 
 async function listSessions(phase, target = sandbox, signal, record = true) {
   const result = await target.listSessions({ limit: 100, sortOrder: 'asc', signal });
@@ -325,16 +315,17 @@ async function recoverOwned(signal) {
       'owned smoke snapshot discovery',
       { signal: requestSignal, timeoutMs: sdkTimeoutMs },
     ),
-    deleteSnapshot: (snapshot, { signal: requestSignal }) => deleteListedSnapshot(snapshot, requestSignal, 'owned smoke snapshot'),
+    deleteSnapshot: (snapshot, { signal: requestSignal }) => deleteListedSnapshot({
+      snapshot,
+      signal: requestSignal,
+      timeoutMs: sdkTimeoutMs,
+      label: 'owned smoke snapshot',
+      getSnapshot: (snapshotId, getSignal) => Snapshot.get({ ...credentials, snapshotId, signal: getSignal }),
+    }),
     signal,
     isNotFound,
   });
-  report.cleanup.ownedRecovery = recovery;
-  report.cleanup.residualNonDeletedSnapshots = recovery.residualSnapshots;
-  if (recovery.errors.length > 0) {
-    report.cleanup.errors.push(...recovery.errors);
-    report.failed = true;
-  }
+  applyOwnedRecoveryEvidence(report, recovery);
   return recovery;
 }
 
@@ -348,6 +339,11 @@ function finalSessionStatesAreTerminal() {
     return Boolean(lastTerminalObservation);
   }
   return finalObservation.states.length > 0 && finalObservation.states.every((session) => TERMINAL_SESSION_STATES.has(session.status));
+}
+
+function recordRecoverableCleanupIssue(operation, detail) {
+  report.cleanup.recovery ??= [];
+  report.cleanup.recovery.push({ operation, outcome: 'pending-reconciliation', detail: String(detail).slice(0, 500) });
 }
 
 function markCleanupFailure(name, detail) {
@@ -494,18 +490,31 @@ try {
 
     try {
       await timed('snapshot-cleanup', async (signal) => {
-        const snapshots = await listSnapshots(signal);
-        report.snapshots = snapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
-        for (const snapshot of snapshots.filter((item) => item.status !== 'deleted')) {
-          await deleteListedSnapshot(snapshot, signal);
+        try {
+          const snapshots = await listSnapshots(signal);
+          report.snapshots = snapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
+          for (const snapshot of snapshots.filter((item) => item.status !== 'deleted')) {
+            try {
+              await deleteListedSnapshot({
+                snapshot,
+                signal,
+                timeoutMs: sdkTimeoutMs,
+                getSnapshot: (snapshotId, getSignal) => Snapshot.get({ ...credentials, snapshotId, signal: getSignal }),
+              });
+            } catch (error) {
+              recordRecoverableCleanupIssue('snapshot cleanup', error);
+            }
+          }
+          const residual = await listSnapshots(signal);
+          report.snapshots = residual.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
+          report.cleanup.residualNonDeletedSnapshots = residual
+            .filter((snapshot) => snapshot.status !== 'deleted')
+            .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
+          report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
+          if (!report.cleanup.snapshotsCleaned) recordRecoverableCleanupIssue('snapshot cleanup', 'non-deleted snapshot residual remains');
+        } catch (error) {
+          recordRecoverableCleanupIssue('snapshot cleanup', error);
         }
-        const residual = await listSnapshots(signal);
-        report.snapshots = residual.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
-        report.cleanup.residualNonDeletedSnapshots = residual
-          .filter((snapshot) => snapshot.status !== 'deleted')
-          .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
-        report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
-        if (!report.cleanup.snapshotsCleaned) throw new Error('non-deleted snapshot residual remains');
       }, { signal: cleanupSignal, timeoutMs: cleanupTimeoutMs, respectSmokeDeadline: false });
     } catch (error) {
       markCleanupFailure('snapshotsCleaned', error instanceof Error ? error.message : error);
@@ -536,13 +545,17 @@ try {
         if (!report.cleanup.deletionVerified || !report.cleanup.noRunningSessionAfterDelete) {
           throw new Error(initialDeleteError ? 'initial delete rejected and recovery verification failed' : 'Sandbox deletion or no-running-session verification failed');
         }
-        const residualAfterDelete = await listSnapshots(signal);
-        report.snapshots = residualAfterDelete.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
-        report.cleanup.residualNonDeletedSnapshots = residualAfterDelete
-          .filter((snapshot) => snapshot.status !== 'deleted')
-          .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
-        report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
-        if (!report.cleanup.snapshotsCleaned) throw new Error('snapshot residual remains after Sandbox deletion');
+        try {
+          const residualAfterDelete = await listSnapshots(signal);
+          report.snapshots = residualAfterDelete.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
+          report.cleanup.residualNonDeletedSnapshots = residualAfterDelete
+            .filter((snapshot) => snapshot.status !== 'deleted')
+            .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
+          report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
+          if (!report.cleanup.snapshotsCleaned) recordRecoverableCleanupIssue('snapshot cleanup', 'snapshot residual remains after Sandbox deletion');
+        } catch (error) {
+          recordRecoverableCleanupIssue('snapshot cleanup', error);
+        }
       }, { signal: cleanupSignal, timeoutMs: cleanupTimeoutMs, respectSmokeDeadline: false });
     } catch (error) {
       markCleanupFailure('deleted', error instanceof Error ? error.message : error);
@@ -557,8 +570,7 @@ try {
       timeoutMs: cleanupTimeoutMs,
       respectSmokeDeadline: false,
     });
-    report.cleanup.residualNonDeletedSnapshots = ownedRecovery.residualSnapshots;
-    report.cleanup.snapshotsCleaned = ownedRecovery.snapshotsCleaned;
+    applyOwnedRecoveryEvidence(report, ownedRecovery);
     if (ownedRecovery.errors.length === 0 && ownedRecovery.recoveredSandboxes.length > 0) {
       report.cleanup.stopped = true;
       report.cleanup.deleted = true;
@@ -589,6 +601,7 @@ if (
   !report.cleanup.deleted ||
   !report.cleanup.deletionVerified ||
   !report.cleanup.noRunningSessionAfterDelete ||
+  !report.cleanup.discoveryConverged ||
   !report.cleanup.snapshotsCleaned ||
   !report.cleanup.finalSessionStatesTerminal ||
   !report.requiredChecksComplete ||

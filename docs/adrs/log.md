@@ -20,3 +20,6 @@
 
 ## 2026-08-15
 * **SDK-shaped cleanup correction**: Accepted `Snapshot.get` resolution for plain `Snapshot.list` metadata, abortable delayed owned-resource discovery, and bounded residual snapshot convergence before cleanup evidence can pass.
+
+## 2026-08-15 (2)
+* **Final cleanup quality correction**: Accepted fail-closed collection discovery, independent final Sandbox/snapshot listings, authoritative delayed snapshot evidence, open-only promotion PR reuse, required resolver evidence writes, and credential-free pinned-SDK list/get/delete coverage.

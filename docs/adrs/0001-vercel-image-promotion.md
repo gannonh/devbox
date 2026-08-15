@@ -32,13 +32,15 @@ receive bounded stop/delete retries and a final re-enumeration before the gate
 fails closed. HTTP probes, SDK operations, smoke execution, and cleanup all
 have explicit deadlines. Candidate runs are serialized with a non-canceling workflow concurrency group;
 existing tags are reused only when their inspected manifest digest matches, and
-promotion branch/PR creation is idempotent. Apt inputs come from a reviewed
+promotion branch/PR creation is idempotent for an open matching PR; closed
+or merged PRs do not suppress a new promotion proposal. Apt inputs come from a reviewed
 dated Ubuntu snapshot matched to the pinned base distro rather than a moving
 archive index. The pin in `src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
 consumes redacted publisher/consumer evidence for the exact digest, URLs,
 complete named checks, timings, scopes, and cleanup. Promotion also rejects
 empty IDs/URLs, non-HTTPS noVNC URLs, malformed or unordered ISO timestamps,
-insane durations, and malformed cleanup-error arrays. Evidence upload fails
+insane durations, missing final owned-resource convergence, and malformed
+cleanup-error arrays. Evidence upload fails
 closed if redaction fails. A scheduled Universal-drift check may open that PR
 but cannot merge or release it.
 
@@ -58,8 +60,12 @@ Sandbox tags/names support recovery after lost handles, including bounded
 Universal digest probing and final snapshot verification. Because
 `Snapshot.list()` returns plain metadata, every cleanup resolves the metadata
 `id` with `Snapshot.get` before bounded instance deletion; owned name/tag and
-snapshot discovery continue through an abortable cleanup grace window, and
-residual snapshot IDs/statuses fail the gate.
+snapshot discovery continue through an abortable cleanup grace window. Broad
+collection-discovery failures are never treated as empty results: a fresh final
+listing must omit every owned Sandbox name, and the final snapshot listing is
+authoritative for deleted/absent metadata. Recoverable intermediate cleanup
+errors are replaced after convergence; residual IDs/statuses or unresolved
+errors fail the gate closed.
 
 ## Consequences
 

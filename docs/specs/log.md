@@ -23,3 +23,6 @@
 
 ## 2026-08-15
 * **Vercel image cleanup contract correction**: Aligned smoke and Universal resolver cleanup with the pinned SDK's plain snapshot metadata, delayed owned-resource discovery, and bounded residual snapshot proof.
+
+## 2026-08-15 (2)
+* **Vercel image final quality cleanup**: Required independent final owned listings, authoritative deleted/absent snapshot metadata, actual SDK behavior fixtures, open-only promotion PR reuse, pinned role-specific orphan cleanup, and fail-closed resolver evidence writes.

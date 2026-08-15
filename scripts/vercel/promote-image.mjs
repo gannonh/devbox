@@ -177,6 +177,7 @@ async function readEvidence(path, role, expectedScope, expectedSmokeUrl) {
     cleanup.stopped !== true ||
     cleanup.deleted !== true ||
     cleanup.deletionVerified !== true ||
+    cleanup.discoveryConverged !== true ||
     cleanup.snapshotsCleaned !== true ||
     cleanup.finalSessionStatesTerminal !== true ||
     cleanup.noRunningSessionAfterDelete !== true ||

@@ -487,8 +487,8 @@ jobs:
             git commit -m "chore(vercel): promote image ${GITHUB_SHA}" -m "Refs #4"
             git push --set-upstream origin "${branch}"
           fi
-          if gh pr view --head "${branch}" --json number >/dev/null 2>&1; then
-            echo "promotion PR already exists for ${branch}"
+          if gh pr list --state open --head "${branch}" --json number --jq 'length > 0' | grep -q '^true$'; then
+            echo "open promotion PR already exists for ${branch}"
           else
             gh pr create \
               --base main \

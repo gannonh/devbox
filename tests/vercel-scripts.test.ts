@@ -14,7 +14,11 @@ import {
 } from '../scripts/vercel/smoke-contract.mjs';
 import { fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
 import { verifySandboxDeleted } from '../scripts/vercel/sandbox-cleanup.mjs';
-import { recoverOwnedResources } from '../scripts/vercel/sandbox-owned-recovery.mjs';
+import {
+  applyOwnedRecoveryEvidence,
+  recoverOwnedResources,
+} from '../scripts/vercel/sandbox-owned-recovery.mjs';
+import { deleteListedSnapshot } from '../scripts/vercel/snapshot-cleanup.mjs';
 
 const execFileAsync = promisify(execFile);
 const digest = 'sha256:' + 'a'.repeat(64);
@@ -54,6 +58,7 @@ function validEvidence(role: string, teamId: string, projectId: string) {
       stopped: true,
       deleted: true,
       deletionVerified: true,
+      discoveryConverged: true,
       snapshotsCleaned: true,
       noRunningSessionAfterDelete: true,
       finalSessionStatesTerminal: true,
@@ -176,17 +181,21 @@ describe('Vercel supply-chain script boundaries', () => {
   it('recovers owned resources discovered by tag after a lost create handle', async () => {
     const recovered: string[] = [];
     const deletedSnapshots: string[] = [];
+    let sandboxPresent = true;
     let snapshotListCalls = 0;
     const result = await recoverOwnedResources({
       timeoutMs: 1_000,
       maxAttempts: 2,
       backoffMs: 0,
-      listSandboxes: async () => [{ name: 'owned-sandbox' }],
-      recoverSandbox: async (name: string) => { recovered.push(name); },
+      listSandboxes: async () => (sandboxPresent ? [{ name: 'owned-sandbox' }] : []),
+      recoverSandbox: async (name: string) => {
+        recovered.push(name);
+        sandboxPresent = false;
+      },
       listSnapshots: async () => {
         snapshotListCalls += 1;
         return snapshotListCalls === 1
-          ? [{ id: 'owned-snapshot', status: 'ready' }]
+          ? [{ id: 'owned-snapshot', status: 'created' }]
           : [{ id: 'owned-snapshot', status: 'deleted' }];
       },
       deleteSnapshot: async (snapshot: { id: string }) => { deletedSnapshots.push(snapshot.id); },
@@ -194,6 +203,53 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(result.errors).toEqual([]);
     expect(recovered).toEqual(['owned-sandbox']);
     expect(deletedSnapshots).toEqual(['owned-snapshot']);
+    expect(result.finalSandboxes).toEqual([]);
+    expect(result.discoveryConverged).toBe(true);
+  });
+
+  it('fails closed when owned collection discovery returns a broad 404', async () => {
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 2,
+      backoffMs: 0,
+      listSandboxes: async () => { throw { notFound: true }; },
+      recoverSandbox: async () => {},
+      listSnapshots: async () => [],
+      deleteSnapshot: async () => {},
+      isNotFound: (error: unknown) => Boolean((error as { notFound?: boolean }).notFound),
+    });
+    expect(result.discoveryConverged).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/sandbox discovery/);
+  });
+
+  it('fails closed when owned snapshot collection discovery returns a broad 404', async () => {
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 2,
+      backoffMs: 0,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => { throw { notFound: true }; },
+      deleteSnapshot: async () => {},
+      isNotFound: (error: unknown) => Boolean((error as { notFound?: boolean }).notFound),
+    });
+    expect(result.snapshotsCleaned).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/snapshot discovery/);
+  });
+
+  it('fails closed when a recovered Sandbox remains in the final independent listing', async () => {
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 2,
+      backoffMs: 0,
+      listSandboxes: async () => [{ name: 'forever-present', status: 'stopped' }],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => [],
+      deleteSnapshot: async () => {},
+    });
+    expect(result.discoveryConverged).toBe(false);
+    expect(result.residualSandboxes).toEqual([{ name: 'forever-present', status: 'stopped' }]);
+    expect(result.errors.join(' ')).toMatch(/forever-present/);
   });
 
   it('models pinned SDK Snapshot.list results as plain metadata', async () => {
@@ -219,6 +275,34 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(snapshots[0].id).toBe('snapshot-metadata');
     expect(snapshots[0]).not.toHaveProperty('delete');
     expect(snapshots[0]).not.toHaveProperty('snapshotId');
+  });
+
+  it('authoritatively reconciles delayed snapshot metadata after an initial delete error', async () => {
+    let listCalls = 0;
+    let deleteAttempts = 0;
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 3,
+      backoffMs: 0,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => {
+        listCalls += 1;
+        return listCalls === 1
+          ? [{ id: 'delayed-snapshot', status: 'created' }]
+          : [{ id: 'delayed-snapshot', status: 'deleted' }];
+      },
+      deleteSnapshot: async () => {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error('snapshot is still being finalized');
+      },
+      sleep: async () => {},
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.snapshotsCleaned).toBe(true);
+    expect(result.finalSnapshots).toEqual([{ id: 'delayed-snapshot', status: 'deleted' }]);
+    expect(result.residualSnapshots).toEqual([]);
+    expect(listCalls).toBeGreaterThanOrEqual(3);
   });
 
   it('reconciles SDK-shaped snapshot metadata until every item is deleted', async () => {
@@ -251,6 +335,8 @@ describe('Vercel supply-chain script boundaries', () => {
 
   it('waits for delayed owned Sandbox discovery after a lost create handle', async () => {
     let listCalls = 0;
+    let sandboxPresent = false;
+    let discoveredOnce = false;
     const recovered: string[] = [];
     const result = await recoverOwnedResources({
       timeoutMs: 1_000,
@@ -258,15 +344,21 @@ describe('Vercel supply-chain script boundaries', () => {
       backoffMs: 1,
       listSandboxes: async () => {
         listCalls += 1;
-        return listCalls < 3 ? [] : [{ name: 'delayed-owned-sandbox' }];
+        if (!discoveredOnce && listCalls >= 3) sandboxPresent = true;
+        return sandboxPresent ? [{ name: 'delayed-owned-sandbox' }] : [];
       },
-      recoverSandbox: async (name: string) => { recovered.push(name); },
+      recoverSandbox: async (name: string) => {
+        recovered.push(name);
+        discoveredOnce = true;
+        sandboxPresent = false;
+      },
       listSnapshots: async () => [],
       deleteSnapshot: async () => {},
       sleep: async () => {},
     });
     expect(recovered).toEqual(['delayed-owned-sandbox']);
     expect(result.discoveryConverged).toBe(true);
+    expect(result.finalSandboxes).toEqual([]);
     expect(listCalls).toBeGreaterThanOrEqual(3);
   });
 
@@ -288,14 +380,127 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(result.errors.join(' ')).toMatch(/stuck-snapshot/);
   });
 
-  it('requires SDK-shaped Snapshot.get before deleting listed snapshots', async () => {
-    const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
-    const resolver = await readFile('scripts/vercel/resolve-universal-digest.mjs', 'utf8');
-    for (const source of [smoke, resolver]) {
-      expect(source).toContain('Snapshot.get');
-      expect(source).toContain('snapshotId: snapshot.id');
-      expect(source).toContain('snapshot.id');
-      expect(source).not.toContain('snapshot.snapshotId');
+  it('deletes actual SDK Snapshot.list metadata through Snapshot.get and instance delete', async () => {
+    const credentials = { token: 'fixture-token', teamId: 'fixture-team', projectId: 'fixture-project' };
+    const metadata = {
+      id: 'snapshot-instance',
+      sourceSessionId: 'session-id',
+      region: 'iad1',
+      status: 'created',
+      sizeBytes: 1,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const requests: Array<{ method: string; path: string }> = [];
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? 'GET';
+      requests.push({ method, path: url.pathname });
+      if (method === 'GET' && url.pathname.endsWith('/snapshot-instance')) {
+        return new Response(JSON.stringify({ snapshot: metadata }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'DELETE') {
+        return new Response(JSON.stringify({ snapshot: { ...metadata, status: 'deleted' } }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ snapshots: [metadata], pagination: { count: 1, next: null } }), { headers: { 'content-type': 'application/json' } });
+    };
+    const listed = await Snapshot.list({ ...credentials, fetch });
+    const [snapshot] = await listed.toArray();
+    await deleteListedSnapshot({
+      snapshot,
+      signal: new AbortController().signal,
+      timeoutMs: 1_000,
+      getSnapshot: (snapshotId: string, signal: AbortSignal) => Snapshot.get({ ...credentials, snapshotId, signal, fetch }),
+    });
+    expect(requests).toEqual([
+      { method: 'GET', path: '/api/v2/sandboxes/snapshots' },
+      { method: 'GET', path: '/api/v2/sandboxes/snapshots/snapshot-instance' },
+      { method: 'DELETE', path: '/api/v2/sandboxes/snapshots/snapshot-instance' },
+    ]);
+  });
+
+  it('applies delayed final snapshot convergence to promotion-valid evidence', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-delayed-snapshot-'));
+    try {
+      let listCalls = 0;
+      const recovery = await recoverOwnedResources({
+        timeoutMs: 1_000,
+        maxAttempts: 3,
+        backoffMs: 0,
+        listSandboxes: async () => [],
+        recoverSandbox: async () => {},
+        listSnapshots: async () => {
+          listCalls += 1;
+          return listCalls === 1
+            ? [{ id: 'promotion-snapshot', status: 'created' }]
+            : [{ id: 'promotion-snapshot', status: 'deleted' }];
+        },
+        deleteSnapshot: async () => {},
+        sleep: async () => {},
+      });
+      const sourcePath = join(temp, 'image.ts');
+      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const publisher = validEvidence('publisher', 'publisher-team-id', 'publisher-project-id') as any;
+      const consumer = validEvidence('consumer', 'consumer-team-id', 'consumer-project-id') as any;
+      publisher.cleanup.recovery = [{ operation: 'snapshot cleanup', outcome: 'pending-reconciliation', detail: 'initial residual' }];
+      applyOwnedRecoveryEvidence(publisher, recovery);
+      applyOwnedRecoveryEvidence(consumer, recovery);
+      expect(publisher.cleanup.recovery).toBeUndefined();
+      for (const evidence of [publisher, consumer]) {
+        evidence.cleanup.stopped = true;
+        evidence.cleanup.deleted = true;
+        evidence.cleanup.deletionVerified = true;
+        evidence.cleanup.noRunningSessionAfterDelete = true;
+        evidence.cleanup.finalSessionStatesTerminal = true;
+        evidence.requiredChecksComplete = true;
+      }
+      const publisherPath = join(temp, 'publisher.json');
+      const consumerPath = join(temp, 'consumer.json');
+      await writeFile(publisherPath, JSON.stringify(publisher));
+      await writeFile(consumerPath, JSON.stringify(consumer));
+      const result = await runNode(
+        'scripts/vercel/promote-image.mjs',
+        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        [
+          '--reference', reference,
+          '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+          '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
+          '--publisher-url', publisher.smokeUrl,
+          '--consumer-url', consumer.smokeUrl,
+          '--publisher-team', 'publisher-team', '--publisher-project', 'publisher-project',
+          '--consumer-team', 'consumer-team', '--consumer-project', 'consumer-project',
+          '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
+          '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
+          '--publisher-evidence', publisherPath, '--consumer-evidence', consumerPath,
+        ],
+      );
+      expect(result.code).toBe(0);
+      expect(publisher.snapshots).toEqual([{ id: 'promotion-snapshot', status: 'deleted' }]);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('fails Universal resolution when required evidence cannot be written', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-evidence-write-'));
+    try {
+      const blockedDirectory = join(temp, 'blocked');
+      await writeFile(blockedDirectory, 'not-a-directory');
+      const env = { ...process.env };
+      delete env.VERCEL_TOKEN;
+      delete env.VERCEL_TEAM_ID;
+      delete env.VERCEL_PROJECT_ID;
+      const result = await runNode('scripts/vercel/resolve-universal-digest.mjs', {
+        ...env,
+        BASE_DIGEST_TIMEOUT_MS: '20',
+        BASE_DIGEST_CLEANUP_TIMEOUT_MS: '20',
+        BASE_DIGEST_EVIDENCE: join(blockedDirectory, 'report.json'),
+      });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/evidence write/i);
+      expect(result.stderr).toMatch(/Universal digest|credentials|timed out/i);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
     }
   });
 
@@ -501,6 +706,7 @@ describe('Vercel supply-chain script boundaries', () => {
           stopped: true,
           deleted: true,
           deletionVerified: true,
+          discoveryConverged: true,
           snapshotsCleaned: true,
           noRunningSessionAfterDelete: true,
           finalSessionStatesTerminal: true,
