@@ -92,10 +92,11 @@ export async function resolveVercelCredentials(
 
     const oidcToken = env.VERCEL_OIDC_TOKEN;
     if (isNonEmptyString(oidcToken)) {
-      const payloadSegment = oidcToken.split('.')[1];
-      if (!payloadSegment) {
-        throw new Error('Invalid Vercel OIDC token: JWT payload is missing');
+      const segments = oidcToken.split('.');
+      if (segments.length !== 3 || segments.some((segment) => !isBase64UrlSegment(segment))) {
+        throw new Error('Invalid Vercel OIDC token: JWT segments contain invalid characters');
       }
+      const payloadSegment = segments[1];
 
       let payload: unknown;
       try {
@@ -329,6 +330,10 @@ function cancellationError(signal: AbortSignal): Error {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isBase64UrlSegment(value: string): boolean {
+  return value.length > 0 && value.length % 4 !== 1 && /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -28,6 +28,46 @@ describe('Vercel credential resolution', () => {
     expect(deviceAuth).not.toHaveBeenCalled();
   });
 
+  it('prefers a complete explicit credential triad over OIDC credentials', async () => {
+    const deviceAuth = vi.fn();
+    const oidc = `header.${Buffer.from(JSON.stringify({
+      owner_id: 'oidc-team',
+      project_id: 'oidc-project',
+    })).toString('base64url')}.sig`;
+
+    await expect(resolveVercelCredentials({
+      repoRoot: '/repo',
+      env: {
+        VERCEL_TOKEN: 'explicit-token',
+        VERCEL_TEAM_ID: 'explicit-team',
+        VERCEL_PROJECT_ID: 'explicit-project',
+        VERCEL_OIDC_TOKEN: oidc,
+      },
+      deviceAuth,
+    })).resolves.toEqual({
+      token: 'explicit-token',
+      teamId: 'explicit-team',
+      projectId: 'explicit-project',
+    });
+
+    expect(deviceAuth).not.toHaveBeenCalled();
+  });
+
+  it('rejects OIDC tokens containing characters outside base64url segments', async () => {
+    const payload = Buffer.from(JSON.stringify({
+      owner_id: 'team',
+      project_id: 'project',
+    })).toString('base64url');
+
+    for (const invalidCharacter of ['!', '/', '=']) {
+      const oidc = `header.${payload}${invalidCharacter}.sig`;
+      await expect(resolveVercelCredentials({
+        repoRoot: '/repo',
+        env: { VERCEL_OIDC_TOKEN: oidc },
+      })).rejects.toThrow(/invalid.*OIDC.*character|segment/i);
+    }
+  });
+
   it('rejects a partial explicit credential triad before device auth', async () => {
     const deviceAuth = vi.fn();
     const OAuth = vi.fn();
@@ -76,7 +116,7 @@ describe('Vercel credential resolution', () => {
     const oidc = `header.${Buffer.from(JSON.stringify({
       owner_id: 'team-from-oidc',
       project_id: 'project-from-oidc',
-    })).toString('base64url')}.signature`;
+    })).toString('base64url')}.sig`;
     const deviceAuth = vi.fn();
 
     await expect(resolveVercelCredentials({
@@ -98,7 +138,7 @@ describe('Vercel credential resolution', () => {
     const oidc = `header.${Buffer.from(JSON.stringify({
       owner_id: ' linked-team ',
       project_id: ' linked-project ',
-    })).toString('base64url')}.signature`;
+    })).toString('base64url')}.sig`;
 
     await expect(resolveVercelCredentials({
       repoRoot,

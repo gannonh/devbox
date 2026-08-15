@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createVercelIdentity,
+  normalizeBranch,
   normalizeGitHubRemote,
   sanitizeVercelName,
 } from '../src/providers/vercel/identity.js';
@@ -10,6 +11,14 @@ describe('Vercel identity', () => {
     expect(normalizeGitHubRemote('https://GitHub.com/Acme/Repo.git')).toEqual(
       normalizeGitHubRemote('git@github.com:acme/repo'),
     );
+  });
+
+  it('rejects invalid public identity inputs', () => {
+    expect(() => normalizeGitHubRemote('not-a-github-remote')).toThrow(/invalid|exactly.*owner/i);
+    expect(() => normalizeGitHubRemote('')).toThrow(/must not be empty/i);
+    expect(() => normalizeBranch('')).toThrow(/non-empty printable/i);
+    expect(() => normalizeBranch('feature\u0000branch')).toThrow(/non-empty printable/i);
+    expect(() => sanitizeVercelName('name', 0)).toThrow(/maxLength.*positive/i);
   });
 
   it('creates deterministic conservative names and no more than five SDK tags', () => {

@@ -147,7 +147,7 @@ function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new Error(`Metadata ${field} must be a non-empty string`);
   }
-  return value;
+  return value.trim();
 }
 
 function expectRecord(value: unknown, label: string): Record<string, unknown> {

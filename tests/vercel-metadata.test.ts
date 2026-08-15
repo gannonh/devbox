@@ -52,6 +52,104 @@ describe('Vercel metadata', () => {
     await expect(reopened.read()).resolves.toMatchObject({ teamId: 'team', projectId: 'project' });
   });
 
+  it('removes an existing metadata record through the public store API', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    await store.write({ teamId: 'team', projectId: 'project' });
+
+    await expect(store.remove()).resolves.toBeUndefined();
+    await expect(access(store.path)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(store.read()).resolves.toBeNull();
+  });
+
+  it('treats removing a missing metadata record as an idempotent no-op', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+
+    await expect(store.remove()).resolves.toBeUndefined();
+    await expect(store.remove()).resolves.toBeUndefined();
+  });
+
+  it('rejects removing an insecure metadata record without deleting it', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    await store.write({ teamId: 'team', projectId: 'project' });
+    await chmod(store.path, 0o644);
+
+    await expect(store.remove()).rejects.toThrow(/insecure.*metadata mode/i);
+    await expect(access(store.path)).resolves.toBeUndefined();
+  });
+
+  it('rejects removing a symlinked metadata record without deleting its target', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    await store.write({ teamId: 'team', projectId: 'project' });
+    const targetPath = `${store.path}.target`;
+    await rename(store.path, targetPath);
+    await symlink(targetPath, store.path);
+
+    await expect(store.remove()).rejects.toThrow(/regular file|symbolic links|ELOOP/i);
+    await expect(access(targetPath)).resolves.toBeUndefined();
+    await expect(access(store.path)).resolves.toBeUndefined();
+
+    await unlink(store.path);
+    await rename(targetPath, store.path);
+  });
+
+  it('trims strings returned by the public metadata store schema', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    await store.write({
+      teamId: ' team ',
+      projectId: ' project ',
+      identity: {
+        name: ' name ',
+        repository: ' repository ',
+        branch: ' branch ',
+        packageVersion: ' version ',
+        tags: {
+          provider: ' provider ',
+          repository: ' repository-tag ',
+          branch: ' branch-tag ',
+          version: ' version-tag ',
+          identity: ' identity-tag ',
+        },
+      },
+      sandboxId: ' sandbox ',
+      snapshotIds: [' snapshot '],
+      residual: {
+        sandboxIds: [' residual-sandbox '],
+        snapshotIds: [' residual-snapshot '],
+        reason: ' reason ',
+      },
+    });
+
+    await expect(store.read()).resolves.toMatchObject({
+      teamId: 'team',
+      projectId: 'project',
+      identity: {
+        name: 'name',
+        repository: 'repository',
+        branch: 'branch',
+        packageVersion: 'version',
+        tags: {
+          provider: 'provider',
+          repository: 'repository-tag',
+          branch: 'branch-tag',
+          version: 'version-tag',
+          identity: 'identity-tag',
+        },
+      },
+      sandboxId: 'sandbox',
+      snapshotIds: ['snapshot'],
+      residual: {
+        sandboxIds: ['residual-sandbox'],
+        snapshotIds: ['residual-snapshot'],
+        reason: 'reason',
+      },
+    });
+  });
+
   it('rejects a token-bearing write input instead of persisting it', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
@@ -186,6 +284,18 @@ describe('Vercel metadata', () => {
     await firstLock.release();
     await waiting;
     expect(entered).toBe(true);
+  });
+
+  it('releases the lock when withLock operation throws', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+
+    await expect(store.withLock(async () => {
+      throw new Error('operation failed');
+    })).rejects.toThrow('operation failed');
+
+    const nextOwner = await store.acquireLock({ timeoutMs: 100 });
+    await nextOwner.release();
   });
 
   it('rejects residual secrets and unknown nested fields on write and read', async () => {
