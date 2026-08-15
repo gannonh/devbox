@@ -18,6 +18,7 @@
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc",
     "prepack": "npm run build",
+    "worktree:setup": "bash scripts/worktree-setup.sh",
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
