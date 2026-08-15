@@ -42,3 +42,6 @@
 
 ## 2026-08-15 (2)
 * **Vercel image final quality cleanup**: Made collection discovery and final Sandbox/snapshot listings authoritative and fail closed, normalized delayed snapshot evidence after convergence, added actual SDK list/get/delete behavior coverage, restricted promotion PR reuse to open PRs, pinned role-specific orphan commands, and made resolver evidence writes required.
+
+## 2026-08-15 (3)
+* **Vercel image live SDK API correction**: Added `sortBy: 'name'` to owned Sandbox discovery, bounded `Snapshot.list()` pages to 50 in resolver/smoke paths, aligned the runbook with `base-digest.json`, and documented manual digest-input runs without resolver evidence.

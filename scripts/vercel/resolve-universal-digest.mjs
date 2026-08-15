@@ -64,7 +64,7 @@ function remaining(signal) {
 
 async function listOwnedSandboxes(signal) {
   return boundedCall(
-    (requestSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: requestSignal })
+    (requestSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, sortBy: 'name', tags: { 'devbox-run': ownedTag }, signal: requestSignal })
       .then((page) => page.toArray())
       .then((sandboxes) => sandboxes.filter((item) => item.name === ownedName)),
     'owned Sandbox discovery',
@@ -74,7 +74,7 @@ async function listOwnedSandboxes(signal) {
 
 async function listOwnedSnapshots(signal) {
   return boundedCall(
-    (requestSignal) => Snapshot.list({ ...credentials, name: ownedName, limit: 100, signal: requestSignal }).then((page) => page.toArray()),
+    (requestSignal) => Snapshot.list({ ...credentials, name: ownedName, limit: 50, signal: requestSignal }).then((page) => page.toArray()),
     'owned snapshot discovery',
     { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
   );

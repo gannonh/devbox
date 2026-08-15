@@ -79,7 +79,7 @@ export VERCEL_TEAM_ID=...
 export VERCEL_PROJECT_ID=...
 export VERCEL_PUBLISHER_TEAM_SLUG=...
 # VCR CLI calls in CI also pass --scope "$VERCEL_PUBLISHER_TEAM_SLUG".
-export BASE_DIGEST_EVIDENCE="$PWD/.vercel-image-evidence/base.json"
+export BASE_DIGEST_EVIDENCE="$PWD/.vercel-image-evidence/base-digest.json"
 base_digest="$(node scripts/vercel/resolve-universal-digest.mjs)"
 docker buildx build \
   --platform linux/amd64 \
@@ -110,6 +110,12 @@ The nightly schedule resolves the current Universal digest by creating a
 short-lived Sandbox, compares it with the checked-in base digest, and skips
 unchanged runs. A changed digest follows exactly the same path and never
 merges a PR automatically.
+
+For a manual `universal_digest` input, the resolver is skipped and the resolver
+report is intentionally absent; review the supplied full digest together with
+`selected-base.json` instead. `base-digest.json` is expected only when the
+resolver actually runs, so its absence is expected for this manual-input case;
+the candidate and smoke evidence gates still apply.
 
 The candidate job has a 45-minute GitHub Actions timeout. It gives each HTTP
 request 10 seconds, ordinary SDK calls 30 seconds, commands 60 seconds, each
@@ -259,7 +265,9 @@ npx vercel@58.11.0 sandbox remove "${OWNED_SMOKE_NAME}" \
 ```
 
 Review the uploaded `publisher-smoke.json`, `consumer-smoke.json`, and
-`base-digest-evidence.json` first. Use the matching token/team/project scope
+`base-digest.json` first when the resolver ran; for a manual `universal_digest`
+input, review `selected-base.json` and the supplied digest instead because the
+resolver report is intentionally absent. Use the matching token/team/project scope
 and the unique `devbox-run` tag recorded in each report; delete only matching
 publisher, consumer, or resolver Sandboxes and snapshot IDs, never named user
 workspaces. Re-run the workflow after cleanup and confirm every matching

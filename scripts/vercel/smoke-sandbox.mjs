@@ -238,7 +238,7 @@ function probeWebSocket(url, authorization, { signal = smokeSignal, timeoutMs = 
 }
 
 async function listSnapshots(signal, targetName = sandbox.name) {
-  const result = await Snapshot.list({ ...credentials, name: targetName, limit: 100, signal });
+  const result = await Snapshot.list({ ...credentials, name: targetName, limit: 50, signal });
   return result.toArray();
 }
 
@@ -300,7 +300,7 @@ async function recoverOwned(signal) {
     timeoutMs: cleanupTimeoutMs,
     operationTimeoutMs: sdkTimeoutMs,
     listSandboxes: ({ signal: requestSignal }) => boundedCall(
-      (innerSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: innerSignal })
+      (innerSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, sortBy: 'name', tags: { 'devbox-run': ownedTag }, signal: innerSignal })
         .then((page) => page.toArray())
         .then((sandboxes) => sandboxes.filter((item) => item.name === ownedName)),
       'owned smoke Sandbox discovery',
@@ -311,7 +311,7 @@ async function recoverOwned(signal) {
       if (!result.verified || !result.noRunningSession) throw new Error(`owned Sandbox ${name} was not fully deleted`);
     },
     listSnapshots: ({ signal: requestSignal }) => boundedCall(
-      (innerSignal) => Snapshot.list({ ...credentials, name: ownedName, limit: 100, signal: innerSignal }).then((page) => page.toArray()),
+      (innerSignal) => Snapshot.list({ ...credentials, name: ownedName, limit: 50, signal: innerSignal }).then((page) => page.toArray()),
       'owned smoke snapshot discovery',
       { signal: requestSignal, timeoutMs: sdkTimeoutMs },
     ),

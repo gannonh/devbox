@@ -126,6 +126,17 @@ describe('Vercel image supply-chain workflow', () => {
     expect(imageReadme).toContain('sleep infinity');
   });
 
+  it('documents resolver evidence and manual digest-input artifact behavior', async () => {
+    const workflow = await workflowText();
+    const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
+    expect(workflow).toContain('base-digest.json');
+    expect(runbook).toContain('base-digest.json');
+    expect(runbook).not.toContain('base-digest-evidence.json');
+    expect(runbook).toContain('manual `universal_digest` input');
+    expect(runbook).toContain('resolver report is intentionally absent');
+    expect(runbook).toContain('selected-base.json');
+  });
+
   it('documents the audited Vercel CLI version contract', async () => {
     const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
     expect(runbook).toContain('58.11.0');

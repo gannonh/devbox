@@ -178,6 +178,27 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(resolver).toContain('base-digest-probe');
   });
 
+  it('uses live API-valid filters and bounded pages for owned cleanup', async () => {
+    const scripts = await Promise.all([
+      readFile('scripts/vercel/resolve-universal-digest.mjs', 'utf8'),
+      readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8'),
+    ]);
+    for (const source of scripts) {
+      const sandboxListCalls = [...source.matchAll(/Sandbox\.list\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
+      const ownedSandboxListCalls = sandboxListCalls.filter((call) => call.includes('namePrefix'));
+      expect(ownedSandboxListCalls.length).toBeGreaterThan(0);
+      for (const call of ownedSandboxListCalls) expect(call).toContain("sortBy: 'name'");
+
+      const snapshotListCalls = [...source.matchAll(/Snapshot\.list\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
+      expect(snapshotListCalls.length).toBeGreaterThan(0);
+      for (const call of snapshotListCalls) {
+        const limit = call.match(/limit\s*:\s*(\d+)/)?.[1];
+        expect(limit).toBeDefined();
+        expect(Number(limit)).toBeLessThanOrEqual(50);
+      }
+    }
+  });
+
   it('recovers owned resources discovered by tag after a lost create handle', async () => {
     const recovered: string[] = [];
     const deletedSnapshots: string[] = [];
