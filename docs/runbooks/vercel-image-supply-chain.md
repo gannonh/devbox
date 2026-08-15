@@ -58,7 +58,9 @@ context, Dockerfile, checked-in pin, or workflow output.
 
 - `Dockerfile` starts from `vcr.vercel.com/vercel/sandbox/universal` with a
   required manifest digest build argument and adds Chromium, Xvfb, fluxbox,
-  x11vnc, noVNC/websockify, and the Basic Auth HTTP/WebSocket proxy.
+  x11vnc, noVNC/websockify, and the Basic Auth HTTP/WebSocket proxy. Apt uses
+  the reviewed dated `UBUNTU_SNAPSHOT` source, verifies an Ubuntu amd64 base,
+  and disables floating archive/security indexes.
 - `start-devbox.sh` starts every process explicitly and requires the runtime
   `DEVBOX_NOVNC_PASSWORD`; it is not an image `ENTRYPOINT` or `CMD`.
 - `status-devbox.sh` checks the non-root identity and passwordless sudo, then
@@ -87,11 +89,17 @@ images/vercel/check-local-image.sh devbox-vercel:local
 ```
 
 The promoted artifact uses the same `linux/amd64` Buildx output with zstd
-compression. Use a throwaway runtime password to exercise the explicit start:
+compression. To update the apt snapshot, first verify the pinned Universal
+base's `/etc/os-release` codename and architecture, choose a dated snapshot
+that contains the reviewed package set, update `UBUNTU_SNAPSHOT` and its
+review date in the Dockerfile, then rerun the image asset, Buildx, smoke, and
+release gates; never restore a moving archive URL. Use a throwaway runtime
+password and keep the container alive
+while inspecting the explicit start:
 
 ```sh
 docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \
-  /usr/local/bin/devbox-start
+  sh -c '/usr/local/bin/devbox-start && exec sleep infinity'
 ```
 
 ## Candidate, readiness, and smoke workflow
@@ -109,11 +117,18 @@ smoke gate 10 minutes, deletion verification 30 seconds, and cleanup 2
 minutes; these `SMOKE_*` bounds are intentionally explicit and should only be
 changed with a reviewed contract update.
 
+The workflow serializes candidate runs with a non-canceling concurrency group.
+The candidate tag includes both source commit and selected base digest; an
+existing tag is reused only after its `manifestDigest` matches the inspected
+candidate digest, and a mismatch fails closed. Promotion reuses an existing
+branch/PR instead of creating duplicate proposals.
+
 The workflow:
 
 1. Installs the audited `vercel@58.11.0` CLI, then logs Buildx into VCR
-   through `--password-stdin`, builds the immutable `sha-<commit>` tag for
-   `linux/amd64` with zstd, and resolves its manifest digest.
+   through `--password-stdin`, builds the immutable
+   `sha-<commit>-<base-digest>` tag for `linux/amd64` with zstd, and resolves
+   its manifest digest.
 2. Verifies the flat publisher repository response with an explicit
    `--scope <publisher-team-slug>`, then correlates the publisher project/team
    through scoped project/team responses without unioning unrelated objects;
@@ -190,12 +205,23 @@ A failed smoke run attempts cleanup in `finally`, but operators should inspect
 for leftovers using the consumer or publisher project credentials:
 
 ```sh
-npx sandbox list --project <project-id>
-npx sandbox snapshots --project <project-id>
-npx sandbox remove <sandbox-name> --project <project-id>
+export VERCEL_TOKEN='...' # shell environment only; never paste into logs
+export VERCEL_TEAM_ID='<team-id>'
+export VERCEL_PROJECT_ID='<project-id>'
+export VERCEL_TEAM_SLUG='<team-slug>'
+npx vercel sandbox list --all \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
+  --name-prefix 'devbox-smoke-publisher-' \
+  --tag 'devbox-run=<owned-tag-from-report>'
+npx vercel sandbox snapshots list \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
+  --name '<owned-smoke-sandbox-name>'
+npx vercel sandbox remove '<owned-smoke-sandbox-name>' \
+  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}"
 ```
 
 Review the uploaded `publisher-smoke.json` and `consumer-smoke.json` first.
-Delete only matching `devbox-image` smoke Sandboxes and snapshots; do not
-remove named user workspaces. Re-run the workflow after cleanup and confirm
+Use the matching token/team/project scope and the unique `devbox-run` tag
+recorded in the report; delete only matching smoke Sandboxes and snapshots,
+never named user workspaces. Re-run the workflow after cleanup and confirm
 there is no non-deleted matching snapshot.

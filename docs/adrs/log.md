@@ -14,3 +14,6 @@
 
 ## 2026-08-14 (4)
 * **Smoke liveness and evidence semantics**: Accepted explicit HTTP/SDK/smoke/cleanup deadlines, bounded executable tool probes, eventual non-resuming deletion recovery, and strict nonempty/HTTPS/timestamp/timing/cleanup-error evidence validation.
+
+## 2026-08-14 (5)
+* **Independent quality corrections**: Accepted repeatable attested promotion, actual-token redaction, owned Sandbox/base-probe recovery, serialized candidate tags/PRs, dated Ubuntu package snapshots, shared evidence URL policy, and scoped orphan/runtime procedures.

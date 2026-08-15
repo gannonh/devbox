@@ -16,7 +16,7 @@ manifest digest as a required build argument, builds only `linux/amd64` with
 Buildx zstd output, and defines neither `ENTRYPOINT` nor `CMD`; Sandbox startup
 is explicit through `/usr/local/bin/devbox-start`.
 
-A candidate is immutable (`sha-<source-commit>`), waits for VCR readiness under
+A candidate is immutable (`sha-<source-commit>-<base-digest>`), waits for VCR readiness under
 an enforced child-process deadline, and must pass two real Sandbox gates:
 publisher-project filesystem/runtime checks and independent consumer-project
 public-pull checks. All VCR CLI calls use the audited `vercel@58.11.0` version
@@ -30,8 +30,11 @@ finish `stopped`/`aborted`, and Sandbox/snapshot deletion must be verified
 without resuming a Sandbox. Eventual post-delete `running`/`stopping` responses
 receive bounded stop/delete retries and a final re-enumeration before the gate
 fails closed. HTTP probes, SDK operations, smoke execution, and cleanup all
-have explicit deadlines. The pin in
-`src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
+have explicit deadlines. Candidate runs are serialized with a non-canceling workflow concurrency group;
+existing tags are reused only when their inspected manifest digest matches, and
+promotion branch/PR creation is idempotent. Apt inputs come from a reviewed
+dated Ubuntu snapshot matched to the pinned base distro rather than a moving
+archive index. The pin in `src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
 consumes redacted publisher/consumer evidence for the exact digest, URLs,
 complete named checks, timings, scopes, and cleanup. Promotion also rejects
 empty IDs/URLs, non-HTTPS noVNC URLs, malformed or unordered ISO timestamps,
@@ -48,8 +51,11 @@ token and project/team identity proves that public visibility works across
 project boundaries, not merely through the publisher's private registry
 permissions. Direct repository/project/team correlations avoid accepting
 unrelated identity fields from one aggregate response. Centralized artifact
-redaction keeps readiness, session, snapshot, stage-timing, and cleanup evidence
-useful without placing credentials in logs or image layers.
+redaction receives both actual publisher and consumer token values in every
+redaction path, keeping readiness, session, snapshot, stage-timing, and cleanup
+evidence useful without placing credentials in logs or image layers. Owned
+Sandbox tags/names support recovery after lost handles, including bounded
+Universal digest probing and final snapshot verification.
 
 ## Consequences
 

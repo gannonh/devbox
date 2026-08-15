@@ -17,3 +17,6 @@
 
 ## 2026-08-14 (5)
 * **Vercel image supply-chain third review fixes**: Added deterministic hanging-endpoint coverage, bounded HTTP/SDK/smoke/cleanup execution, eventual deletion retries and recovery, executable working-binary probes, and malformed primitive evidence rejection.
+
+## 2026-08-14 (6)
+* **Vercel image supply-chain independent quality fixes**: Added re-promotion and tag/PR idempotency, actual-secret redaction fixtures, owned Sandbox and resolver recovery, reproducible apt snapshot inputs, strict shared evidence URLs, and corrected orphan/runtime documentation.

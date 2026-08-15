@@ -33,3 +33,6 @@
 
 ## 2026-08-14 (6)
 * **Vercel image supply-chain smoke liveness hardening**: Added abortable HTTP and bounded SDK/smoke/cleanup deadlines, eventual-consistency deletion recovery with final stop/delete attempts, executable version probes for required tools, and strict evidence primitive validation with malformed fixtures; credentialed live verification remains outside the local boundary.
+
+## 2026-08-14 (7)
+* **Vercel image supply-chain quality corrections**: Made promotion repeatable, passed both real tokens to all redaction paths, recovered owned resources after lost handles, bounded Universal digest probing, serialized and idempotent candidate publication, pinned apt metadata to a reviewed Ubuntu snapshot, shared strict evidence URL validation, and corrected scoped orphan/runtime runbook commands.
