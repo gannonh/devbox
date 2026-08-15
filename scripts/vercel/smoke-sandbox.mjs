@@ -244,7 +244,7 @@ async function listSnapshots(signal, targetName = sandbox.name) {
 
 
 async function listSessions(phase, target = sandbox, signal, record = true) {
-  const result = await target.listSessions({ limit: 100, sortOrder: 'asc', signal });
+  const result = await target.listSessions({ limit: 50, sortOrder: 'asc', signal });
   const sessions = await result.toArray();
   const states = sessions.map((session) => ({
     id: session.id,

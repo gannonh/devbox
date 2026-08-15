@@ -189,6 +189,14 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(limit).toBeDefined();
       expect(Number(limit)).toBeLessThanOrEqual(50);
     }
+
+    const sessionListCalls = [...source.matchAll(/\.listSessions\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
+    expect(sessionListCalls.length).toBeGreaterThan(0);
+    for (const call of sessionListCalls) {
+      const limit = call.match(/limit\s*:\s*(\d+)/)?.[1];
+      expect(limit).toBeDefined();
+      expect(Number(limit)).toBeLessThanOrEqual(50);
+    }
   });
 
   it('recovers owned resources discovered by tag after a lost create handle', async () => {
