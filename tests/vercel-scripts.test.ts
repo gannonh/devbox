@@ -504,10 +504,19 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(status).toContain('timeout');
   });
 
-  it('extracts only a full digest from an immutable candidate tag response', async () => {
-    const valid = await runNode('scripts/vercel/assert-candidate-tag.mjs', process.env, [], JSON.stringify({ tag: { manifestDigest: digest } }));
-    expect(valid.code).toBe(0);
-    expect(valid.stdout.trim()).toBe(digest);
+  it('extracts only a full digest from actual and wrapped candidate tag responses', async () => {
+    const actual = await runNode('scripts/vercel/assert-candidate-tag.mjs', process.env, [], JSON.stringify({
+      tag: 'sha-source-upstream-base',
+      manifestDigest: digest,
+      kind: 'index',
+    }));
+    expect(actual.code).toBe(0);
+    expect(actual.stdout.trim()).toBe(digest);
+
+    const wrapped = await runNode('scripts/vercel/assert-candidate-tag.mjs', process.env, [], JSON.stringify({ tag: { manifestDigest: digest } }));
+    expect(wrapped.code).toBe(0);
+    expect(wrapped.stdout.trim()).toBe(digest);
+
     const invalid = await runNode('scripts/vercel/assert-candidate-tag.mjs', process.env, [], JSON.stringify({ tag: { manifestDigest: 'sha256:not-a-digest' } }));
     expect(invalid.code).not.toBe(0);
   });
