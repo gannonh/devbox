@@ -6,6 +6,42 @@ export {
 } from './registry.js';
 export { createLocalProvider } from './local/provider.js';
 export { createUnavailableProvider } from './unavailable.js';
+export {
+  confirmVercelScope,
+  renderVercelScope,
+  resolveVercelCredentials,
+} from './vercel/auth.js';
+export type {
+  CredentialResolutionOptions,
+  DeviceAuthPrimitives,
+  ScopeConfirmationBoundary,
+  VercelCredentials,
+  VercelScope,
+} from './vercel/auth.js';
+export {
+  createVercelMetadataStore,
+} from './vercel/metadata.js';
+export type {
+  MetadataLock,
+  MetadataLockOptions,
+  VercelMetadata,
+  VercelMetadataIdentity,
+  VercelMetadataInput,
+  VercelMetadataStore,
+  VercelMetadataStoreOptions,
+  VercelResidualMetadata,
+} from './vercel/metadata.js';
+export {
+  createVercelIdentity,
+  normalizeGitHubRemote,
+  normalizeBranch,
+  sanitizeVercelName,
+} from './vercel/identity.js';
+export type {
+  GitHubRemoteIdentity,
+  VercelIdentityInput,
+  VercelSandboxIdentity,
+} from './vercel/identity.js';
 export type {
   DevboxProvider,
   DisplayCredentialsResult,
