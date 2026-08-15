@@ -85,6 +85,13 @@ See [`.devbox/README.md`](.devbox/README.md) after `init` for the per-file rundo
 
 To switch, edit `.devbox/provision.sh` (comment-toggle the blocks) and remove the `~/.pi` mount from `.devcontainer/devcontainer.json`.
 
+## Vercel Sandbox image
+
+The digest-pinned Vercel Sandbox image, publisher/consumer smoke workflow,
+reviewed promotion process, rollback, and orphan cleanup are documented in the
+[`Vercel image supply chain runbook`](docs/runbooks/vercel-image-supply-chain.md).
+The live image workflow is secret-gated and never auto-promotes upstream drift.
+
 ## Design spec
 
 The package design is documented in [`docs/specs/2026-06-28-devbox-npm-package-design.md`](docs/specs/2026-06-28-devbox-npm-package-design.md).
