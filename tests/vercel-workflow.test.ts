@@ -32,8 +32,9 @@ describe('Vercel image supply-chain workflow', () => {
     expect(ci).toContain("github.event.label.name == format('vcr:{0}', github.event.pull_request.head.sha)");
     expect(ci).toContain('uses: ./.github/workflows/vercel-image.yml');
     expect(ci).not.toContain('secrets: inherit');
-    expect(ci).toMatch(/vercel-image-candidate:[\s\S]*?permissions:\n\s+contents: read/);
-    expect(ci).not.toMatch(/vercel-image-candidate:[\s\S]*?permissions:[\s\S]*?(?:contents|pull-requests): write/);
+    expect(ci).toMatch(/vercel-image-candidate:[\s\S]*?permissions:\n\s+contents: write\n\s+pull-requests: write/);
+    expect(workflow).toMatch(/candidate:[\s\S]*?permissions:\n\s+contents: read/);
+    expect(workflow).toMatch(/promotion:[\s\S]*?github\.event_name != 'pull_request'/);
     for (const secret of [
       'VERCEL_PUBLISHER_TOKEN', 'VERCEL_PUBLISHER_TEAM_ID', 'VERCEL_PUBLISHER_PROJECT_ID',
       'VERCEL_PUBLISHER_TEAM_SLUG', 'VERCEL_PUBLISHER_PROJECT_SLUG', 'VERCEL_CONSUMER_TOKEN',

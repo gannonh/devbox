@@ -41,8 +41,12 @@ jobs:
       github.actor == github.repository_owner &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.label.name == format('vcr:{0}', github.event.pull_request.head.sha)
+    # Reusable-workflow permission ceilings must cover every called job. The
+    # called candidate job explicitly downgrades itself to contents: read, and
+    # its write-capable promotion job is structurally excluded on PR events.
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
     uses: ./.github/workflows/vercel-image.yml
     secrets:
       VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
