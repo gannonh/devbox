@@ -27,9 +27,10 @@ reviewed PR that replaces the bootstrap metadata.
    `vercel vcr inspect devbox --project <project-id> --scope <team-slug> --format json`.
    The flat repository response is correlated by repository `id`, `name`, and
    `projectId`; public visibility accepts boolean/string `true` or `public`.
-   Separately run scoped `vercel project list --scope <team-slug> --format json`
-   and `vercel teams list --scope <team-slug> --format json` to correlate project `accountId` and
-   team `id`/`slug`; the workflow never changes visibility silently.
+   Separately run scoped `vercel api "/v9/projects/<project-id>" --scope
+   <team-slug> --raw` and `vercel teams list --scope <team-slug> --format json`
+   to correlate project `accountId` and team `id`/`slug`; the workflow never
+   changes visibility silently.
 4. Store publisher credentials in GitHub Actions secrets:
    `VERCEL_PUBLISHER_TOKEN`, `VERCEL_PUBLISHER_TEAM_ID`,
    `VERCEL_PUBLISHER_PROJECT_ID`, `VERCEL_PUBLISHER_TEAM_SLUG`, and
@@ -125,8 +126,11 @@ The workflow:
 
 1. Installs the audited `vercel@58.11.0` CLI, then logs Buildx into VCR
    through `--password-stdin`, builds the immutable
-   `sha-<commit>-<upstream-commit>-<ubuntu-digest>` tag for `linux/amd64` with zstd, and resolves
-   its manifest digest.
+   `sha-<commit>-<upstream-commit>-<ubuntu-digest>` tag as one `linux/amd64`
+   manifest with zstd, and resolves its digest. BuildKit's optional provenance
+   attestation is disabled because its OCI index has no VCR readiness status;
+   the checked-in, embedded, upstream-verified `provenance.json` and uploaded
+   workflow artifact remain the reviewed provenance record.
 2. Verifies the flat publisher repository response with an explicit
    `--scope <publisher-team-slug>`, then correlates the publisher project/team
    through scoped project/team responses without unioning unrelated objects;

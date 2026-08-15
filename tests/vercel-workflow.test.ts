@@ -40,6 +40,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('docker/setup-buildx-action');
     expect(workflow).toContain('vercel@58.11.0');
     expect(workflow).toContain('--platform linux/amd64');
+    expect(workflow).toContain('--provenance=false');
     expect(workflow).toContain('compression=zstd');
     expect(workflow).toContain('sha-${SOURCE_COMMIT}');
     expect(workflow).toContain("SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}");

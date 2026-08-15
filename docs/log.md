@@ -48,3 +48,6 @@
 
 ## 2026-08-15 (4)
 * **Vercel Universal mirror correction**: Credentialed verification proved the managed Universal VMI is not OCI-pullable, so the user approved a deterministic mirror of its open-source recipe. Added checked-in provenance, digest/checksum/version pins, verified upstream Dockerfile hashes, an official pinned Chrome-for-Testing archive, empty inherited `CMD`, loopback-only internal noVNC, exact provenance-bound release validation, corrected live probes, and a successful local image/runtime/auth check.
+
+## 2026-08-15 (5)
+* **Credentialed VCR contract corrections**: Parsed VCR's flat tag response, verified publisher/consumer project ownership through scoped project API responses, and disabled BuildKit's optional attestation index so VCR readiness applies to the directly tagged `linux/amd64` manifest. Checked-in, embedded, upstream-verified provenance remains the promotion record.

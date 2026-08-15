@@ -15,8 +15,13 @@ Dockerfile hashes, digest-pinned Ubuntu and Bun bases, dated apt snapshot,
 download checksums, exact runtime versions, and observed managed-VMI parity.
 The managed VMI itself is not an OCI build base: credentialed Docker/Buildx
 pulls return `not found`, so the build never claims to derive from that
-inaccessible reference. The image builds only `linux/amd64` with Buildx zstd
-output, has no `ENTRYPOINT`, clears Ubuntu's inherited shell command with empty
+inaccessible reference. The image builds only `linux/amd64` as one Buildx zstd
+manifest. BuildKit's optional provenance attestation is disabled because it
+wraps the manifest in an OCI index whose VCR status remains `null`, while VCR
+optimizes and reports readiness on the child manifest. Reviewed provenance is
+instead checked in as `provenance.json`, embedded in the image, validated
+against upstream before publication, and uploaded with workflow evidence. The
+image has no `ENTRYPOINT`, clears Ubuntu's inherited shell command with empty
 `CMD []`, and starts Sandbox services explicitly through
 `/usr/local/bin/devbox-start`.
 
@@ -55,8 +60,10 @@ can run. It cannot merge or release changes.
 ## Rationale
 
 VCR prepares custom images asynchronously and Sandbox does not execute Docker
-entrypoint defaults. Digest identity and explicit startup therefore need to be
-validated in the same real Sandbox used for promotion. A separate consumer
+entrypoint defaults. A direct single-platform manifest gives VCR one status-bearing
+artifact to optimize; an attestation-created index has no readiness state even
+when its child manifest is ready. Digest identity and explicit startup therefore
+need to be validated in the same real Sandbox used for promotion. A separate consumer
 token and project/team identity proves that public visibility works across
 project boundaries, not merely through the publisher's private registry
 permissions. Direct repository/project/team correlations avoid accepting

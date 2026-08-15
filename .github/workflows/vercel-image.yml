@@ -265,8 +265,12 @@ jobs:
           set -euo pipefail
           build_started_ms="$(date +%s%3N)"
           set +e
+          # VCR optimizes the single linux/amd64 manifest. BuildKit's optional
+          # attestation would wrap it in an index whose own status stays null;
+          # reviewed provenance is preserved separately in provenance.json.
           docker buildx build \
             --platform linux/amd64 \
+            --provenance=false \
             --output "type=image,name=${CANDIDATE_REFERENCE},push=true,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true" \
             images/vercel 2>&1 | node scripts/vercel/redact-artifacts.mjs | tee "${ARTIFACT_DIR}/build.log"
           pipeline_status=("${PIPESTATUS[@]}")
