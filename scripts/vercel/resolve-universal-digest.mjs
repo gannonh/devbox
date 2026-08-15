@@ -63,7 +63,9 @@ function remaining(signal) {
 async function listOwnedSandboxes(signal) {
   try {
     return await boundedCall(
-      (requestSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: requestSignal }).then((page) => page.toArray()),
+      (requestSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: requestSignal })
+        .then((page) => page.toArray())
+        .then((sandboxes) => sandboxes.filter((item) => item.name === ownedName)),
       'owned Sandbox discovery',
       { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
     );
@@ -86,6 +88,22 @@ async function listOwnedSnapshots(signal) {
   }
 }
 
+async function deleteListedSnapshot(snapshot, signal, label = 'snapshot') {
+  if (!snapshot || typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
+    throw new Error(`${label} metadata has no id`);
+  }
+  const instance = await boundedCall(
+    (requestSignal) => Snapshot.get({ ...credentials, snapshotId: snapshot.id, signal: requestSignal }),
+    `${label} ${snapshot.id} lookup`,
+    { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
+  );
+  await boundedCall(
+    (requestSignal) => instance.delete({ signal: requestSignal }),
+    `${label} ${snapshot.id} deletion`,
+    { signal, timeoutMs: Math.min(sdkTimeoutMs, remaining(signal)) },
+  );
+}
+
 async function verifyResource(name, signal) {
   // verifySandboxDeleted performs every post-delete lookup with resume: false.
   const result = await verifySandboxDeleted({
@@ -105,27 +123,24 @@ async function verifyResource(name, signal) {
 
 async function recoverOwned(signal) {
   const recovery = await recoverOwnedResources({
+    timeoutMs: cleanupTimeoutMs,
+    operationTimeoutMs: sdkTimeoutMs,
     listSandboxes: ({ signal: requestSignal }) => listOwnedSandboxes(requestSignal),
     recoverSandbox: async (name, { signal: requestSignal }) => {
       const result = await verifyResource(name, requestSignal);
       if (!result.verified || !result.noRunningSession) throw new Error(`owned Sandbox ${name} was not fully deleted`);
     },
     listSnapshots: ({ signal: requestSignal }) => listOwnedSnapshots(requestSignal),
-    deleteSnapshot: (snapshot, { signal: requestSignal }) => boundedCall(
-      (innerSignal) => snapshot.delete({ signal: innerSignal }),
-      `owned snapshot ${snapshot.snapshotId ?? snapshot.id} deletion`,
-      { signal: requestSignal, timeoutMs: Math.min(sdkTimeoutMs, remaining(requestSignal)) },
-    ),
+    deleteSnapshot: (snapshot, { signal: requestSignal }) => deleteListedSnapshot(snapshot, requestSignal, 'owned snapshot'),
     signal,
+    isNotFound,
   });
   report.cleanup.errors.push(...recovery.errors);
   report.cleanup.ownedSandboxesRecovered = recovery.recoveredSandboxes;
   report.cleanup.ownedSnapshotsDeleted = recovery.deletedSnapshots;
-  const residual = await listOwnedSnapshots(signal);
-  report.cleanup.residualSnapshots = residual
-    .filter((snapshot) => snapshot.status !== 'deleted')
-    .map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
-  report.cleanup.snapshotsCleaned = report.cleanup.residualSnapshots.length === 0;
+  report.cleanup.residualSnapshots = recovery.residualSnapshots;
+  report.cleanup.snapshotsCleaned = recovery.snapshotsCleaned;
+  report.cleanup.discoveryConverged = recovery.discoveryConverged;
   return recovery;
 }
 
@@ -191,8 +206,11 @@ try {
   try {
     const recovery = await recoverOwned(cleanupSignal);
     report.cleanup.deletionVerified = Boolean(
-      (primaryVerification?.verified && primaryVerification?.noRunningSession) ||
-      (recovery.recoveredSandboxes.length > 0 && recovery.errors.length === 0),
+      recovery.discoveryConverged &&
+      recovery.snapshotsCleaned &&
+      recovery.errors.length === 0 &&
+      ((primaryVerification?.verified && primaryVerification?.noRunningSession) ||
+        recovery.recoveredSandboxes.length > 0),
     );
   } catch (error) {
     report.cleanup.errors.push(`owned recovery: ${error instanceof Error ? error.message : String(error)}`);

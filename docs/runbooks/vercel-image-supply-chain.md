@@ -149,9 +149,13 @@ The workflow:
    `stopped`/`aborted` states, verifies deletion with repeated non-resuming
    lookups, and treats eventual `running`/`stopping` responses as transient:
    it attempts another stop/delete, re-enumerates sessions, and performs a
-   final bounded cleanup attempt before failing closed. It proves no new
-   running session appeared, removes residual snapshots, and requires final
-   snapshot cleanup before the gate can pass.
+   final bounded cleanup attempt before failing closed. Snapshot listings are
+   plain metadata, so cleanup resolves each `id` with `Snapshot.get` before
+   bounded instance deletion and records that metadata `id` in evidence. After
+   a lost create handle, owned name/tag discovery and snapshot listings poll
+   through the independent cleanup deadline; final snapshot cleanup requires
+   every matching item to be absent or `deleted`, otherwise residual IDs/statuses
+   are recorded and the gate fails closed.
 6. Repeats creation and cleanup with the independent consumer credentials.
    The consumer uses the same public digest and fails if its token is empty,
    reused, or its team/project scope matches the publisher pair.

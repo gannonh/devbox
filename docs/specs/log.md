@@ -20,3 +20,6 @@
 
 ## 2026-08-14 (6)
 * **Vercel image supply-chain independent quality fixes**: Added re-promotion and tag/PR idempotency, actual-secret redaction fixtures, owned Sandbox and resolver recovery, reproducible apt snapshot inputs, strict shared evidence URLs, and corrected orphan/runtime documentation.
+
+## 2026-08-15
+* **Vercel image cleanup contract correction**: Aligned smoke and Universal resolver cleanup with the pinned SDK's plain snapshot metadata, delayed owned-resource discovery, and bounded residual snapshot proof.

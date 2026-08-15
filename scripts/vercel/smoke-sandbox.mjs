@@ -237,6 +237,22 @@ async function listSnapshots(signal, targetName = sandbox.name) {
   return result.toArray();
 }
 
+async function deleteListedSnapshot(snapshot, signal, label = 'snapshot') {
+  if (!snapshot || typeof snapshot.id !== 'string' || snapshot.id.length === 0) {
+    throw new Error(`${label} metadata has no id`);
+  }
+  const instance = await boundedCall(
+    (requestSignal) => Snapshot.get({ ...credentials, snapshotId: snapshot.id, signal: requestSignal }),
+    `${label} ${snapshot.id} lookup`,
+    { signal, timeoutMs: sdkTimeoutMs },
+  );
+  await boundedCall(
+    (requestSignal) => instance.delete({ signal: requestSignal }),
+    `${label} ${snapshot.id} deletion`,
+    { signal, timeoutMs: sdkTimeoutMs },
+  );
+}
+
 async function listSessions(phase, target = sandbox, signal, record = true) {
   const result = await target.listSessions({ limit: 100, sortOrder: 'asc', signal });
   const sessions = await result.toArray();
@@ -291,8 +307,12 @@ async function verifyDeleted(name, signal, record = true) {
 
 async function recoverOwned(signal) {
   const recovery = await recoverOwnedResources({
+    timeoutMs: cleanupTimeoutMs,
+    operationTimeoutMs: sdkTimeoutMs,
     listSandboxes: ({ signal: requestSignal }) => boundedCall(
-      (innerSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: innerSignal }).then((page) => page.toArray()),
+      (innerSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: innerSignal })
+        .then((page) => page.toArray())
+        .then((sandboxes) => sandboxes.filter((item) => item.name === ownedName)),
       'owned smoke Sandbox discovery',
       { signal: requestSignal, timeoutMs: sdkTimeoutMs },
     ),
@@ -305,14 +325,12 @@ async function recoverOwned(signal) {
       'owned smoke snapshot discovery',
       { signal: requestSignal, timeoutMs: sdkTimeoutMs },
     ),
-    deleteSnapshot: (snapshot, { signal: requestSignal }) => boundedCall(
-      (innerSignal) => snapshot.delete({ signal: innerSignal }),
-      `owned smoke snapshot ${snapshot.snapshotId ?? snapshot.id} deletion`,
-      { signal: requestSignal, timeoutMs: sdkTimeoutMs },
-    ),
+    deleteSnapshot: (snapshot, { signal: requestSignal }) => deleteListedSnapshot(snapshot, requestSignal, 'owned smoke snapshot'),
     signal,
+    isNotFound,
   });
   report.cleanup.ownedRecovery = recovery;
+  report.cleanup.residualNonDeletedSnapshots = recovery.residualSnapshots;
   if (recovery.errors.length > 0) {
     report.cleanup.errors.push(...recovery.errors);
     report.failed = true;
@@ -477,15 +495,15 @@ try {
     try {
       await timed('snapshot-cleanup', async (signal) => {
         const snapshots = await listSnapshots(signal);
-        report.snapshots = snapshots.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        report.snapshots = snapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
         for (const snapshot of snapshots.filter((item) => item.status !== 'deleted')) {
-          await snapshot.delete({ signal });
+          await deleteListedSnapshot(snapshot, signal);
         }
         const residual = await listSnapshots(signal);
-        report.snapshots = residual.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        report.snapshots = residual.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
         report.cleanup.residualNonDeletedSnapshots = residual
           .filter((snapshot) => snapshot.status !== 'deleted')
-          .map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+          .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
         report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
         if (!report.cleanup.snapshotsCleaned) throw new Error('non-deleted snapshot residual remains');
       }, { signal: cleanupSignal, timeoutMs: cleanupTimeoutMs, respectSmokeDeadline: false });
@@ -519,10 +537,10 @@ try {
           throw new Error(initialDeleteError ? 'initial delete rejected and recovery verification failed' : 'Sandbox deletion or no-running-session verification failed');
         }
         const residualAfterDelete = await listSnapshots(signal);
-        report.snapshots = residualAfterDelete.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+        report.snapshots = residualAfterDelete.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
         report.cleanup.residualNonDeletedSnapshots = residualAfterDelete
           .filter((snapshot) => snapshot.status !== 'deleted')
-          .map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
+          .map((snapshot) => ({ id: snapshot.id, status: snapshot.status }));
         report.cleanup.snapshotsCleaned = report.cleanup.residualNonDeletedSnapshots.length === 0;
         if (!report.cleanup.snapshotsCleaned) throw new Error('snapshot residual remains after Sandbox deletion');
       }, { signal: cleanupSignal, timeoutMs: cleanupTimeoutMs, respectSmokeDeadline: false });
@@ -539,12 +557,13 @@ try {
       timeoutMs: cleanupTimeoutMs,
       respectSmokeDeadline: false,
     });
+    report.cleanup.residualNonDeletedSnapshots = ownedRecovery.residualSnapshots;
+    report.cleanup.snapshotsCleaned = ownedRecovery.snapshotsCleaned;
     if (ownedRecovery.errors.length === 0 && ownedRecovery.recoveredSandboxes.length > 0) {
       report.cleanup.stopped = true;
       report.cleanup.deleted = true;
       report.cleanup.deletionVerified = true;
       report.cleanup.noRunningSessionAfterDelete = true;
-      report.cleanup.snapshotsCleaned = true;
     }
   } catch (error) {
     markCleanupFailure('deleted', error instanceof Error ? error.message : error);

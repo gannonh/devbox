@@ -36,3 +36,6 @@
 
 ## 2026-08-14 (7)
 * **Vercel image supply-chain quality corrections**: Made promotion repeatable, passed both real tokens to all redaction paths, recovered owned resources after lost handles, bounded Universal digest probing, serialized and idempotent candidate publication, pinned apt metadata to a reviewed Ubuntu snapshot, shared strict evidence URL validation, and corrected scoped orphan/runtime runbook commands.
+
+## 2026-08-15
+* **Vercel image SDK-shaped cleanup correction**: Updated smoke, lost-handle recovery, and Universal digest cleanup for the pinned Sandbox 3.0.0 `Snapshot.list()` metadata shape by resolving IDs through `Snapshot.get`; added bounded delayed-discovery polling and residual snapshot convergence evidence. Credentialed live verification remains outside the local boundary.

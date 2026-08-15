@@ -55,7 +55,11 @@ redaction receives both actual publisher and consumer token values in every
 redaction path, keeping readiness, session, snapshot, stage-timing, and cleanup
 evidence useful without placing credentials in logs or image layers. Owned
 Sandbox tags/names support recovery after lost handles, including bounded
-Universal digest probing and final snapshot verification.
+Universal digest probing and final snapshot verification. Because
+`Snapshot.list()` returns plain metadata, every cleanup resolves the metadata
+`id` with `Snapshot.get` before bounded instance deletion; owned name/tag and
+snapshot discovery continue through an abortable cleanup grace window, and
+residual snapshot IDs/statuses fail the gate.
 
 ## Consequences
 

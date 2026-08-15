@@ -6,6 +6,7 @@ import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { Snapshot } from '@vercel/sandbox';
 import {
   parseFullyQualifiedVcrReference,
   REQUIRED_SMOKE_CHECKS,
@@ -175,15 +176,127 @@ describe('Vercel supply-chain script boundaries', () => {
   it('recovers owned resources discovered by tag after a lost create handle', async () => {
     const recovered: string[] = [];
     const deletedSnapshots: string[] = [];
+    let snapshotListCalls = 0;
     const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 2,
+      backoffMs: 0,
       listSandboxes: async () => [{ name: 'owned-sandbox' }],
       recoverSandbox: async (name: string) => { recovered.push(name); },
-      listSnapshots: async () => [{ id: 'owned-snapshot', status: 'ready' }],
+      listSnapshots: async () => {
+        snapshotListCalls += 1;
+        return snapshotListCalls === 1
+          ? [{ id: 'owned-snapshot', status: 'ready' }]
+          : [{ id: 'owned-snapshot', status: 'deleted' }];
+      },
       deleteSnapshot: async (snapshot: { id: string }) => { deletedSnapshots.push(snapshot.id); },
     });
     expect(result.errors).toEqual([]);
     expect(recovered).toEqual(['owned-sandbox']);
     expect(deletedSnapshots).toEqual(['owned-snapshot']);
+  });
+
+  it('models pinned SDK Snapshot.list results as plain metadata', async () => {
+    const listed = await Snapshot.list({
+      token: 'fixture-token',
+      teamId: 'fixture-team',
+      projectId: 'fixture-project',
+      fetch: async () => new Response(JSON.stringify({
+        snapshots: [{
+          id: 'snapshot-metadata',
+          sourceSessionId: 'session-id',
+          region: 'iad1',
+          status: 'created',
+          sizeBytes: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+        pagination: { count: 1, next: null },
+      }), { headers: { 'content-type': 'application/json' } }),
+    });
+    const snapshots = await listed.toArray();
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].id).toBe('snapshot-metadata');
+    expect(snapshots[0]).not.toHaveProperty('delete');
+    expect(snapshots[0]).not.toHaveProperty('snapshotId');
+  });
+
+  it('reconciles SDK-shaped snapshot metadata until every item is deleted', async () => {
+    let listCalls = 0;
+    const deletedIds: string[] = [];
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 4,
+      backoffMs: 1,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => {
+        listCalls += 1;
+        return listCalls < 3
+          ? [{ id: 'snapshot-metadata', status: 'created' }]
+          : [{ id: 'snapshot-metadata', status: 'deleted' }];
+      },
+      deleteSnapshot: async (snapshot: { id: string; delete?: unknown }) => {
+        expect(snapshot.id).toBe('snapshot-metadata');
+        expect(snapshot.delete).toBeUndefined();
+        deletedIds.push(snapshot.id);
+      },
+      sleep: async () => {},
+    });
+    expect(deletedIds).toEqual(['snapshot-metadata', 'snapshot-metadata']);
+    expect(result.snapshotsCleaned).toBe(true);
+    expect(result.residualSnapshots).toEqual([]);
+    expect(listCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  it('waits for delayed owned Sandbox discovery after a lost create handle', async () => {
+    let listCalls = 0;
+    const recovered: string[] = [];
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 4,
+      backoffMs: 1,
+      listSandboxes: async () => {
+        listCalls += 1;
+        return listCalls < 3 ? [] : [{ name: 'delayed-owned-sandbox' }];
+      },
+      recoverSandbox: async (name: string) => { recovered.push(name); },
+      listSnapshots: async () => [],
+      deleteSnapshot: async () => {},
+      sleep: async () => {},
+    });
+    expect(recovered).toEqual(['delayed-owned-sandbox']);
+    expect(result.discoveryConverged).toBe(true);
+    expect(listCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  it('fails closed with residual SDK-shaped snapshots that never converge', async () => {
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 3,
+      backoffMs: 1,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => [{ id: 'stuck-snapshot', status: 'created' }],
+      deleteSnapshot: async (snapshot: { id: string }) => {
+        expect(snapshot.id).toBe('stuck-snapshot');
+      },
+      sleep: async () => {},
+    });
+    expect(result.snapshotsCleaned).toBe(false);
+    expect(result.residualSnapshots).toEqual([{ id: 'stuck-snapshot', status: 'created' }]);
+    expect(result.errors.join(' ')).toMatch(/stuck-snapshot/);
+  });
+
+  it('requires SDK-shaped Snapshot.get before deleting listed snapshots', async () => {
+    const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
+    const resolver = await readFile('scripts/vercel/resolve-universal-digest.mjs', 'utf8');
+    for (const source of [smoke, resolver]) {
+      expect(source).toContain('Snapshot.get');
+      expect(source).toContain('snapshotId: snapshot.id');
+      expect(source).toContain('snapshot.id');
+      expect(source).not.toContain('snapshot.snapshotId');
+    }
   });
 
   it('requires executable working-binary probes for image and Sandbox checks', async () => {

@@ -17,3 +17,6 @@
 
 ## 2026-08-14 (5)
 * **Independent quality corrections**: Accepted repeatable attested promotion, actual-token redaction, owned Sandbox/base-probe recovery, serialized candidate tags/PRs, dated Ubuntu package snapshots, shared evidence URL policy, and scoped orphan/runtime procedures.
+
+## 2026-08-15
+* **SDK-shaped cleanup correction**: Accepted `Snapshot.get` resolution for plain `Snapshot.list` metadata, abortable delayed owned-resource discovery, and bounded residual snapshot convergence before cleanup evidence can pass.
