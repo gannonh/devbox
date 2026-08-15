@@ -2,41 +2,55 @@
 /**
  * devbox CLI entry point.
  *
- * Arg parsing and command dispatch. No business logic in this file.
- * Command bodies land in Phases 2-3.
+ * This module owns argument parsing and the single CLI-to-provider dispatch
+ * point. Provider implementations receive provider-neutral requests and keep
+ * their own lifecycle behavior and formatting behind that boundary.
  */
 import type { Writable } from 'node:stream';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { init } from './commands/init.js';
-import { up } from './commands/up.js';
-import { attach } from './commands/attach.js';
-import { stop } from './commands/stop.js';
-import { rm } from './commands/rm.js';
-import { list } from './commands/list.js';
-import { url } from './commands/url.js';
-import type { LauncherContext } from './lib/context.js';
-import { RealShellRunner } from './lib/shell.js';
 import { findRepoRoot, repoName } from './lib/repo.js';
+import {
+  defaultProviderRegistry,
+  resolveProvider,
+  type ProviderRegistry,
+} from './providers/registry.js';
+import type {
+  DevboxProvider,
+  DisplayCredentialsResult,
+  ProviderActionResult,
+  ProviderBranchRequest,
+  ProviderListRequest,
+  ProviderName,
+  ProviderUrlRequest,
+} from './providers/types.js';
 
 const USAGE = `devbox — one-command isolated worktree dev containers
 
 USAGE
-  devbox init [--force]              scaffold .devbox/ + .devcontainer/ in this repo
-  devbox <branch>                    create/boot a box for a branch
-  devbox <branch> --attach|-a        re-enter a running box
-  devbox <branch> --url [--open|-o]  print or open the noVNC URL
-  devbox <branch> --stop             stop (keeps worktree + container)
-  devbox <branch> --rm               remove container, worktree, and branch
-  devbox --list|-l                   list devbox containers + noVNC URLs
-  devbox --help|-h                   show this help
+  devbox [--provider local|vercel] <branch>                    create/boot a box
+  devbox [--provider local|vercel] <branch> --attach|-a        re-enter a running box
+  devbox [--provider local|vercel] <branch> --url [--open|-o]  print or open the noVNC URL
+  devbox [--provider local|vercel] <branch> --stop             stop (keeps worktree + container)
+  devbox [--provider local|vercel] <branch> --rm               remove container, worktree, and branch
+  devbox [--provider local|vercel] <branch> --password         retrieve display credentials
+  devbox [--provider local|vercel] --list|-l                  list provider devboxes
+  devbox --help|-h                                             show this help
+
+OPTIONS
+  --provider local|vercel   select a provider (local is the default)
 
 EXAMPLES
   devbox init                        # set up .devbox/ in the current repo
-  devbox my-feature                  # boot a box for the my-feature branch
-  devbox my-feature --attach         # re-enter the running box
-  devbox my-feature --url --open     # open the noVNC view in a browser
-  devbox --list                      # see all running devboxes`;
+  devbox my-feature                  # boot a local box for my-feature
+  devbox --provider local my-feature --attach
+  devbox my-feature --url --open    # open the local noVNC view
+  devbox --provider local --list    # list local boxes
+
+NOTE
+  The Vercel provider name is reserved for a future release; this package
+  does not claim Vercel lifecycle support yet.`;
 
 const INIT_HELP = `devbox init — scaffold .devbox/ + .devcontainer/ in this repo
 
@@ -49,229 +63,488 @@ FLAGS
 DESCRIPTION
   Copies template files (Dockerfile, provision.sh, start-display.sh,
   post-create.sh stub, README.md, devcontainer.json) into the current repo.
-  Without --force, errors if .devbox/ already exists with differing files.`;
+  Provider selection applies to branch lifecycle and list operations, not init.`;
 
 const UP_HELP = (branch: string) => `devbox ${branch} — create/boot a box for a branch
 
 USAGE
-  devbox <branch> [--attach|-a] [--stop] [--rm] [--url [--open|-o]]
+  devbox [--provider local|vercel] <branch> [ACTION]
 
-SUBCOMMANDS (via flags on the same branch)
+ACTIONS
   --attach|-a    re-enter a running box
-  --stop         stop the box (keeps worktree + container)
-  --rm           remove container, worktree, and branch
-  --url          print the noVNC URL
-  --open|-o      open the noVNC URL in a browser
+  --stop         stop the box (keeps local resources)
+  --rm           remove the box and local resources
+  --url [--open|-o]  print or open the noVNC URL
+  --password     retrieve labeled display credentials
+
+FLAGS
+  --provider local|vercel   select a provider (local is the default)
 
 EXAMPLES
-  devbox ${branch}                  # boot or re-enter
-  devbox ${branch} --attach         # re-enter the running box
-  devbox ${branch} --stop           # stop it`;
+  devbox ${branch}                       # boot or re-enter a local box
+  devbox ${branch} --attach              # re-enter the running box
+  devbox ${branch} --stop                # stop it
+  devbox ${branch} --password            # retrieve credentials if supported
+  devbox --provider vercel ${branch}     # reserved; unavailable in this release`;
 
-const LIST_HELP = `devbox --list — list devbox containers + noVNC URLs
+const LIST_HELP = `devbox --list — list provider devboxes + noVNC URLs
 
 USAGE
-  devbox --list|-l
+  devbox [--provider local|vercel] --list|-l
+
+FLAGS
+  --provider local|vercel   filter the list by provider (local is the default)
+
+EXAMPLES
+  devbox --list                       # list local boxes
+  devbox --provider local --list      # explicit local provider
 
 DESCRIPTION
-  Lists all devbox containers for the current repo with their state
-  (running/stopped) and noVNC URLs for running boxes.`;
+  Lists boxes for the selected provider. The Vercel provider is reserved for
+  a future release and is not available in this package.`;
 
 const ATTACH_HELP = (branch: string) => `devbox ${branch} --attach — re-enter a running box
 
 USAGE
-  devbox <branch> --attach|-a
+  devbox [--provider local|vercel] <branch> --attach|-a
 
 DESCRIPTION
   Re-enters a running box for the branch. If the box is stopped, starts it
   and re-brings the display stack up, then drops into a shell in /workspace.
 
 EXAMPLES
-  devbox ${branch} --attach    # re-enter the running box for ${branch}`;
+  devbox ${branch} --attach
+  devbox --provider local ${branch} --attach`;
 
 const STOP_HELP = (branch: string) => `devbox ${branch} --stop — stop the box (keeps worktree + container)
 
 USAGE
-  devbox <branch> --stop
+  devbox [--provider local|vercel] <branch> --stop
 
 DESCRIPTION
-  Stops the container but keeps the worktree and container on disk.
-  Re-enter with: devbox <branch> --attach
+  Stops the selected provider's box while preserving its local worktree when
+  supported. Re-enter with: devbox ${branch} --attach
 
 EXAMPLES
-  devbox ${branch} --stop      # stop the box for ${branch}`;
+  devbox ${branch} --stop
+  devbox --provider local ${branch} --stop`;
 
 const RM_HELP = (branch: string) => `devbox ${branch} --rm — remove container, worktree, and branch
 
 USAGE
-  devbox <branch> --rm
+  devbox [--provider local|vercel] <branch> --rm
 
 DESCRIPTION
-  Removes the container, the worktree directory, and the local branch.
-  Uncommitted work in the worktree is lost.
+  Removes the selected provider's box and associated local resources when
+  supported. Uncommitted local work may be lost.
 
 EXAMPLES
-  devbox ${branch} --rm        # tear down the box for ${branch}`;
+  devbox ${branch} --rm
+  devbox --provider local ${branch} --rm`;
 
 const URL_HELP = (branch: string) => `devbox ${branch} --url — print or open the noVNC URL
 
 USAGE
-  devbox <branch> --url [--open|-o]
+  devbox [--provider local|vercel] <branch> --url [--open|-o]
 
 FLAGS
   --open|-o    open the noVNC URL in a browser instead of printing it
 
+EXAMPLES
+  devbox ${branch} --url
+  devbox --provider local ${branch} --url --open`;
+
+const PASSWORD_HELP = (branch: string) => `devbox ${branch} --password — retrieve display credentials
+
+USAGE
+  devbox [--provider local|vercel] <branch> --password
+
 DESCRIPTION
-  Prints the noVNC URL for a running box. Add --open to launch it in a
-  browser.
+  Retrieves explicitly supported display credentials and prints labeled
+  username/password fields. Providers may report this action as unsupported.
 
 EXAMPLES
-  devbox ${branch} --url       # print the noVNC URL
-  devbox ${branch} --url --open  # open it in a browser`;
+  devbox ${branch} --password
+  devbox --provider local ${branch} --password`;
 
-const GLOBAL_FLAGS = new Set(['--help', '-h', '--list', '-l']);
-const BRANCH_FLAGS = new Set(['--attach', '-a', '--stop', '--rm', '--url', '--open', '-o']);
+const BRANCH_FLAGS = new Set([
+  '--attach',
+  '-a',
+  '--stop',
+  '--rm',
+  '--url',
+  '--open',
+  '-o',
+  '--password',
+]);
 
 export type BranchAction =
   | { action: 'up' }
   | { action: 'attach' }
   | { action: 'stop' }
   | { action: 'rm' }
-  | { action: 'url'; open: boolean };
+  | { action: 'url'; open: boolean }
+  | { action: 'password' };
+
+export class CliUsageError extends Error {
+  readonly exitCode = 2;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'CliUsageError';
+  }
+}
+
+export type ParsedCommand =
+  | { kind: 'init'; force: boolean }
+  | { kind: 'list'; provider?: ProviderName }
+  | { kind: 'branch'; branch: string; provider?: ProviderName; action: BranchAction }
+  | { kind: 'help'; scope: 'global' | 'init' | 'list' | 'branch'; branch?: string; action?: BranchAction }
+  | { kind: 'error'; message: string; exitCode: number };
+
+function usageError(message: string): ParsedCommand {
+  return {
+    kind: 'error',
+    exitCode: 2,
+    message: `${message}\n\nusage:\n${USAGE}`,
+  };
+}
+
+function providerName(value: string | undefined): ProviderName {
+  if (value === 'local' || value === 'vercel') return value;
+  if (!value) throw new CliUsageError('missing provider value after --provider');
+  throw new CliUsageError(`unsupported provider: ${value}`);
+}
+
+function readProvider(args: string[], index: number): { provider: ProviderName; next: number } {
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) {
+    throw new CliUsageError('missing provider value after --provider');
+  }
+  return { provider: providerName(value), next: index + 2 };
+}
+
+function formatBranchUsage(branch: string, action: BranchAction): string {
+  switch (action.action) {
+    case 'attach':
+      return ATTACH_HELP(branch);
+    case 'stop':
+      return STOP_HELP(branch);
+    case 'rm':
+      return RM_HELP(branch);
+    case 'url':
+      return URL_HELP(branch);
+    case 'password':
+      return PASSWORD_HELP(branch);
+    case 'up':
+      return UP_HELP(branch);
+  }
+}
 
 /**
- * Resolve the action for a branch command from the remaining flags.
- * --open/-o anywhere in the flags implies --url with open=true, matching the
- * bash behavior where --open is an alias for --url --open.
+ * Resolve a branch action from validated action flags.
+ * --open/-o implies --url and may be paired with --url itself.
  */
 export function resolveBranchAction(rest: string[]): BranchAction {
-  const hasOpen = rest.includes('--open') || rest.includes('-o');
-  if (rest.includes('--url') || hasOpen) {
-    return { action: 'url', open: hasOpen };
+  const actionFlags = rest.filter((flag) => BRANCH_FLAGS.has(flag));
+  const canonical = actionFlags.map((flag) => {
+    if (flag === '--attach' || flag === '-a') return 'attach';
+    if (flag === '--url' || flag === '--open' || flag === '-o') return 'url';
+    if (flag === '--stop') return 'stop';
+    if (flag === '--rm') return 'rm';
+    return 'password';
+  });
+  const unique = new Set(canonical);
+  if (unique.size > 1) {
+    throw new CliUsageError(`conflicting action flags: ${actionFlags.join(', ')}`);
   }
-  if (rest.includes('--attach') || rest.includes('-a')) return { action: 'attach' };
-  if (rest.includes('--stop')) return { action: 'stop' };
-  if (rest.includes('--rm')) return { action: 'rm' };
-  return { action: 'up' };
+
+  const action = canonical[0];
+  if (!action) return { action: 'up' };
+  if (action === 'url') {
+    return { action: 'url', open: rest.includes('--open') || rest.includes('-o') };
+  }
+  if (action === 'attach') return { action: 'attach' };
+  if (action === 'stop') return { action: 'stop' };
+  if (action === 'rm') return { action: 'rm' };
+  return { action: 'password' };
 }
+
+function parseList(rest: string[], initialProvider?: ProviderName): ParsedCommand {
+  let provider = initialProvider;
+  let help = false;
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
+    if (flag === '--help' || flag === '-h') {
+      help = true;
+      continue;
+    }
+    if (flag === '--provider') {
+      try {
+        const parsed = readProvider(rest, index);
+        if (provider) return usageError('conflicting --provider flags');
+        provider = parsed.provider;
+        index = parsed.next - 1;
+      } catch (error) {
+        if (error instanceof CliUsageError) return usageError(error.message);
+        throw error;
+      }
+      continue;
+    }
+    if (flag === '--list' || flag === '-l') return usageError('duplicate --list flag');
+    return usageError(`misplaced or unknown flag for --list: ${flag}`);
+  }
+  if (help) return { kind: 'help', scope: 'list' };
+  return { kind: 'list', provider };
+}
+
+function parseBranch(branch: string, rest: string[], initialProvider?: ProviderName): ParsedCommand {
+  let provider = initialProvider;
+  const actionFlags: string[] = [];
+  let help = false;
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
+    if (flag === '--help' || flag === '-h') {
+      help = true;
+      continue;
+    }
+    if (flag === '--provider') {
+      try {
+        const parsed = readProvider(rest, index);
+        if (provider) return usageError('conflicting --provider flags');
+        provider = parsed.provider;
+        index = parsed.next - 1;
+      } catch (error) {
+        if (error instanceof CliUsageError) return usageError(error.message);
+        throw error;
+      }
+      continue;
+    }
+    if (BRANCH_FLAGS.has(flag)) {
+      actionFlags.push(flag);
+      continue;
+    }
+    if (flag === '--list' || flag === '-l') {
+      return usageError('--list must be the list command, not a branch flag');
+    }
+    if (flag === '--force') return usageError('--force is only valid for devbox init');
+    return usageError(`unknown or misplaced option: ${flag}`);
+  }
+
+  try {
+    const action = resolveBranchAction(actionFlags);
+    if (help) return { kind: 'help', scope: 'branch', branch, action };
+    return { kind: 'branch', branch, provider, action };
+  } catch (error) {
+    if (error instanceof CliUsageError) return usageError(error.message);
+    throw error;
+  }
+}
+
+function parseGlobalHelp(trailing: string[]): ParsedCommand {
+  if (trailing.length > 0) return usageError(`unexpected argument after global help: ${trailing[0]}`);
+  return { kind: 'help', scope: 'global' };
+}
+
+/** Parse the CLI grammar without touching the repository or a provider. */
+export function parseCliArgs(args: string[]): ParsedCommand {
+  if (args.length === 0) {
+    return {
+      kind: 'error',
+      exitCode: 1,
+      message: `${USAGE}\n\nRun "devbox --help" for full usage.`,
+    };
+  }
+
+  const [first, ...rest] = args;
+  if (first === '--help' || first === '-h') return parseGlobalHelp(rest);
+
+  if (first === 'init') {
+    let force = false;
+    let help = false;
+    for (const flag of rest) {
+      if (flag === '--force') {
+        if (force) return usageError('duplicate --force flag');
+        force = true;
+      } else if (flag === '--help' || flag === '-h') {
+        help = true;
+      } else {
+        return usageError(`unknown or misplaced option for init: ${flag}`);
+      }
+    }
+    if (help) return { kind: 'help', scope: 'init' };
+    return { kind: 'init', force };
+  }
+
+  if (first === '--list' || first === '-l') return parseList(rest);
+
+  if (first === '--provider') {
+    try {
+      const parsed = readProvider(args, 0);
+      const next = args[parsed.next];
+      if (next === '--list' || next === '-l') return parseList(args.slice(parsed.next + 1), parsed.provider);
+      if (next === '--help' || next === '-h') return parseGlobalHelp(args.slice(parsed.next + 1));
+      if (next === '--provider') return usageError('conflicting --provider flags');
+      if (next === 'init') return usageError('--provider cannot be used with init');
+      if (!next) return usageError('missing branch after --provider');
+      if (next.startsWith('-')) return usageError(`branch is required before ${next}`);
+      return parseBranch(next, args.slice(parsed.next + 1), parsed.provider);
+    } catch (error) {
+      if (error instanceof CliUsageError) return usageError(error.message);
+      throw error;
+    }
+  }
+
+  if (first.startsWith('-')) {
+    return usageError(`unknown option or missing branch: ${first}`);
+  }
+
+  return parseBranch(first, rest);
+}
+
+/** Alias retained as the parser's public, descriptive entry point. */
+export const parseArgs = parseCliArgs;
+
 export interface DispatchIO {
   stdout: Writable;
   stderr: Writable;
 }
 
-export async function dispatch(args: string[], io: DispatchIO): Promise<number> {
-  // No args: print usage, exit non-zero.
-  if (args.length === 0) {
-    io.stderr.write(USAGE + '\n');
-    io.stderr.write('\nRun "devbox --help" for full usage.\n');
-    return 1;
+export interface DispatchOptions {
+  providerRegistry?: ProviderRegistry;
+  /** Alias useful for callers embedding the parser/dispatcher. */
+  registry?: ProviderRegistry;
+  repoRoot?: string | null;
+  env?: Record<string, string | undefined>;
+  tty?: boolean;
+}
+
+function operationCode(result: ProviderActionResult): number {
+  return result.exitCode;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+type ExitCodeCarrier = { exitCode?: unknown };
+
+function errorExitCode(error: unknown, fallback: number): number {
+  if (typeof error !== 'object' || error === null || !('exitCode' in error)) return fallback;
+  return Number((error as ExitCodeCarrier).exitCode) || fallback;
+}
+
+function errorWasReported(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'reported' in error
+    && (error as { reported?: unknown }).reported === true;
+}
+
+async function runProviderOperation(
+  operation: () => Promise<ProviderActionResult>,
+  io: DispatchIO,
+): Promise<number> {
+  try {
+    return operationCode(await operation());
+  } catch (error) {
+    const exitCode = errorExitCode(error, 1);
+    if (!errorWasReported(error)) io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
+    return exitCode;
   }
+}
 
-  const [first, ...rest] = args;
+async function displayCredentials(
+  provider: DevboxProvider,
+  request: ProviderBranchRequest,
+  io: DispatchIO,
+): Promise<number> {
+  try {
+    const result: DisplayCredentialsResult = await provider.getDisplayCredentials(request);
+    if (!result.supported) {
+      io.stderr.write(`[devbox] ${result.message}\n`);
+      return 2;
+    }
+    io.stdout.write(`username: ${result.username}\npassword: ${result.password}\n`);
+    return 0;
+  } catch (error) {
+    const exitCode = errorExitCode(error, 1);
+    if (!errorWasReported(error)) io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
+    return exitCode;
+  }
+}
 
-  // Global help.
-  if (first === '--help' || first === '-h') {
-    io.stdout.write(USAGE + '\n');
+function helpText(command: Extract<ParsedCommand, { kind: 'help' }>): string {
+  if (command.scope === 'global') return USAGE;
+  if (command.scope === 'init') return INIT_HELP;
+  if (command.scope === 'list') return LIST_HELP;
+  return formatBranchUsage(command.branch ?? '<branch>', command.action ?? { action: 'up' });
+}
+
+export async function dispatch(
+  args: string[],
+  io: DispatchIO,
+  options: DispatchOptions = {},
+): Promise<number> {
+  const parsed = parseCliArgs(args);
+  if (parsed.kind === 'error') {
+    io.stderr.write(`${parsed.message}\n`);
+    return parsed.exitCode;
+  }
+  if (parsed.kind === 'help') {
+    io.stdout.write(`${helpText(parsed)}\n`);
     return 0;
   }
-
-  // List command.
-  if (first === '--list' || first === '-l') {
-    if (rest[0] === '--help' || rest[0] === '-h') {
-      io.stdout.write(LIST_HELP + '\n');
-      return 0;
-    }
-    const root = findRepoRoot();
-    if (!root) {
-      io.stderr.write('[devbox] not in a git repository\n');
-      return 1;
-    }
-    const ctx: LauncherContext = {
-      repoRoot: root,
-      repoName: repoName(root),
-      runner: new RealShellRunner(),
-      env: { ...process.env },
-      tty: process.stdin.isTTY,
-    };
-    return list(ctx, io.stderr);
+  if (parsed.kind === 'init') {
+    return init({ force: parsed.force, stderr: io.stderr });
   }
 
-  // Init command.
-  if (first === 'init') {
-    if (rest[0] === '--help' || rest[0] === '-h') {
-      io.stdout.write(INIT_HELP + '\n');
-      return 0;
-    }
-    const force = rest.includes('--force');
-    return init({ force, stderr: io.stderr });
-  }
-
-  // Unknown flag (starts with - but not a recognized global/branch flag).
-  if (first.startsWith('-') && !GLOBAL_FLAGS.has(first) && !BRANCH_FLAGS.has(first)) {
-    io.stderr.write(`unknown option: ${first}\n\n`);
-    io.stderr.write(USAGE + '\n');
-    return 2;
-  }
-
-  // Branch flag used without a branch (error).
-  if (BRANCH_FLAGS.has(first)) {
-    io.stderr.write(`usage: devbox <branch> ${first}\n\n`);
-    io.stderr.write(USAGE + '\n');
-    return 1;
-  }
-
-  // first = branch name, rest may contain flags.
-  const branch = first;
-
-  // Help short-circuit: --help/-h anywhere in rest renders per-command help.
-  // Must run BEFORE the repo-root check so help works outside a git repo.
-  const helpFlag = rest.find((a) => a === '--help' || a === '-h');
-  if (helpFlag) {
-    const actionFlag = rest.find((a) => BRANCH_FLAGS.has(a));
-    let help: string;
-    if (actionFlag === '--attach' || actionFlag === '-a') {
-      help = ATTACH_HELP(branch);
-    } else if (actionFlag === '--stop') {
-      help = STOP_HELP(branch);
-    } else if (actionFlag === '--rm') {
-      help = RM_HELP(branch);
-    } else if (actionFlag === '--url' || actionFlag === '--open' || actionFlag === '-o') {
-      help = URL_HELP(branch);
-    } else {
-      help = UP_HELP(branch);
-    }
-    io.stdout.write(help + '\n');
-    return 0;
-  }
-
-  // Build the launcher context for branch commands (after help check).
-  const root = findRepoRoot();
+  const root = options.repoRoot === undefined ? findRepoRoot() : options.repoRoot;
   if (!root) {
     io.stderr.write('[devbox] not in a git repository\n');
     return 1;
   }
-  const ctx: LauncherContext = {
+
+  const registry = options.providerRegistry ?? options.registry ?? defaultProviderRegistry;
+  let provider: DevboxProvider;
+  try {
+    provider = resolveProvider(parsed.provider, registry);
+  } catch (error) {
+    const exitCode = errorExitCode(error, 2);
+    io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
+    return exitCode;
+  }
+
+  const context = {
     repoRoot: root,
     repoName: repoName(root),
-    runner: new RealShellRunner(),
-    env: { ...process.env },
-    tty: process.stdin.isTTY,
+    env: options.env ?? { ...process.env },
+    tty: options.tty ?? Boolean(process.stdin.isTTY),
+    stdout: io.stdout,
+    stderr: io.stderr,
   };
 
-  // Route by the resolved action from all flags in rest.
-  const action = resolveBranchAction(rest);
+  if (parsed.kind === 'list') {
+    const request: ProviderListRequest = context;
+    return runProviderOperation(() => provider.list(request), io);
+  }
 
-  switch (action.action) {
-    case 'attach':
-      return attach(ctx, branch);
-    case 'stop':
-      return stop(ctx, branch);
-    case 'rm':
-      return rm(ctx, branch);
-    case 'url':
-      return url(ctx, branch, action.open);
+  const request: ProviderBranchRequest = { ...context, branch: parsed.branch };
+  switch (parsed.action.action) {
     case 'up':
-      return up(ctx, branch);
+      return runProviderOperation(() => provider.up(request), io);
+    case 'attach':
+      return runProviderOperation(() => provider.attach(request), io);
+    case 'stop':
+      return runProviderOperation(() => provider.stop(request), io);
+    case 'rm':
+      return runProviderOperation(() => provider.remove(request), io);
+    case 'url': {
+      const urlRequest: ProviderUrlRequest = { ...request, open: parsed.action.open };
+      return runProviderOperation(() => provider.url(urlRequest), io);
+    }
+    case 'password':
+      return displayCredentials(provider, request, io);
   }
 }
 
@@ -286,12 +559,9 @@ async function main() {
  * Determine whether this module is the process entry point.
  *
  * When installed globally via npm, the `devbox` bin is a symlink to
- * `dist/cli.js`. `process.argv[1]` is the symlink path, while
- * `import.meta.url` is the real file URL — they don't match string-for-string.
- * Resolve both to their real paths and compare those.
- *
- * Returns false when argv[1] is missing, doesn't exist, or resolves to a
- * different file. Never throws.
+ * `dist/cli.js`. `process.argv[1]` is the symlink path, while `import.meta.url`
+ * is the real file URL — they don't match string-for-string. Resolve both to
+ * their real paths and compare those.
  */
 export function isMainEntry(argv1: string, moduleUrl: string): boolean {
   if (!argv1 || !moduleUrl) return false;
@@ -302,7 +572,6 @@ export function isMainEntry(argv1: string, moduleUrl: string): boolean {
   }
 }
 
-// Only run main when executed directly, not when imported.
 if (isMainEntry(process.argv[1] ?? '', import.meta.url)) {
   main();
 }

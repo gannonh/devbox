@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveDevboxEnv, resolveGhToken } from '../src/lib/env.js';
+import { resolveDevboxEnv, resolveGhToken } from '../src/providers/local/env.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {

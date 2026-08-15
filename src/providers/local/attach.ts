@@ -4,9 +4,10 @@
  * If the box is running: exec in. If stopped: start it, re-bring display up,
  * exec in. If no box exists: error.
  */
-import type { LauncherContext } from '../lib/context.js';
-import { containerFor, containerForAll } from '../lib/docker.js';
-import { info, warn, die } from '../lib/log.js';
+import type { LauncherContext } from './context.js';
+import { containerFor, containerForAll } from './docker.js';
+import { info, warn } from '../../lib/log.js';
+import { localFailure } from './errors.js';
 
 export async function attach(ctx: LauncherContext, branch: string): Promise<number> {
   const { runner, tty } = ctx;
@@ -38,5 +39,5 @@ export async function attach(ctx: LauncherContext, branch: string): Promise<numb
     return runner.spawnInherit('docker', ['exec', ttyFlag, '-w', '/workspace', '-u', 'node', stoppedCid, 'bash', '-l'], {});
   }
 
-  die(`no box for ${branch} (start it with: devbox ${branch})`);
+  localFailure(`no box for ${branch} (start it with: devbox ${branch})`);
 }

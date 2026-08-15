@@ -5,7 +5,8 @@
  * and environment. Commands are thin: they call lib/ functions and format
  * output.
  */
-import type { ShellRunner } from './shell.js';
+import type { Writable } from 'node:stream';
+import type { ShellRunner } from '../../lib/shell.js';
 
 export interface LauncherContext {
   repoRoot: string;
@@ -14,4 +15,6 @@ export interface LauncherContext {
   env: Record<string, string | undefined>;
   /** Whether stdin is a TTY (for docker exec -i vs -it). */
   tty: boolean;
+  stdout: Writable;
+  stderr: Writable;
 }

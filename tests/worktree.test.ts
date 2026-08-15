@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, chmodSync, rmSync, mkdtempSync, existsSync } 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { branchToPath, resolveWorktreesDir, createWorktree, removeWorktree, branchExists, defaultBranch, stripBranchRef, ensureWorktreeConfig, resolveWorktreeStartPoint } from '../src/lib/worktree.js';
+import { branchToPath, resolveWorktreesDir, createWorktree, removeWorktree, branchExists, defaultBranch, stripBranchRef, ensureWorktreeConfig, resolveWorktreeStartPoint } from '../src/providers/local/worktree.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {

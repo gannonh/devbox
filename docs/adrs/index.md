@@ -2,7 +2,7 @@
 
 ## Accepted
 
-_None yet._
+* [Provider boundary for devbox lifecycle commands](./0001-provider-boundary.md) - CLI registry routing and local-provider isolation for Issue #3.
 
 ## Proposed
 
