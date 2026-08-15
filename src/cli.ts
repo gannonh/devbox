@@ -342,6 +342,11 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
   }
 }
 
+function parseGlobalHelp(trailing: string[]): ParsedCommand {
+  if (trailing.length > 0) return usageError(`unexpected argument after global help: ${trailing[0]}`);
+  return { kind: 'help', scope: 'global' };
+}
+
 /** Parse the CLI grammar without touching the repository or a provider. */
 export function parseCliArgs(args: string[]): ParsedCommand {
   if (args.length === 0) {
@@ -353,7 +358,7 @@ export function parseCliArgs(args: string[]): ParsedCommand {
   }
 
   const [first, ...rest] = args;
-  if (first === '--help' || first === '-h') return { kind: 'help', scope: 'global' };
+  if (first === '--help' || first === '-h') return parseGlobalHelp(rest);
 
   if (first === 'init') {
     let force = false;
@@ -379,7 +384,7 @@ export function parseCliArgs(args: string[]): ParsedCommand {
       const parsed = readProvider(args, 0);
       const next = args[parsed.next];
       if (next === '--list' || next === '-l') return parseList(args.slice(parsed.next + 1), parsed.provider);
-      if (next === '--help' || next === '-h') return { kind: 'help', scope: 'global' };
+      if (next === '--help' || next === '-h') return parseGlobalHelp(args.slice(parsed.next + 1));
       if (next === '--provider') return usageError('conflicting --provider flags');
       if (next === 'init') return usageError('--provider cannot be used with init');
       if (!next) return usageError('missing branch after --provider');

@@ -162,6 +162,43 @@ describe('CLI provider routing', () => {
     }
   });
 
+  it('preserves provider-prefixed global help without trailing tokens', async () => {
+    for (const args of [['--provider', 'local', '--help'], ['--provider', 'local', '-h']]) {
+      const io = streams();
+      const code = await dispatch(args, io, {
+        repoRoot: '/repo',
+        registry: { local: provider('local'), vercel: provider('vercel') },
+        tty: false,
+      });
+      expect(code, args.join(' ')).toBe(0);
+      expect(io.output().stdout, args.join(' ')).toContain('devbox');
+      expect(io.output().stderr, args.join(' ')).toBe('');
+    }
+  });
+
+  it('rejects trailing tokens after global help, including provider-prefixed help', async () => {
+    const cases = [
+      ['--provider', 'local', '--help', 'init'],
+      ['--provider', 'local', '-h', 'init'],
+      ['--provider', 'local', '--help', '--unknown'],
+      ['--provider', 'local', '-h', '--unknown'],
+      ['--help', 'init'],
+      ['-h', 'init'],
+    ];
+
+    for (const args of cases) {
+      const io = streams();
+      const code = await dispatch(args, io, {
+        repoRoot: '/repo',
+        registry: { local: provider('local'), vercel: provider('vercel') },
+        tty: false,
+      });
+      expect(code, args.join(' ')).toBe(2);
+      expect(io.output().stdout, args.join(' ')).toBe('');
+      expect(io.output().stderr, args.join(' ')).toContain('usage:');
+    }
+  });
+
   it('propagates provider operation errors with their stable exit code', async () => {
     const local = provider('local');
     local.up = vi.fn(async () => {
