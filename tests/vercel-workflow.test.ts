@@ -30,7 +30,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(ci).toContain("contains(github.event.pull_request.labels.*.name, 'vercel-image-candidate')");
     expect(ci).toContain('uses: ./.github/workflows/vercel-image.yml');
     expect(ci).toContain('secrets: inherit');
-    expect(ci).toMatch(/vercel-image-candidate:[\s\S]*?permissions:\n\s+contents: read/);
+    expect(ci).toMatch(/vercel-image-candidate:[\s\S]*?permissions:\n\s+contents: write\n\s+pull-requests: write/);
     expect(workflow).toContain('propose_promotion:');
     expect(workflow).toContain("github.event_name != 'workflow_call' || inputs.propose_promotion");
   });

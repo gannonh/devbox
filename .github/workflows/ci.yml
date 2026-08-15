@@ -40,6 +40,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(github.event.pull_request.labels.*.name, 'vercel-image-candidate')
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
     uses: ./.github/workflows/vercel-image.yml
     secrets: inherit
