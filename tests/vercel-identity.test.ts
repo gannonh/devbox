@@ -28,6 +28,7 @@ describe('Vercel identity', () => {
     expect(first.name).toMatch(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
     expect(first.name.length).toBeLessThanOrEqual(63);
     expect(Object.keys(first.tags)).toHaveLength(5);
+    expect(first.tags.identity).toMatch(/^[a-f0-9]{16}$/);
     expect(Object.values(first.tags).every((tag) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(tag))).toBe(true);
   });
 

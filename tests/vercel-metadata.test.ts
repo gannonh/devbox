@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { access, mkdtemp, utimes, writeFile } from 'node:fs/promises';
-import { readFile, stat } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rename, rm, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
+import { chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
@@ -22,7 +22,13 @@ describe('Vercel metadata', () => {
         repository: 'github.com/acme/repo',
         branch: 'main',
         packageVersion: '0.1.2',
-        tags: { provider: 'vercel', repository: 'repo', branch: 'main', version: '0.1.2' },
+        tags: {
+          provider: 'vercel',
+          repository: 'repo',
+          branch: 'main',
+          version: '0.1.2',
+          identity: 'identity-tag',
+        },
       },
       sandboxId: 'sandbox-id',
       snapshotIds: ['snapshot-id'],
@@ -38,9 +44,15 @@ describe('Vercel metadata', () => {
       residual: { reason: 'none' },
     });
     await expect(stat(store.path).then((value) => value.mode & 0o777)).resolves.toBe(0o600);
+    const reopened = createVercelMetadataStore({
+      stateHome,
+      repoKey: 'https://github.com/acme/repo',
+      provider: 'vercel',
+    });
+    await expect(reopened.read()).resolves.toMatchObject({ teamId: 'team', projectId: 'project' });
   });
 
-  it('never writes a token supplied on an untrusted metadata object', async () => {
+  it('rejects a token-bearing write input instead of persisting it', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
     const metadata = {
@@ -49,20 +61,29 @@ describe('Vercel metadata', () => {
       token: 'secret-token',
     } as Parameters<typeof store.write>[0] & { token: string };
 
-    await store.write(metadata);
-
-    await expect(readFile(store.path, 'utf8')).resolves.not.toContain('secret-token');
+    await expect(store.write(metadata)).rejects.toThrow(/unknown.*token/i);
   });
 
   it('rejects an existing metadata file with group or world access', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
     await store.write({ teamId: 'team', projectId: 'project' });
-    const { chmod } = await import('node:fs/promises');
+    await chmod(store.path, 0o400);
+    await expect(store.read()).rejects.toThrow(/expected 0600/i);
     await chmod(store.path, 0o644);
 
     await expect(store.write({ teamId: 'team-2', projectId: 'project-2' })).rejects.toThrow(/insecure.*metadata mode/i);
     await expect(store.read()).rejects.toThrow(/insecure.*metadata mode/i);
+  });
+
+  it('rejects an insecure application/provider directory', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    await store.write({ teamId: 'team', projectId: 'project' });
+    await chmod(join(store.path, '..'), 0o755);
+
+    await expect(store.read()).rejects.toThrow(/insecure metadata directory mode/i);
+    await expect(store.write({ teamId: 'team', projectId: 'project' })).rejects.toThrow(/insecure metadata directory mode/i);
   });
 
   it('fails closed when stored metadata is malformed JSON', async () => {
@@ -72,6 +93,21 @@ describe('Vercel metadata', () => {
     await writeFile(store.path, '{not-json');
 
     await expect(store.read()).rejects.toThrow(/malformed.*metadata/i);
+  });
+
+  it('rejects a symlinked metadata record on read and write', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    await store.write({ teamId: 'team', projectId: 'project' });
+    const realPath = `${store.path}.real`;
+    await rename(store.path, realPath);
+    await symlink(realPath, store.path);
+
+    await expect(store.read()).rejects.toThrow(/regular file|symbolic links|ELOOP/i);
+    await expect(store.write({ teamId: 'team', projectId: 'project' })).rejects.toThrow(/regular file|symbolic links|ELOOP/i);
+
+    await unlink(store.path);
+    await rename(realPath, store.path);
   });
 
   it('rejects unknown and token-bearing top-level metadata fields', async () => {
@@ -99,6 +135,43 @@ describe('Vercel metadata', () => {
     await expect(store.read()).rejects.toThrow(/repo key mismatch/i);
   });
 
+  it('rejects identity tag secrets and unknown nested fields on write and read', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    const identity = {
+      name: 'name',
+      repository: 'github.com/acme/repo',
+      branch: 'main',
+      packageVersion: '0.1.2',
+      tags: {
+        provider: 'vercel',
+        repository: 'repo',
+        branch: 'main',
+        version: '0.1.2',
+        identity: 'identity',
+      },
+    };
+    const writeInput = {
+      teamId: 'team',
+      projectId: 'project',
+      identity: { ...identity, tags: { ...identity.tags, token: 'secret' } },
+    };
+
+    await expect(store.write(writeInput as never)).rejects.toThrow(/unknown.*token/i);
+    await store.write({ teamId: 'team', projectId: 'project', identity });
+    const stored = (await store.read())!;
+    await writeFile(store.path, JSON.stringify({
+      ...stored,
+      identity: {
+        ...stored.identity,
+        refreshToken: 'secret',
+        tags: { ...stored.identity!.tags, password: 'secret' },
+      },
+    }));
+
+    await expect(store.read()).rejects.toThrow(/unknown.*refreshToken/i);
+  });
+
   it('serializes concurrent operations behind a local exclusive lock', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
@@ -115,52 +188,78 @@ describe('Vercel metadata', () => {
     expect(entered).toBe(true);
   });
 
-  it('removes a lock when owner metadata writing fails', async () => {
+  it('rejects residual secrets and unknown nested fields on write and read', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
-    const ownerWriter = vi.fn().mockRejectedValue(new Error('owner write failed'));
+    const writeInput = {
+      teamId: 'team',
+      projectId: 'project',
+      residual: { token: 'secret' },
+    };
 
-    await expect(store.acquireLock({ ownerWriter })).rejects.toThrow(/owner write failed/i);
-    await expect(access(store.lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(store.write(writeInput as never)).rejects.toThrow(/unknown.*token/i);
+    await store.write({ teamId: 'team', projectId: 'project', residual: { reason: 'retry' } });
+    const stored = (await store.read())!;
+    await writeFile(store.path, JSON.stringify({
+      ...stored,
+      residual: { ...stored.residual, refreshToken: 'secret' },
+    }));
+
+    await expect(store.read()).rejects.toThrow(/unknown.*refreshToken/i);
+  });
+
+  it('requires the exact identity tag set and non-empty nested values', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    const identity = {
+      name: 'name',
+      repository: 'repo',
+      branch: 'main',
+      packageVersion: '0.1.2',
+      tags: {
+        provider: 'vercel',
+        repository: 'repo',
+        branch: 'main',
+        version: '0.1.2',
+        identity: 'identity',
+      },
+    };
+
+    await expect(store.write({
+      teamId: 'team',
+      projectId: 'project',
+      identity: { ...identity, tags: { ...identity.tags, identity: undefined } },
+    } as never)).rejects.toThrow(/identity\.tags\.identity.*non-empty/i);
+    await expect(store.write({
+      teamId: 'team',
+      projectId: 'project',
+      identity: { ...identity, tags: { provider: 'vercel' } },
+    } as never)).rejects.toThrow(/missing.*identity\.tags/i);
+    await expect(store.write({
+      teamId: 'team',
+      projectId: 'project',
+      identity: { ...identity, tags: { ...identity.tags, extra: 'value' } },
+    } as never)).rejects.toThrow(/unknown.*extra/i);
   });
 
   it('times out while a live lock owner remains active', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
     const lock = await store.acquireLock();
-    const owner = JSON.parse(await readFile(store.lockPath, 'utf8')) as Record<string, unknown>;
-    expect(owner).toMatchObject({ pid: process.pid });
-    expect(typeof owner.id).toBe('string');
-    expect(typeof owner.acquiredAt).toBe('number');
 
     await expect(store.acquireLock({ timeoutMs: 35, retryMs: 5 })).rejects.toThrow(/timed out.*metadata lock/i);
     await lock.release();
   });
 
-  it('recovers a lock whose recorded owner is dead', async () => {
+  it('recovers an old orphan lock directory through the lease protocol', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
     await store.write({ teamId: 'team', projectId: 'project' });
-    await writeFile(store.lockPath, JSON.stringify({
-      pid: 12345,
-      id: 'dead-owner',
-      acquiredAt: Date.now(),
-    }), { mode: 0o600 });
-
-    const lock = await store.acquireLock({ isProcessAlive: () => false });
-    await lock.release();
-    await expect(access(store.lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
-  it('recovers an old orphan lock with malformed owner metadata', async () => {
-    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
-    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
-    await store.write({ teamId: 'team', projectId: 'project' });
-    await writeFile(store.lockPath, 'not-json', { mode: 0o600 });
-    const old = new Date(Date.now() - 1_000);
+    await mkdir(store.lockPath);
+    const old = new Date(Date.now() - 3_000);
     await utimes(store.lockPath, old, old);
 
-    const lock = await store.acquireLock({ staleLockMs: 10 });
+    const lock = await store.acquireLock({ staleLockMs: 2_000 });
     await lock.release();
     await expect(access(store.lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -174,5 +273,21 @@ describe('Vercel metadata', () => {
     await first.release();
     const second = await store.acquireLock();
     await second.release();
+  });
+
+  it('surfaces a compromised proper-lockfile lease', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+    await store.write({ teamId: 'team', projectId: 'project' });
+    const onCompromised = vi.fn();
+    const lock = await store.acquireLock({ staleLockMs: 2_000, onCompromised });
+    await rm(store.lockPath, { recursive: true, force: true });
+
+    await vi.waitFor(() => expect(onCompromised).toHaveBeenCalledOnce(), {
+      timeout: 5_000,
+      interval: 100,
+    });
+    expect(onCompromised.mock.calls[0][0]).toMatchObject({ code: 'ECOMPROMISED' });
+    await expect(lock.release()).rejects.toBeInstanceOf(Error);
   });
 });

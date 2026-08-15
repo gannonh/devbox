@@ -175,7 +175,292 @@ describe('Vercel credential resolution', () => {
       teamId: 'linked-team',
       projectId: 'linked-project',
     });
-    expect(deviceAuth).toHaveBeenCalledWith({ teamId: 'linked-team', projectId: 'linked-project' });
+    expect(deviceAuth).toHaveBeenCalledWith(
+      { teamId: 'linked-team', projectId: 'linked-project' },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('rejects injected auth that overrides or omits the linked scope', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const mismatched = vi.fn().mockResolvedValue({
+      token: 'device-token',
+      teamId: 'other-team',
+      projectId: 'linked-project',
+    });
+    const empty = vi.fn().mockResolvedValue({
+      token: ' ',
+      teamId: 'linked-team',
+      projectId: 'linked-project',
+    });
+
+    await expect(resolveVercelCredentials({ repoRoot, env: {}, deviceAuth: mismatched })).rejects.toThrow(/scope mismatch/i);
+    await expect(resolveVercelCredentials({ repoRoot, env: {}, deviceAuth: empty })).rejects.toThrow(/non-empty token/i);
+  });
+
+  it('cancels an injected auth function through the caller signal', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const controller = new AbortController();
+    let callbackSignal: AbortSignal | undefined;
+    const deviceAuth = vi.fn((_scope, context) => {
+      callbackSignal = context.signal;
+      return new Promise<string>(() => {});
+    });
+    const pending = resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuth,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(deviceAuth).toHaveBeenCalledOnce());
+    controller.abort(new Error('caller cancelled'));
+
+    await expect(pending).rejects.toThrow('caller cancelled');
+    expect(callbackSignal?.aborted).toBe(true);
+  });
+
+  it('rejects a hanging injected auth function at its deadline', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuth: async () => new Promise<string>(() => {}),
+      timeoutMs: 10,
+    })).rejects.toThrow(/timed out/i);
+  });
+
+  it('honors an absolute authentication deadline', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuth: async () => new Promise<string>(() => {}),
+      deadline: Date.now() + 10,
+    })).rejects.toThrow(/timed out/i);
+  });
+
+  it('cancels OAuth construction before it can complete', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const controller = new AbortController();
+    const OAuth = vi.fn(() => new Promise<never>(() => {}));
+    const onDeviceAuthorization = vi.fn();
+    const pending = resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuthPrimitives: { OAuth },
+      onDeviceAuthorization,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(OAuth).toHaveBeenCalledOnce());
+    controller.abort(new Error('oauth cancelled'));
+
+    await expect(pending).rejects.toThrow('oauth cancelled');
+    expect(OAuth).toHaveBeenCalledOnce();
+    expect(onDeviceAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('cancels a hanging OAuth device request', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const controller = new AbortController();
+    const oauth = {
+      deviceAuthorizationRequest: vi.fn(() => new Promise<never>(() => {})),
+    };
+    const OAuth = vi.fn().mockResolvedValue(oauth);
+    const onDeviceAuthorization = vi.fn();
+    const pending = resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuthPrimitives: { OAuth },
+      onDeviceAuthorization,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(OAuth).toHaveBeenCalledOnce());
+    controller.abort(new Error('request cancelled'));
+
+    await expect(pending).rejects.toThrow('request cancelled');
+    expect(oauth.deviceAuthorizationRequest).toHaveBeenCalledOnce();
+    expect(onDeviceAuthorization).not.toHaveBeenCalled();
+  });
+
+  it('cancels a hanging device authorization callback', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const controller = new AbortController();
+    const request = {
+      device_code: 'device-code',
+      user_code: 'user-code',
+      interval: 0,
+      verification_uri: 'https://vercel.com/device',
+      verification_uri_complete: 'https://vercel.com/device?code=user-code',
+      expiresAt: Date.now() + 60_000,
+    };
+    const oauth = { deviceAuthorizationRequest: vi.fn().mockResolvedValue(request) };
+    const OAuth = vi.fn().mockResolvedValue(oauth);
+    const pollForToken = vi.fn();
+    const onDeviceAuthorization = vi.fn(() => new Promise<void>(() => {}));
+    const pending = resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuthPrimitives: { OAuth, pollForToken },
+      onDeviceAuthorization,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(onDeviceAuthorization).toHaveBeenCalledOnce());
+    controller.abort(new Error('callback cancelled'));
+
+    await expect(pending).rejects.toThrow('callback cancelled');
+    expect(onDeviceAuthorization).toHaveBeenCalledWith(request);
+    expect(pollForToken).not.toHaveBeenCalled();
+  });
+
+  it('propagates an SDK poll error and closes the generator', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    let returned = false;
+    const OAuth = vi.fn().mockResolvedValue({
+      deviceAuthorizationRequest: vi.fn().mockResolvedValue({
+        device_code: 'device-code',
+        user_code: 'user-code',
+        interval: 0,
+        verification_uri: 'https://vercel.com/device',
+        verification_uri_complete: 'https://vercel.com/device?code=user-code',
+        expiresAt: Date.now() + 60_000,
+      }),
+    });
+    const pollForToken = vi.fn(() => (async function* () {
+      try {
+        yield { _tag: 'Error' as const, error: new Error('poll failed') };
+      } finally {
+        returned = true;
+      }
+    })());
+    const getAuth = vi.fn().mockReturnValue({ token: 'unused' });
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuthPrimitives: { OAuth, pollForToken, getAuth },
+      onDeviceAuthorization: vi.fn(),
+    })).rejects.toThrow('poll failed');
+    expect(returned).toBe(true);
+    expect(getAuth).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending polling iteration and requests generator cleanup', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const controller = new AbortController();
+    const request = {
+      device_code: 'device-code',
+      user_code: 'user-code',
+      interval: 0,
+      verification_uri: 'https://vercel.com/device',
+      verification_uri_complete: 'https://vercel.com/device?code=user-code',
+      expiresAt: Date.now() + 60_000,
+    };
+    let returnCalled = false;
+    const iterator = {
+      next: vi.fn(() => new Promise<IteratorResult<never>>(() => {})),
+      return: vi.fn(async () => {
+        returnCalled = true;
+        return { done: true, value: undefined } as IteratorResult<never>;
+      }),
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    } as unknown as AsyncGenerator<never>;
+    const OAuth = vi.fn().mockResolvedValue({
+      deviceAuthorizationRequest: vi.fn().mockResolvedValue(request),
+    });
+    const pollForToken = vi.fn().mockReturnValue(iterator);
+    const getAuth = vi.fn();
+    const pending = resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuthPrimitives: { OAuth, pollForToken, getAuth },
+      onDeviceAuthorization: vi.fn(),
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(pollForToken).toHaveBeenCalledOnce());
+    controller.abort(new Error('poll cancelled'));
+
+    await expect(pending).rejects.toThrow('poll cancelled');
+    expect(returnCalled).toBe(true);
+    expect(getAuth).not.toHaveBeenCalled();
+  });
+
+  it('fails when polling completes without a token', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const OAuth = vi.fn().mockResolvedValue({
+      deviceAuthorizationRequest: vi.fn().mockResolvedValue({
+        device_code: 'device-code',
+        user_code: 'user-code',
+        interval: 0,
+        verification_uri: 'https://vercel.com/device',
+        verification_uri_complete: 'https://vercel.com/device?code=user-code',
+        expiresAt: Date.now() + 60_000,
+      }),
+    });
+    const pollForToken = vi.fn(async function* () {
+      yield { _tag: 'Response' as const, response: { text: async () => '{}' } };
+    });
+    const getAuth = vi.fn().mockReturnValue(null);
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuthPrimitives: { OAuth, pollForToken, getAuth },
+      onDeviceAuthorization: vi.fn(),
+    })).rejects.toThrow(/without a token/i);
   });
 
   it('uses injected SDK auth primitives for device authentication', async () => {

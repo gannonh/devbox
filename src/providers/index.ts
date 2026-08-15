@@ -13,7 +13,9 @@ export {
 } from './vercel/auth.js';
 export type {
   CredentialResolutionOptions,
+  DeviceAuthContext,
   DeviceAuthPrimitives,
+  DeviceAuthResult,
   ScopeConfirmationBoundary,
   VercelCredentials,
   VercelScope,
@@ -24,8 +26,7 @@ export {
 export type {
   MetadataLock,
   MetadataLockOptions,
-  MetadataLockOwner,
-  MetadataLockOwnerWriter,
+  VercelIdentityTags,
   VercelMetadata,
   VercelMetadataIdentity,
   VercelMetadataInput,
