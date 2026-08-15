@@ -176,7 +176,7 @@ export async function verifySandboxDeleted({
     const result = await inspect('after-delete-lookup');
     if (result.kind === 'missing') {
       onMissing('after-delete-missing', attempts);
-      return { verified: true, noRunningSession: true, attempts, errors };
+      return { verified: true, noRunningSession: true, attempts, errors: [] };
     }
     if (result.kind === 'present') await recover(result.target, result.states);
     if (remaining() <= 0 || attempts >= maxAttempts) break;
@@ -198,7 +198,7 @@ export async function verifySandboxDeleted({
     const final = await inspect('after-delete-final');
     if (final.kind === 'missing') {
       onMissing('after-delete-missing', attempts);
-      return { verified: true, noRunningSession: true, attempts, errors };
+      return { verified: true, noRunningSession: true, attempts, errors: [] };
     }
     if (final.kind === 'present') {
       await recover(final.target, final.states, true);
@@ -206,7 +206,7 @@ export async function verifySandboxDeleted({
         const recheck = await inspect('after-delete-final-recheck');
         if (recheck.kind === 'missing') {
           onMissing('after-delete-missing', attempts);
-          return { verified: true, noRunningSession: true, attempts, errors };
+          return { verified: true, noRunningSession: true, attempts, errors: [] };
         }
         if (recheck.kind === 'present') lastStates = recheck.states;
       }

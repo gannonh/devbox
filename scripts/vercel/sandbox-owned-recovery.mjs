@@ -61,8 +61,8 @@ export function applyOwnedRecoveryEvidence(report, recovery) {
   report.cleanup.snapshotsCleaned = recovery.snapshotsCleaned === true;
   report.cleanup.discoveryConverged = recovery.discoveryConverged === true;
   if (recovery.errors?.length === 0 && recovery.snapshotsCleaned === true && recovery.discoveryConverged === true && Array.isArray(report.cleanup.recovery)) {
-    const unreconciled = report.cleanup.recovery.filter((event) => event?.outcome !== 'pending-reconciliation');
-    if (unreconciled.length > 0) report.cleanup.recovery = unreconciled;
+    const retainedRecoveryHistory = report.cleanup.recovery.filter((event) => event?.outcome !== 'pending-reconciliation');
+    if (retainedRecoveryHistory.length > 0) report.cleanup.recovery = retainedRecoveryHistory;
     else delete report.cleanup.recovery;
   }
   if (Array.isArray(recovery.errors) && recovery.errors.length > 0) {

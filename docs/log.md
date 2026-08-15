@@ -51,3 +51,6 @@
 
 ## 2026-08-15 (5)
 * **Credentialed VCR/Sandbox contract corrections**: Parsed VCR's flat tag response, verified publisher/consumer project ownership through scoped project API responses, disabled BuildKit's optional attestation index so VCR readiness applies to the directly tagged `linux/amd64` manifest, bounded SDK session-list pages to the live API maximum of 50, and prevented PR-triggered verification from proposing promotion. Checked-in, embedded, upstream-verified provenance remains the promotion record.
+
+## 2026-08-15 (6)
+* **Final credential and evidence hardening**: Bound same-repository credentialed verification to a repository-owner-applied full-head-SHA label, restricted manual dispatch to the owner and default branch, isolated write-capable promotion from the read-only candidate job, commit-pinned third-party actions, passed only ten required Vercel secrets, rebuilt every run under a never-reused candidate tag, preserved byte-hashed exact-digest raw OCI/zstd proof, required complete correlated runtime inventories, reconciled transient deletion errors, and verified remote promotion branch ancestry/content before reuse.

@@ -96,41 +96,67 @@ the commit or restore floating inputs.
 ## Candidate, readiness, and smoke workflow
 
 Run **Actions → Vercel image supply chain → Run workflow** for a manual
-candidate. Before the workflow lands on the default branch, a maintainer may
-label a same-repository PR `vercel-image-candidate`; CI then calls the same
-secret-gated workflow with promotion creation explicitly disabled. Although the
-reusable workflow declares promotion permissions for its post-merge manual path,
-fork PRs and unlabeled PRs cannot receive this credentialed
-job. The workflow validates `provenance.json`, fetches the exact
-`UPSTREAM_COMMIT`, and verifies both recorded upstream Dockerfile hashes before
-building. The nightly schedule compares upstream HEAD with `UPSTREAM_COMMIT`.
+candidate only as the repository owner and only against the default branch.
+Before the workflow lands on the default branch, the repository owner may
+authorize one reviewed same-repository PR commit by creating and applying the
+exact label `vcr:<40-character-head-SHA>`:
+
+```bash
+head_sha="$(gh pr view <number> --json headRefOid --jq .headRefOid)"
+gh label create "vcr:${head_sha}" --color B60205 --description 'Authorize credentialed VCR verification for this exact SHA' --force
+gh pr edit <number> --add-label "vcr:${head_sha}"
+```
+
+Only an owner-triggered `labeled` event whose payload head SHA exactly matches
+that label starts the credentialed job. A later push is not authorized; create
+and apply its new exact-SHA label after review. To rerun one SHA, remove and
+reapply its label. The candidate job has read-only repository contents
+permission and receives only the ten required publisher/consumer Vercel secrets.
+All pull-request events are excluded from the separate write-capable promotion
+job. Fork PRs and all other PR events cannot receive this credentialed job. The
+workflow validates `provenance.json`, fetches the exact `UPSTREAM_COMMIT`, and
+verifies both recorded upstream Dockerfile hashes before building. The nightly
+schedule compares upstream HEAD with `UPSTREAM_COMMIT`.
 Unchanged provenance skips cleanly; drift fails closed with
 `upstream-drift.json` and requires a reviewed provenance update before the
 normal candidate, smoke, and promotion path can run. It never builds floating
 upstream state, auto-merges, or releases.
 
-The candidate job has a 45-minute GitHub Actions timeout. It gives each HTTP
+Every third-party action used by the credentialed workflow is pinned to a full
+reviewed commit SHA. The candidate job has a 45-minute GitHub Actions timeout.
+It gives each HTTP
 request 10 seconds, ordinary SDK calls 30 seconds, commands 60 seconds, each
 smoke gate 10 minutes, deletion verification 30 seconds, and cleanup 2
 minutes; these `SMOKE_*` bounds are intentionally explicit and should only be
 changed with a reviewed contract update.
 
 The workflow serializes candidate runs with a non-canceling concurrency group.
-The candidate tag includes the devbox source commit, upstream recipe commit, and Ubuntu base digest prefix; an
-existing tag is reused only after its `manifestDigest` matches the inspected
-candidate digest, and a mismatch fails closed. Promotion reuses an existing
-open branch PR instead of creating duplicate proposals; closed or merged PRs
-are not treated as reusable.
+Every run builds before smoke and publishes a never-reused candidate tag containing
+the devbox source commit, upstream recipe commit, Ubuntu base digest prefix,
+GitHub run ID, and run attempt. After smoke and redaction complete, a separate
+write-capable job generates the pin from the verified source before inspecting
+any remote promotion branch. It reuses an open promotion PR only when that
+branch is exactly one commit rooted at the verified source and changes only the
+identical generated pin. A closed branch causes a fresh run-suffixed proposal;
+a pin already present on the selected source exits without pushing an
+unpublished branch or attempting PR creation.
 
 The workflow:
 
 1. Installs the audited `vercel@58.11.0` CLI, then logs Buildx into VCR
    through `--password-stdin`, builds the immutable
-   `sha-<commit>-<upstream-commit>-<ubuntu-digest>` tag as one `linux/amd64`
-   manifest with zstd, and resolves its digest. BuildKit's optional provenance
-   attestation is disabled because its OCI index has no VCR readiness status;
-   the checked-in, embedded, upstream-verified `provenance.json` and uploaded
-   workflow artifact remain the reviewed provenance record.
+   `sha-<commit>-<upstream-commit>-<ubuntu-digest>-<run-id>-<attempt>` tag as
+   one `linux/amd64` manifest with zstd, and resolves its digest. It then
+   inspects that exact digest as raw OCI JSON and fails unless every layer has
+   media type `application/vnd.oci.image.layer.v1.tar+zstd`. The assertion also
+   hashes the byte-exact raw response and requires it to equal the selected
+   digest. Redaction refuses to upload that raw file if it contains credential
+   material, but otherwise preserves its exact bytes; a redacted compression
+   summary records the digest and layer descriptors. BuildKit's optional
+   provenance attestation is disabled because its
+   OCI index has no VCR readiness status; the checked-in, embedded,
+   upstream-verified `provenance.json` and uploaded workflow artifact remain the
+   reviewed provenance record.
 2. Verifies the flat publisher repository response with an explicit
    `--scope <publisher-team-slug>`, then correlates the publisher project/team
    through scoped project/team responses without unioning unrelated objects;
@@ -164,18 +190,20 @@ The workflow:
 6. Repeats creation and cleanup with the independent consumer credentials.
    The consumer uses the same public digest and fails if its token is empty,
    reused, or its team/project scope matches the publisher pair.
-7. After both gates pass, the promotion helper consumes the redacted reports
-   and rejects mismatched digests/scopes, failed checks, non-terminal sessions,
-   unsuccessful deletion, missing final owned-resource convergence, or residual
-   snapshots before updating the sole image pin. The PR is reviewed and merged by an operator; the candidate workflow
-   cannot auto-merge or release it.
+7. After both gates pass, the isolated promotion job consumes the redacted
+   reports and rejects mismatched digests/scopes, failed checks, non-terminal
+   sessions, unsuccessful deletion, missing final owned-resource convergence,
+   or residual snapshots before updating the sole image pin. It never executes
+   scripts from a pre-existing promotion branch. The PR is reviewed and merged
+   by an operator; the workflow cannot auto-merge or release it.
 
 Artifacts are written under the workflow evidence directory and uploaded only
 after the final `scripts/vercel/redact-artifacts.mjs` step succeeds; a redaction
 failure removes/withholds the directory. Reports retain readiness states,
 structured build/manifest/readiness/startup/HTTP/WebSocket/terminal/stop/delete
-timings, selected digests, session states, snapshot statuses, and cleanup
-recovery evidence without credential values. Promotion requires every named
+timings, selected digests, byte-exact credential-scanned raw OCI manifest and
+zstd-layer proof, session states, snapshot statuses, and cleanup recovery
+evidence without credential values. Promotion requires every named
 smoke check, the exact smoke URL, nonempty IDs, HTTPS noVNC URLs, ordered ISO
 stage/aggregate timestamps with sane durations, valid cleanup-error arrays,
 and complete identity/cleanup fields.

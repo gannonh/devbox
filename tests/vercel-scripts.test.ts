@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
@@ -142,6 +143,28 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(lookups).toEqual([false, false, false]);
     expect(stops).toBe(2);
     expect(deletes).toBeGreaterThanOrEqual(2);
+  });
+
+  it('clears transient verification errors after a final non-resuming lookup proves deletion', async () => {
+    const recovery: Array<{ operation: string; outcome: string }> = [];
+    let lookups = 0;
+    const result = await verifySandboxDeleted({
+      timeoutMs: 1_000,
+      maxAttempts: 2,
+      getSandbox: async () => {
+        lookups += 1;
+        if (lookups === 1) throw new Error('temporary lookup failure');
+        throw { notFound: true };
+      },
+      listSessions: async () => [],
+      stopSandbox: async () => {},
+      deleteSandbox: async () => {},
+      sleep: async () => {},
+      isNotFound: (error: unknown) => Boolean((error as { notFound?: boolean }).notFound),
+      onRecovery: (event: { operation: string; outcome: string }) => recovery.push(event),
+    });
+    expect(result).toMatchObject({ verified: true, noRunningSession: true, errors: [] });
+    expect(recovery).toContainEqual(expect.objectContaining({ operation: 'post-delete lookup', outcome: 'failed' }));
   });
 
   it('fails closed after bounded final cleanup when deletion never converges', async () => {
@@ -512,6 +535,64 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(status).toContain('timeout');
   });
 
+  it('proves every layer in an exact selected manifest uses OCI zstd media types', async () => {
+    const manifest = {
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      config: {
+        mediaType: 'application/vnd.oci.image.config.v1+json',
+        digest: 'sha256:' + 'b'.repeat(64),
+        size: 42,
+      },
+      layers: [
+        {
+          mediaType: 'application/vnd.oci.image.layer.v1.tar+zstd',
+          digest: 'sha256:' + 'c'.repeat(64),
+          size: 100,
+        },
+        {
+          mediaType: 'application/vnd.oci.image.layer.v1.tar+zstd',
+          digest: 'sha256:' + 'd'.repeat(64),
+          size: 200,
+        },
+      ],
+    };
+    const rawManifest = JSON.stringify(manifest);
+    const manifestDigest = `sha256:${createHash('sha256').update(rawManifest).digest('hex')}`;
+    const valid = await runNode(
+      'scripts/vercel/assert-zstd-manifest.mjs',
+      process.env,
+      ['--expected-digest', manifestDigest],
+      rawManifest,
+    );
+    expect(valid.code).toBe(0);
+    expect(JSON.parse(valid.stdout)).toMatchObject({
+      manifestDigest,
+      compression: 'zstd',
+      layerCount: 2,
+      layerMediaTypes: ['application/vnd.oci.image.layer.v1.tar+zstd'],
+    });
+
+    manifest.layers[1].mediaType = 'application/vnd.oci.image.layer.v1.tar+gzip';
+    const invalid = await runNode(
+      'scripts/vercel/assert-zstd-manifest.mjs',
+      process.env,
+      ['--expected-digest', manifestDigest],
+      JSON.stringify(manifest),
+    );
+    expect(invalid.code).not.toBe(0);
+    expect(invalid.stderr).toMatch(/digest|zstd/);
+
+    const mismatchedDigest = await runNode(
+      'scripts/vercel/assert-zstd-manifest.mjs',
+      process.env,
+      ['--expected-digest', digest],
+      rawManifest,
+    );
+    expect(mismatchedDigest.code).not.toBe(0);
+    expect(mismatchedDigest.stderr).toContain('does not match');
+  });
+
   it('extracts only a full digest from actual and wrapped candidate tag responses', async () => {
     const actual = await runNode('scripts/vercel/assert-candidate-tag.mjs', process.env, [], JSON.stringify({
       tag: 'sha-source-upstream-base',
@@ -687,6 +768,31 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(redacted).not.toContain(publisherToken);
       expect(redacted).not.toContain(consumerToken);
       expect(redacted).toContain('[REDACTED]');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the byte-exact raw OCI manifest after proving it contains no secret', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-raw-manifest-'));
+    try {
+      const artifact = join(temp, 'manifest-raw.json');
+      const raw = '{"schemaVersion":2,"layers":[]}\n';
+      await writeFile(artifact, raw);
+      const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
+        ...process.env,
+        VERCEL_PUBLISHER_TOKEN: 'publisher-secret-token',
+      }, [artifact]);
+      expect(result.code).toBe(0);
+      expect(await readFile(artifact, 'utf8')).toBe(raw);
+
+      await writeFile(artifact, '{"annotation":"publisher-secret-token"}\n');
+      const rejected = await runNode('scripts/vercel/redact-artifacts.mjs', {
+        ...process.env,
+        VERCEL_PUBLISHER_TOKEN: 'publisher-secret-token',
+      }, [artifact]);
+      expect(rejected.code).not.toBe(0);
+      expect(rejected.stderr).toContain('raw OCI manifest contained credential material');
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

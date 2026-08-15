@@ -65,6 +65,22 @@ describe('Vercel image pin validation', () => {
     expect(mismatched.errors.join(' ')).toContain('publisher scope must match image reference');
   });
 
+  it('requires complete, correlated managed and mirrored runtime inventories', () => {
+    const empty = structuredClone(VERCEL_IMAGE_PROVENANCE);
+    empty.observedManagedVmi.versions = {};
+    empty.runtimePackages = {};
+    const emptyResult = validateVercelImagePin(validPin({ provenance: empty }));
+    expect(emptyResult.ok).toBe(false);
+    expect(emptyResult.errors.join(' ')).toMatch(/managed VMI version inventory must include|required runtime package inventory/);
+
+    const mismatched = structuredClone(VERCEL_IMAGE_PROVENANCE);
+    mismatched.observedManagedVmi.versions.node = '23.0.0';
+    mismatched.observedManagedVmi.versions.pnpm = '9.0.0';
+    const mismatchedResult = validateVercelImagePin(validPin({ provenance: mismatched }));
+    expect(mismatchedResult.ok).toBe(false);
+    expect(mismatchedResult.errors.join(' ')).toMatch(/Node version must match|pnpm version must match/);
+  });
+
   it('rejects credential-bearing smoke evidence URL forms', () => {
     for (const [publisherSmokeUrl, consumerSmokeUrl] of [
       ['https://user:password@example.test/publisher', 'https://github.com/a/2'],

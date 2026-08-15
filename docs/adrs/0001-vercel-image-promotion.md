@@ -16,16 +16,19 @@ download checksums, exact runtime versions, and observed managed-VMI parity.
 The managed VMI itself is not an OCI build base: credentialed Docker/Buildx
 pulls return `not found`, so the build never claims to derive from that
 inaccessible reference. The image builds only `linux/amd64` as one Buildx zstd
-manifest. BuildKit's optional provenance attestation is disabled because it
-wraps the manifest in an OCI index whose VCR status remains `null`, while VCR
-optimizes and reports readiness on the child manifest. Reviewed provenance is
-instead checked in as `provenance.json`, embedded in the image, validated
-against upstream before publication, and uploaded with workflow evidence. The
+manifest. The workflow inspects the exact selected digest as raw OCI JSON,
+requires its byte hash to equal that digest, and requires every layer descriptor
+to use the OCI zstd media type before smoke.
+BuildKit's optional provenance attestation is disabled because it wraps the
+manifest in an OCI index whose VCR status remains `null`, while VCR optimizes
+and reports readiness on the child manifest. Reviewed provenance is instead
+checked in as `provenance.json`, embedded in the image, validated against
+upstream before publication, and uploaded with workflow evidence. The
 image has no `ENTRYPOINT`, clears Ubuntu's inherited shell command with empty
 `CMD []`, and starts Sandbox services explicitly through
 `/usr/local/bin/devbox-start`.
 
-A candidate is immutable (`sha-<source-commit>-<upstream-commit>-<ubuntu-digest>`), waits for VCR readiness under
+A candidate is immutable (`sha-<source-commit>-<upstream-commit>-<ubuntu-digest>-<run-id>-<attempt>`), waits for VCR readiness under
 an enforced child-process deadline, and must pass two real Sandbox gates:
 publisher-project filesystem/runtime checks and independent consumer-project
 public-pull checks. All VCR CLI calls use the audited `vercel@58.11.0` version
@@ -39,10 +42,19 @@ finish `stopped`/`aborted`, and Sandbox/snapshot deletion must be verified
 without resuming a Sandbox. Eventual post-delete `running`/`stopping` responses
 receive bounded stop/delete retries and a final re-enumeration before the gate
 fails closed. HTTP probes, SDK operations, smoke execution, and cleanup all
-have explicit deadlines. Candidate runs are serialized with a non-canceling workflow concurrency group;
-existing tags are reused only when their inspected manifest digest matches, and
-promotion branch/PR creation is idempotent for an open matching PR; closed
-or merged PRs do not suppress a new promotion proposal. Apt inputs come from a reviewed
+have explicit deadlines. Candidate runs are serialized with a non-canceling
+workflow concurrency group, and every run builds to a never-reused tag containing
+its source/provenance identity plus GitHub run ID and attempt. Credentialed PR
+verification requires a repository-owner-applied `vcr:<full-head-SHA>` label
+event for that exact commit, receives only the required Vercel secrets, and has
+read-only repository permission. Manual dispatch is owner-only on the default
+branch, and all third-party actions are commit-pinned. A separate write-capable
+job generates the pin from verified source and never executes code from a remote
+promotion branch. It reuses an open proposal only after proving its sole commit
+is rooted at the verified source and changes only the identical pin. An
+already-matching source pin exits without publishing an empty branch; closed or
+merged PRs do not suppress a new run-suffixed promotion proposal.
+Apt inputs come from a reviewed
 dated Ubuntu snapshot matched to the pinned base distro rather than a moving
 archive index. Candidate validation fetches the exact upstream commit and
 recomputes both recorded Dockerfile hashes; release validation binds the pin to
@@ -77,9 +89,9 @@ verification. Because `Snapshot.list()` returns plain metadata, every cleanup re
 snapshot discovery continue through an abortable cleanup grace window. Broad
 collection-discovery failures are never treated as empty results: a fresh final
 listing must omit every owned Sandbox name, and the final snapshot listing is
-authoritative for deleted/absent metadata. Recoverable intermediate cleanup
-errors are replaced after convergence; residual IDs/statuses or unresolved
-errors fail the gate closed.
+authoritative for deleted/absent metadata. Recoverable resource-operation errors
+are cleared after final convergence, while discovery failures, residual
+IDs/statuses, and unresolved errors fail the gate closed.
 
 ## Consequences
 

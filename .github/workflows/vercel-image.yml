@@ -3,8 +3,8 @@ name: Vercel image supply chain
 # A scheduled run may detect Universal drift, but it follows the same reviewed
 # candidate/smoke/PR path as a manual run.  Nothing in this workflow merges or
 # releases a promotion PR.
-# Serialize all candidates so one commit/base pair cannot race its immutable
-# tag or promotion branch against another run.
+# Serialize all candidates so a run-unique immutable tag or promotion branch
+# cannot race another run.
 concurrency:
   group: vercel-image-supply-chain
   cancel-in-progress: false
@@ -17,11 +17,27 @@ on:
         required: false
         default: '15'
         type: string
-      propose_promotion:
-        description: 'Open the reviewed promotion PR after smoke succeeds'
-        required: false
-        default: false
-        type: boolean
+    secrets:
+      VERCEL_PUBLISHER_TOKEN:
+        required: true
+      VERCEL_PUBLISHER_TEAM_ID:
+        required: true
+      VERCEL_PUBLISHER_PROJECT_ID:
+        required: true
+      VERCEL_PUBLISHER_TEAM_SLUG:
+        required: true
+      VERCEL_PUBLISHER_PROJECT_SLUG:
+        required: true
+      VERCEL_CONSUMER_TOKEN:
+        required: true
+      VERCEL_CONSUMER_TEAM_ID:
+        required: true
+      VERCEL_CONSUMER_PROJECT_ID:
+        required: true
+      VERCEL_CONSUMER_TEAM_SLUG:
+        required: true
+      VERCEL_CONSUMER_PROJECT_SLUG:
+        required: true
   workflow_dispatch:
     inputs:
       readiness_timeout_minutes:
@@ -33,8 +49,7 @@ on:
     - cron: '17 3 * * *'
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 env:
   VERCEL_IMAGE_REPOSITORY: devbox
@@ -48,18 +63,28 @@ env:
 
 jobs:
   candidate:
-    name: Build, smoke, and propose Vercel image promotion
+    name: Build and smoke Vercel image candidate
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (github.actor == github.repository_owner &&
+      github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      source_commit: ${{ steps.candidate.outputs.source_commit }}
+      candidate_digest: ${{ steps.manifest.outputs.digest }}
+      upstream_commit: ${{ steps.provenance.outputs.upstream_commit }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           ref: ${{ env.SOURCE_COMMIT }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
           cache: npm
@@ -72,7 +97,7 @@ jobs:
         run: npm install --global vercel@58.11.0 --no-audit --no-fund
 
       - name: Setup Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Validate scoped publisher configuration
         env:
@@ -135,6 +160,9 @@ jobs:
           node - <<'NODE'
           const fs = require('fs');
           const provenance = JSON.parse(fs.readFileSync('images/vercel/provenance.json', 'utf8'));
+          const requiredRuntimePackages = ['npm', 'pnpm', 'python', 'pip', 'uv', 'gh', 'pi', 'claude', 'codex', 'opencode'];
+          const managedVersions = provenance.observedManagedVmi?.versions ?? {};
+          const runtimePackages = provenance.runtimePackages ?? {};
           const required = [
             provenance.schemaVersion === 1,
             provenance.platform === 'linux/amd64',
@@ -143,11 +171,20 @@ jobs:
             /^[a-f0-9]{64}$/.test(provenance.upstream?.ubuntuDockerfileSha256 ?? ''),
             /^[a-f0-9]{64}$/.test(provenance.upstream?.universalDockerfileSha256 ?? ''),
             /^sha256:[a-f0-9]{64}$/.test(provenance.observedManagedVmi?.digest ?? ''),
+            managedVersions.user === 'ubuntu',
+            managedVersions.node === provenance.node?.version,
+            managedVersions.bun === '1.3.14',
+            requiredRuntimePackages.every((name) => /^\d+\.\d+\.\d+$/.test(runtimePackages[name] ?? '')),
+            requiredRuntimePackages.every((name) => managedVersions[name] === runtimePackages[name]),
             /^docker\.io\/library\/ubuntu:26\.04@sha256:[a-f0-9]{64}$/.test(provenance.baseImages?.ubuntu ?? ''),
             /^docker\.io\/oven\/bun:1\.3\.14@sha256:[a-f0-9]{64}$/.test(provenance.baseImages?.bun ?? ''),
             provenance.node?.version === '24.19.0',
             provenance.node?.platform === 'linux-x64',
             /^[a-f0-9]{64}$/.test(provenance.node?.sha256 ?? ''),
+            /^\d+\.\d+\.\d+\.\d+$/.test(provenance.chromium?.version ?? ''),
+            provenance.chromium?.platform === 'linux64',
+            provenance.chromium?.url === `https://storage.googleapis.com/chrome-for-testing-public/${provenance.chromium?.version}/linux64/chrome-linux64.zip`,
+            /^[a-f0-9]{64}$/.test(provenance.chromium?.sha256 ?? ''),
             /^\d{8}T\d{6}Z$/.test(provenance.aptSnapshot ?? ''),
           ];
           if (required.some((value) => !value)) throw new Error('mirrored Universal provenance is malformed or unpinned');
@@ -195,7 +232,7 @@ jobs:
 
       - name: Prepare immutable candidate reference
         id: candidate
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
@@ -207,43 +244,15 @@ jobs:
           ubuntu_digest="${UBUNTU_BASE_REFERENCE##*@}"
           ubuntu_short="${ubuntu_digest#sha256:}"
           ubuntu_short="${ubuntu_short:0:12}"
-          tag="sha-${SOURCE_COMMIT}-${upstream_short}-${ubuntu_short}"
+          tag="sha-${SOURCE_COMMIT}-${upstream_short}-${ubuntu_short}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           reference="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}:${tag}"
+          echo "source_commit=${SOURCE_COMMIT}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "reference=${reference}" >> "$GITHUB_OUTPUT"
           printf '{"candidateTag":"%s","candidateReference":"%s","upstreamCommit":"%s","ubuntuBaseReference":"%s"}\n' "${tag}" "${reference}" "${UPSTREAM_COMMIT}" "${UBUNTU_BASE_REFERENCE}" > "${ARTIFACT_DIR}/candidate.json"
 
-      - name: Check immutable candidate tag
-        id: tag
-        if: ${{ steps.drift.outputs.skip != 'true' }}
-        env:
-          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
-          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
-          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
-          CANDIDATE_TAG: ${{ steps.candidate.outputs.tag }}
-          VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
-        run: |
-          set -euo pipefail
-          set +e
-          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel vcr tag inspect "${VERCEL_IMAGE_REPOSITORY}" "${CANDIDATE_TAG}" \
-            --project "${VERCEL_PUBLISHER_PROJECT_ID}" --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --format json \
-            > "${ARTIFACT_DIR}/candidate-tag.json" 2> "${ARTIFACT_DIR}/candidate-tag.error"
-          inspect_status=$?
-          set -e
-          if [[ "${inspect_status}" -eq 0 ]]; then
-            # The helper requires the immutable tag's manifestDigest field.
-            existing_digest="$(node scripts/vercel/assert-candidate-tag.mjs < "${ARTIFACT_DIR}/candidate-tag.json")"
-            echo 'exists=true' >> "$GITHUB_OUTPUT"
-            echo "existing_digest=${existing_digest}" >> "$GITHUB_OUTPUT"
-          elif cat "${ARTIFACT_DIR}/candidate-tag.error" "${ARTIFACT_DIR}/candidate-tag.json" | grep -Eqi '404|not found|does not exist'; then
-            echo 'exists=false' >> "$GITHUB_OUTPUT"
-          else
-            cat "${ARTIFACT_DIR}/candidate-tag.error" >&2
-            exit "${inspect_status}"
-          fi
-
       - name: Authenticate Buildx to VCR
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
@@ -256,7 +265,7 @@ jobs:
             > "${ARTIFACT_DIR}/docker-login.log" 2>&1
 
       - name: Build and push linux/amd64 zstd candidate
-        if: ${{ steps.drift.outputs.skip != 'true' && steps.tag.outputs.exists != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
           VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
@@ -287,7 +296,7 @@ jobs:
 
       - name: Resolve candidate manifest digest
         id: manifest
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
         run: |
@@ -304,11 +313,16 @@ jobs:
           if [[ "${inspect_status}" -ne 0 ]]; then exit "${inspect_status}"; fi
           digest="$(awk '/Digest:/ {print $2; exit}' "${ARTIFACT_DIR}/manifest-inspect.log")"
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'candidate manifest digest could not be resolved' >&2; exit 1; }
+          digest_reference="${CANDIDATE_REFERENCE%:*}@${digest}"
+          docker buildx imagetools inspect --raw "${digest_reference}" > "${ARTIFACT_DIR}/manifest-raw.json"
+          node scripts/vercel/assert-zstd-manifest.mjs --expected-digest "${digest}" \
+            < "${ARTIFACT_DIR}/manifest-raw.json" > "${ARTIFACT_DIR}/manifest-compression.json"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          printf '{"candidateDigest":"%s"}\n' "${digest}" > "${ARTIFACT_DIR}/selected-candidate.json"
+          printf '{"candidateDigest":"%s","inspectedReference":"%s"}\n' \
+            "${digest}" "${digest_reference}" > "${ARTIFACT_DIR}/selected-candidate.json"
 
       - name: Verify immutable candidate tag digest
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
@@ -326,13 +340,9 @@ jobs:
             echo "immutable candidate tag digest mismatch: ${tag_digest} != ${CANDIDATE_DIGEST}" >&2
             exit 1
           }
-          if [[ "${{ steps.tag.outputs.exists }}" == 'true' && "${{ steps.tag.outputs.existing_digest }}" != "${CANDIDATE_DIGEST}" ]]; then
-            echo 'existing immutable candidate tag changed during the run' >&2
-            exit 1
-          fi
 
       - name: Verify publisher project identity
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
@@ -354,7 +364,7 @@ jobs:
             --expected-project-slug "${VERCEL_PUBLISHER_PROJECT_SLUG}" < "${ARTIFACT_DIR}/publisher-identity.json"
 
       - name: Verify publisher repository is public
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
@@ -370,7 +380,7 @@ jobs:
             --expected-repository "${VERCEL_IMAGE_REPOSITORY}" < "${ARTIFACT_DIR}/repository.json"
 
       - name: Verify consumer project identity
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
           VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
@@ -395,7 +405,7 @@ jobs:
       # transient states, and fails immediately/actionably on Unoptimized or
       # authentication errors.
       - name: Poll VCR readiness
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_IMAGE_TAG: ${{ steps.candidate.outputs.tag }}
@@ -413,7 +423,7 @@ jobs:
       # smoke-sandbox records terminal session state and snapshot statuses;
       # cleanup requires the Sandbox deleted and no non-deleted snapshot residual.
       - name: Publisher Sandbox smoke gate
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
@@ -468,10 +478,57 @@ jobs:
             exit "${status}"
           fi
 
-      - name: Open reviewed promotion PR
-        if: ${{ success() && steps.redact_final.outcome == 'success' && steps.drift.outputs.skip != 'true' && (github.event_name != 'pull_request' || inputs.propose_promotion) }}
+      - name: Upload redacted evidence
+        if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vercel-image-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/vercel-image-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+  promotion:
+    name: Open reviewed Vercel image promotion PR
+    needs: candidate
+    if: >-
+      needs.candidate.result == 'success' &&
+      needs.candidate.outputs.candidate_digest != '' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
+      CANDIDATE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
+      UPSTREAM_COMMIT: ${{ needs.candidate.outputs.upstream_commit }}
+      PROVENANCE_FILE: images/vercel/provenance.json
+    steps:
+      - name: Checkout verified source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.candidate.outputs.source_commit }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download redacted candidate evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vercel-image-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/vercel-image-evidence
+
+      - name: Generate pin and open reviewed promotion PR
         env:
           GH_TOKEN: ${{ github.token }}
+          ARTIFACT_DIR: ${{ runner.temp }}/vercel-image-evidence
           PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
@@ -480,17 +537,9 @@ jobs:
           PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
           CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
-          CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
-          UPSTREAM_COMMIT: ${{ steps.provenance.outputs.upstream_commit }}
-          PROVENANCE_FILE: images/vercel/provenance.json
         run: |
           set -euo pipefail
-          branch="vercel-image/${SOURCE_COMMIT}"
-          if git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}"; then
-            git switch --create "${branch}" --track "origin/${branch}"
-          else
-            git switch --create "${branch}"
-          fi
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_COMMIT}" ]] || { echo 'promotion checkout does not match verified source commit' >&2; exit 1; }
           node scripts/vercel/promote-image.mjs \
             --reference "vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}@${CANDIDATE_DIGEST}" \
             --provenance-file "${PROVENANCE_FILE}" \
@@ -504,23 +553,52 @@ jobs:
             --publisher-evidence "${ARTIFACT_DIR}/publisher-smoke.json" \
             --consumer-evidence "${ARTIFACT_DIR}/consumer-smoke.json"
           npm run validate:release
+          if git diff --quiet -- src/providers/vercel/image.ts; then
+            echo 'promotion source already matches the reviewed pin; no branch or PR is required'
+            exit 0
+          fi
+
+          promoted_file="${RUNNER_TEMP}/promoted-image.ts"
+          cp src/providers/vercel/image.ts "${promoted_file}"
+          git restore src/providers/vercel/image.ts
+          branch="vercel-image/${SOURCE_COMMIT}"
+          open_pr="$(gh pr list --state open --head "${branch}" --json number --jq '.[0].number // empty')"
+          if [[ -n "${open_pr}" ]]; then
+            git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
+            read -r -a commit_and_parents <<< "$(git rev-list --parents -n 1 "origin/${branch}")"
+            if [[ "${#commit_and_parents[@]}" -ne 2 || "${commit_and_parents[1]}" != "${SOURCE_COMMIT}" ]]; then
+              echo 'existing promotion branch is not rooted at the verified source commit' >&2
+              exit 1
+            fi
+            changed_files="$(git diff --name-only "${SOURCE_COMMIT}" "origin/${branch}")"
+            [[ "${changed_files}" == 'src/providers/vercel/image.ts' ]] || {
+              echo 'existing promotion branch changes files outside the generated pin' >&2
+              exit 1
+            }
+            git show "origin/${branch}:src/providers/vercel/image.ts" > "${RUNNER_TEMP}/existing-promoted-image.ts"
+            cmp "${promoted_file}" "${RUNNER_TEMP}/existing-promoted-image.ts" || {
+              echo 'existing open promotion PR does not contain the generated pin' >&2
+              exit 1
+            }
+            echo "open promotion PR #${open_pr} already contains the generated pin"
+            exit 0
+          fi
+
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            branch="${branch}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
+          git switch --create "${branch}" "${SOURCE_COMMIT}"
+          cp "${promoted_file}" src/providers/vercel/image.ts
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/providers/vercel/image.ts
-          if git diff --cached --quiet; then
-            echo 'promotion source already matches this candidate'
-          else
-            git commit -m "chore(vercel): promote image ${SOURCE_COMMIT}" -m "Refs #4"
-            git push --set-upstream origin "${branch}"
-          fi
-          if gh pr list --state open --head "${branch}" --json number --jq 'length > 0' | grep -q '^true$'; then
-            echo "open promotion PR already exists for ${branch}"
-          else
-            gh pr create \
-              --base main \
-              --head "${branch}" \
-              --title "chore(vercel): promote image ${SOURCE_COMMIT}" \
-              --body "$(cat <<EOF
+          git commit -m "chore(vercel): promote image ${SOURCE_COMMIT}" -m "Refs #4"
+          git push --set-upstream origin "${branch}"
+          gh pr create \
+            --base main \
+            --head "${branch}" \
+            --title "chore(vercel): promote image ${SOURCE_COMMIT}" \
+            --body "$(cat <<EOF
           ## Vercel image promotion
 
           This PR is opened only after the publisher and independent consumer smoke gates pass for the exact digest.
@@ -533,13 +611,3 @@ jobs:
           Review and merge this PR manually; the scheduled workflow never auto-merges or releases it.
           EOF
           )"
-          fi
-
-      - name: Upload redacted evidence
-        if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: vercel-image-evidence-${{ github.run_id }}
-          path: ${{ runner.temp }}/vercel-image-evidence
-          if-no-files-found: warn
-          retention-days: 30

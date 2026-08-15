@@ -22,10 +22,12 @@ docker buildx build \
 
 Build the promoted candidate through `.github/workflows/vercel-image.yml` so
 Buildx publishes one zstd-compressed `linux/amd64` manifest that VCR can
-optimize and report as ready. The workflow disables BuildKit's optional
-attestation index; reviewed provenance remains checked in, embedded in the
-image, verified against upstream, and uploaded as workflow evidence. Do not
-add credentials or source repositories to this context.
+optimize and report as ready. The workflow preserves a byte-exact raw inspection
+of the selected digest, verifies its SHA-256, and rejects any layer that is not
+OCI zstd. It disables
+BuildKit's optional attestation index; reviewed provenance remains checked in,
+embedded in the image, verified against upstream, and uploaded as workflow
+evidence. Do not add credentials or source repositories to this context.
 
 ## Runtime
 

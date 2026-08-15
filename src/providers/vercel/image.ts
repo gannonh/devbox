@@ -21,6 +21,12 @@ const DIGEST_VALUE = /^sha256:[a-f0-9]{64}$/;
 const VERSION = /^\d+\.\d+\.\d+$/;
 const SNAPSHOT = /^\d{8}T\d{6}Z$/;
 const BASE_REFERENCE = /^(?:docker\.io\/library\/ubuntu:26\.04|docker\.io\/oven\/bun:1\.3\.14)@sha256:[a-f0-9]{64}$/;
+const REQUIRED_RUNTIME_PACKAGES = [
+  'npm', 'pnpm', 'python', 'pip', 'uv', 'gh', 'pi', 'claude', 'codex', 'opencode',
+] as const;
+const REQUIRED_MANAGED_VERSIONS = [
+  'user', 'node', 'bun', ...REQUIRED_RUNTIME_PACKAGES,
+] as const;
 
 export interface VercelImageReference {
   registry: typeof VCR_HOST;
@@ -159,8 +165,17 @@ function validateProvenance(provenance: VercelImageProvenance | undefined): stri
   }
   if (!managed?.versions || typeof managed.versions !== 'object' || Array.isArray(managed.versions)) {
     errors.push('observed managed VMI version inventory is missing');
-  } else if (Object.entries(managed.versions).some(([name, version]) => typeof name !== 'string' || typeof version !== 'string' || version.length === 0)) {
-    errors.push('observed managed VMI version inventory is malformed');
+  } else {
+    if (Object.entries(managed.versions).some(([name, version]) => typeof name !== 'string' || typeof version !== 'string' || version.length === 0)) {
+      errors.push('observed managed VMI version inventory is malformed');
+    }
+    const missingManaged = REQUIRED_MANAGED_VERSIONS.filter((name) => !managed.versions[name]);
+    if (missingManaged.length > 0) {
+      errors.push(`managed VMI version inventory must include: ${missingManaged.join(', ')}`);
+    }
+    if (managed.versions.user !== 'ubuntu') errors.push('managed VMI user must be ubuntu');
+    if (managed.versions.node !== provenance.node?.version) errors.push('managed VMI Node version must match mirrored Node provenance');
+    if (managed.versions.bun !== '1.3.14') errors.push('managed VMI Bun version must match the pinned Bun base');
   }
 
   const bases = provenance.baseImages;
@@ -185,8 +200,21 @@ function validateProvenance(provenance: VercelImageProvenance | undefined): stri
   if (!SNAPSHOT.test(provenance.aptSnapshot)) errors.push('aptSnapshot must be a dated UTC snapshot');
   if (!provenance.runtimePackages || typeof provenance.runtimePackages !== 'object' || Array.isArray(provenance.runtimePackages)) {
     errors.push('runtime package provenance is missing');
-  } else if (Object.entries(provenance.runtimePackages).some(([name, version]) => typeof name !== 'string' || !VERSION.test(String(version)))) {
-    errors.push('runtime package provenance must use exact semantic versions');
+  } else {
+    if (Object.entries(provenance.runtimePackages).some(([name, version]) => typeof name !== 'string' || !VERSION.test(String(version)))) {
+      errors.push('runtime package provenance must use exact semantic versions');
+    }
+    const missingPackages = REQUIRED_RUNTIME_PACKAGES.filter((name) => !provenance.runtimePackages[name]);
+    if (missingPackages.length > 0) {
+      errors.push(`required runtime package inventory must include: ${missingPackages.join(', ')}`);
+    }
+    if (managed?.versions && typeof managed.versions === 'object' && !Array.isArray(managed.versions)) {
+      for (const name of REQUIRED_RUNTIME_PACKAGES) {
+        if (provenance.runtimePackages[name] && provenance.runtimePackages[name] !== managed.versions[name]) {
+          errors.push(`${name} version must match the observed managed VMI`);
+        }
+      }
+    }
   }
   return errors;
 }

@@ -7,7 +7,7 @@
  * idempotent so failed steps can run it repeatedly in cleanup.
  */
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const secretNames = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY)/i;
 const secrets = Object.entries(process.env)
@@ -42,6 +42,11 @@ function redactValue(value) {
 
 async function redactFile(path) {
   const input = await readFile(path, 'utf8');
+  if (basename(path) === 'manifest-raw.json') {
+    JSON.parse(input);
+    if (redactText(input) !== input) throw new Error('raw OCI manifest contained credential material');
+    return;
+  }
   try {
     const parsed = JSON.parse(input);
     const redacted = redactValue(parsed);

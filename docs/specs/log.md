@@ -29,3 +29,6 @@
 
 ## 2026-08-15 (3)
 * **Vercel image base correction**: Updated approved issue #4 after live VCR checks proved the managed Universal VMI cannot be used as an OCI `FROM`. The build now mirrors its pinned open-source recipe with checked provenance while retaining the immutable candidate, publisher/consumer smoke, cleanup, promotion, and rollback gates.
+
+## 2026-08-15 (4)
+* **Vercel image final verification hardening**: Authorized credentialed PR runs by exact reviewed SHA and repository owner, isolated commit-pinned read-only verification from write-capable promotion, restricted manual dispatch to the default branch, forced fresh run-unique candidate builds, added byte-hashed digest-correlated live zstd manifest evidence, tightened runtime provenance, and closed recovered-cleanup and promotion-branch trust gaps.
