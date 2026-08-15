@@ -14,6 +14,7 @@ async function exists(path: string): Promise<void> {
 describe('Vercel image supply-chain workflow', () => {
   it('runs manually and on a schedule without an auto-merge path', async () => {
     const workflow = await workflowText();
+    expect(workflow).toContain('workflow_call:');
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('schedule:');
     expect(workflow).toContain("cron:");
@@ -22,13 +23,27 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).not.toContain('enable-auto-merge');
   });
 
+  it('runs credentialed PR verification only for a labeled same-repository branch', async () => {
+    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
+    const workflow = await workflowText();
+    expect(ci).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+    expect(ci).toContain("contains(github.event.pull_request.labels.*.name, 'vercel-image-candidate')");
+    expect(ci).toContain('uses: ./.github/workflows/vercel-image.yml');
+    expect(ci).toContain('secrets: inherit');
+    expect(ci).toMatch(/vercel-image-candidate:[\s\S]*?permissions:\n\s+contents: read/);
+    expect(workflow).toContain('propose_promotion:');
+    expect(workflow).toContain("github.event_name != 'workflow_call' || inputs.propose_promotion");
+  });
+
   it('builds an amd64 zstd immutable candidate and waits for readiness', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('docker/setup-buildx-action');
     expect(workflow).toContain('vercel@58.11.0');
     expect(workflow).toContain('--platform linux/amd64');
     expect(workflow).toContain('compression=zstd');
-    expect(workflow).toContain('sha-${GITHUB_SHA}');
+    expect(workflow).toContain('sha-${SOURCE_COMMIT}');
+    expect(workflow).toContain("SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}");
+    expect(workflow).toContain("github.event_name != 'workflow_call' || inputs.propose_promotion");
     expect(workflow).toContain('UPSTREAM_COMMIT');
     expect(workflow).toContain('provenance.json');
     expect(workflow).not.toContain('UNIVERSAL_BASE_DIGEST');

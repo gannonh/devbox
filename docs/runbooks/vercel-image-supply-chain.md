@@ -95,7 +95,11 @@ the commit or restore floating inputs.
 ## Candidate, readiness, and smoke workflow
 
 Run **Actions → Vercel image supply chain → Run workflow** for a manual
-candidate. The workflow validates `provenance.json`, fetches the exact
+candidate. Before the workflow lands on the default branch, a maintainer may
+label a same-repository PR `vercel-image-candidate`; CI then calls the same
+secret-gated workflow with read-only repository permissions and promotion
+creation disabled. Fork PRs and unlabeled PRs cannot receive this credentialed
+job. The workflow validates `provenance.json`, fetches the exact
 `UPSTREAM_COMMIT`, and verifies both recorded upstream Dockerfile hashes before
 building. The nightly schedule compares upstream HEAD with `UPSTREAM_COMMIT`.
 Unchanged provenance skips cleanly; drift fails closed with
