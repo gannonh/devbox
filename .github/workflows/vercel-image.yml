@@ -337,10 +337,8 @@ jobs:
           VERCEL_PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
         run: |
           set -euo pipefail
-          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel project list \
-            --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" \
-            --filter "${VERCEL_PUBLISHER_PROJECT_SLUG}" \
-            --format json > "${ARTIFACT_DIR}/publisher-project.json"
+          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel api "/v9/projects/${VERCEL_PUBLISHER_PROJECT_ID}" \
+            --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --raw > "${ARTIFACT_DIR}/publisher-project.json"
           VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel teams list \
             --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --limit 100 --format json > "${ARTIFACT_DIR}/publisher-teams.json"
           node -e "const fs=require('fs'); process.stdout.write(JSON.stringify({projects:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/publisher-project.json')),teams:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/publisher-teams.json'))}))" \
@@ -377,10 +375,8 @@ jobs:
           VERCEL_CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
         run: |
           set -euo pipefail
-          VERCEL_TOKEN="${VERCEL_CONSUMER_TOKEN}" vercel project list \
-            --scope "${VERCEL_CONSUMER_TEAM_SLUG}" \
-            --filter "${VERCEL_CONSUMER_PROJECT_SLUG}" \
-            --format json > "${ARTIFACT_DIR}/consumer-project.json"
+          VERCEL_TOKEN="${VERCEL_CONSUMER_TOKEN}" vercel api "/v9/projects/${VERCEL_CONSUMER_PROJECT_ID}" \
+            --scope "${VERCEL_CONSUMER_TEAM_SLUG}" --raw > "${ARTIFACT_DIR}/consumer-project.json"
           VERCEL_TOKEN="${VERCEL_CONSUMER_TOKEN}" vercel teams list \
             --scope "${VERCEL_CONSUMER_TEAM_SLUG}" --limit 100 --format json > "${ARTIFACT_DIR}/consumer-teams.json"
           node -e "const fs=require('fs'); process.stdout.write(JSON.stringify({projects:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-project.json')),teams:JSON.parse(fs.readFileSync(process.env.ARTIFACT_DIR+'/consumer-teams.json'))}))" \

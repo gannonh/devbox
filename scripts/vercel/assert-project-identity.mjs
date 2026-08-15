@@ -35,6 +35,7 @@ for (const [name, item] of Object.entries(expected)) {
 function listFrom(value, key) {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object' && Array.isArray(value[key])) return value[key];
+  if (value && typeof value === 'object' && typeof value.id === 'string') return [value];
   return [];
 }
 

@@ -95,6 +95,9 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('assert-public-repository.mjs');
     expect(workflow).toContain('--scope "${VERCEL_PUBLISHER_TEAM_SLUG}"');
     expect(workflow).toContain('assert-project-identity.mjs');
+    expect(workflow).toContain('vercel api "/v9/projects/${VERCEL_PUBLISHER_PROJECT_ID}"');
+    expect(workflow).toContain('vercel api "/v9/projects/${VERCEL_CONSUMER_PROJECT_ID}"');
+    expect(workflow).not.toContain('vercel project list');
     expect(workflow).toContain('vercel teams list');
     expect(workflow).toContain('--expected-team-id');
     expect(workflow).toContain('--expected-project-id');

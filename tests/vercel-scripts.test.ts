@@ -585,7 +585,7 @@ describe('Vercel supply-chain script boundaries', () => {
       },
       [],
       JSON.stringify({
-        projects: { projects: [{ id: 'consumer-project-id', name: 'consumer-project', accountId: 'consumer-team-id' }] },
+        projects: { id: 'consumer-project-id', name: 'consumer-project', accountId: 'consumer-team-id' },
         teams: { teams: [{ id: 'consumer-team-id', slug: 'consumer-team' }] },
       }),
     );
