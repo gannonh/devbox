@@ -53,6 +53,9 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('timeout-minutes: 45');
     expect(workflow).toContain('SMOKE_TIMEOUT_MS:');
     expect(workflow).toContain('SMOKE_HTTP_TIMEOUT_MS:');
+    expect(workflow).toContain('ARTIFACT_DIR=${artifact_dir}');
+    expect(workflow).toContain('READINESS_TIMEOUT_MINUTES');
+    expect(workflow).not.toMatch(/fromJSON\([^\n]+\)\s*\*/);
     expect(workflow).toContain('Preparing');
     expect(workflow).toContain('Unoptimized');
     expect(workflow).toContain('image_not_ready');

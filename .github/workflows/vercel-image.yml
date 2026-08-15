@@ -39,7 +39,6 @@ permissions:
 env:
   VERCEL_IMAGE_REPOSITORY: devbox
   SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
-  ARTIFACT_DIR: ${{ runner.temp }}/vercel-image-evidence
   SMOKE_TIMEOUT_MS: '600000'
   SMOKE_SDK_TIMEOUT_MS: '30000'
   SMOKE_COMMAND_TIMEOUT_MS: '60000'
@@ -92,7 +91,9 @@ jobs:
           slug_re='^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'
           [[ "${VERCEL_PUBLISHER_TEAM_SLUG}" =~ ${slug_re} ]] || { echo 'publisher team slug is malformed' >&2; exit 1; }
           [[ "${VERCEL_PUBLISHER_PROJECT_SLUG}" =~ ${slug_re} ]] || { echo 'publisher project slug is malformed' >&2; exit 1; }
-          mkdir -p "${ARTIFACT_DIR}"
+          artifact_dir="${RUNNER_TEMP}/vercel-image-evidence"
+          echo "ARTIFACT_DIR=${artifact_dir}" >> "$GITHUB_ENV"
+          mkdir -p "${artifact_dir}"
 
       - name: Validate independent consumer configuration
         env:
@@ -401,9 +402,13 @@ jobs:
           VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
           VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
-          READINESS_TIMEOUT_MS: ${{ fromJSON(inputs.readiness_timeout_minutes || '15') * 60 * 1000 }}
+          READINESS_TIMEOUT_MINUTES: ${{ inputs.readiness_timeout_minutes || '15' }}
           READINESS_EVIDENCE: ${{ runner.temp }}/vercel-image-evidence/readiness.json
-        run: node scripts/vercel/wait-vcr-ready.mjs
+        run: |
+          set -euo pipefail
+          [[ "${READINESS_TIMEOUT_MINUTES}" =~ ^[0-9]+$ ]] || { echo 'readiness timeout must be whole minutes' >&2; exit 1; }
+          export READINESS_TIMEOUT_MS="$((READINESS_TIMEOUT_MINUTES * 60 * 1000))"
+          node scripts/vercel/wait-vcr-ready.mjs
 
       # smoke-sandbox records terminal session state and snapshot statuses;
       # cleanup requires the Sandbox deleted and no non-deleted snapshot residual.
