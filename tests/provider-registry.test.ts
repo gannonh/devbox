@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   createProviderRegistry,
   resolveProvider,
-  type DevboxProvider,
   type ProviderRegistry,
 } from '../src/providers/registry.js';
-import type { DisplayCredentialsResult, ProviderActionResult } from '../src/providers/types.js';
+import type {
+  DevboxProvider,
+  DisplayCredentialsResult,
+  ProviderActionResult,
+} from '../src/providers/types.js';
 
 function stubProvider(name: 'local' | 'vercel'): DevboxProvider {
   const action = async (): Promise<ProviderActionResult> => ({ exitCode: 0 });
