@@ -32,7 +32,8 @@ describe('Vercel image supply-chain workflow', () => {
     expect(ci).toContain('secrets: inherit');
     expect(ci).toMatch(/vercel-image-candidate:[\s\S]*?permissions:\n\s+contents: write\n\s+pull-requests: write/);
     expect(workflow).toContain('propose_promotion:');
-    expect(workflow).toContain("github.event_name != 'workflow_call' || inputs.propose_promotion");
+    expect(workflow).toContain("github.event_name != 'pull_request' || inputs.propose_promotion");
+    expect(workflow).not.toContain("github.event_name != 'workflow_call' || inputs.propose_promotion");
   });
 
   it('builds an amd64 zstd immutable candidate and waits for readiness', async () => {
@@ -44,7 +45,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('compression=zstd');
     expect(workflow).toContain('sha-${SOURCE_COMMIT}');
     expect(workflow).toContain("SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}");
-    expect(workflow).toContain("github.event_name != 'workflow_call' || inputs.propose_promotion");
+    expect(workflow).toContain("github.event_name != 'pull_request' || inputs.propose_promotion");
     expect(workflow).toContain('UPSTREAM_COMMIT');
     expect(workflow).toContain('provenance.json');
     expect(workflow).not.toContain('UNIVERSAL_BASE_DIGEST');

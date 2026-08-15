@@ -469,7 +469,7 @@ jobs:
           fi
 
       - name: Open reviewed promotion PR
-        if: ${{ success() && steps.redact_final.outcome == 'success' && steps.drift.outputs.skip != 'true' && (github.event_name != 'workflow_call' || inputs.propose_promotion) }}
+        if: ${{ success() && steps.redact_final.outcome == 'success' && steps.drift.outputs.skip != 'true' && (github.event_name != 'pull_request' || inputs.propose_promotion) }}
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
