@@ -38,6 +38,17 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('image_not_ready');
   });
 
+  it('serializes immutable tags and makes promotion branch/PR creation idempotent', async () => {
+    const workflow = await workflowText();
+    expect(workflow).toContain('concurrency:');
+    expect(workflow).toContain('cancel-in-progress: false');
+    expect(workflow).toContain('vcr tag inspect');
+    expect(workflow).toContain('manifestDigest');
+    expect(workflow).toContain('git fetch origin');
+    expect(workflow).toContain('gh pr view --head');
+    expect(workflow).toContain('git diff --cached --quiet');
+  });
+
   it('uses separate publisher and consumer credentials and both exact-digest smoke gates', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('VERCEL_PUBLISHER_TOKEN');
@@ -74,10 +85,19 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('promote-image.mjs');
     expect(workflow).toContain('cross-project');
     expect(workflow).toContain('redacted');
+    const publisherRedact = workflow.match(/- name: Redact publisher evidence[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    const finalRedact = workflow.match(/- name: Redact all evidence[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    const buildStep = workflow.match(/- name: Build and push linux\/amd64 zstd candidate[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    for (const block of [publisherRedact, finalRedact, buildStep]) {
+      expect(block).toContain('VERCEL_PUBLISHER_TOKEN');
+      expect(block).toContain('VERCEL_CONSUMER_TOKEN');
+    }
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
     const cleanup = await readFile('scripts/vercel/sandbox-cleanup.mjs', 'utf8');
     expect(smoke).toContain('sessionStates');
     expect(smoke).toContain('finalSessionStatesTerminal');
+    expect(smoke).toContain('recoverOwnedResources');
+    expect(smoke).toContain('devbox-run');
     expect(cleanup).toContain('resume: false');
     expect(cleanup).toContain('after-delete');
     for (const stage of ['startup', 'http', 'websocket', 'terminal', 'stop', 'delete']) {
@@ -86,6 +106,17 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toMatch(/if: \$\{\{ success\(\)/);
     expect(workflow).toContain('contents: write');
     expect(workflow).toContain('pull-requests: write');
+  });
+
+  it('documents scoped all-resource orphan cleanup and a long-lived local runtime', async () => {
+    const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
+    const imageReadme = await readFile('images/vercel/README.md', 'utf8');
+    expect(runbook).toContain('sandbox list --all');
+    expect(runbook).toContain('sandbox snapshots list');
+    expect(runbook).toContain('--scope');
+    expect(runbook).toContain('--tag');
+    expect(runbook).toContain('sleep infinity');
+    expect(imageReadme).toContain('sleep infinity');
   });
 
   it('documents the audited Vercel CLI version contract', async () => {
@@ -103,6 +134,7 @@ describe('Vercel image supply-chain workflow', () => {
       exists('scripts/vercel/http-probe.mjs'),
       exists('scripts/vercel/sandbox-cleanup.mjs'),
       exists('scripts/vercel/assert-project-identity.mjs'),
+      exists('scripts/vercel/assert-candidate-tag.mjs'),
       exists('scripts/vercel/promote-image.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),
     ]);

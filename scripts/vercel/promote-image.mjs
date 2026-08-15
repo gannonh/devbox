@@ -6,6 +6,7 @@ import {
   REQUIRED_SMOKE_CHECKS,
   REQUIRED_SMOKE_TIMINGS,
 } from './smoke-contract.mjs';
+import { isStrictEvidenceUrl } from '../../src/providers/vercel/strict-url.js';
 
 const sourcePath = process.env.VERCEL_IMAGE_PIN_FILE ?? 'src/providers/vercel/image.ts';
 const args = new Map();
@@ -47,16 +48,6 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function validHttpsUrl(value) {
-  if (!nonEmptyString(value)) return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && nonEmptyString(url.hostname) && !url.username && !url.password;
-  } catch {
-    return false;
-  }
-}
-
 function validIsoTimestamp(value) {
   if (!nonEmptyString(value)) return false;
   try {
@@ -86,7 +77,7 @@ if (args.get('publisher-team') !== imageInfo.team || args.get('publisher-project
   throw new Error('publisher scope must match the candidate image reference');
 }
 for (const key of ['publisher-url', 'consumer-url']) {
-  if (!validHttpsUrl(args.get(key))) throw new Error(`--${key} must be an HTTPS URL`);
+  if (!isStrictEvidenceUrl(args.get(key))) throw new Error(`--${key} must be an HTTPS URL without credentials or query secrets`);
 }
 if (args.get('publisher-team') === args.get('consumer-team') && args.get('publisher-project') === args.get('consumer-project')) {
   throw new Error('publisher and consumer scopes must be independent');
@@ -197,7 +188,7 @@ async function readEvidence(path, role, expectedScope, expectedSmokeUrl) {
   ) {
     throw new Error(`${role} smoke evidence does not prove Sandbox and snapshot cleanup`);
   }
-  if (!nonEmptyString(evidence.sandboxName) || !validHttpsUrl(evidence.noVncUrl)) {
+  if (!nonEmptyString(evidence.sandboxName) || !isStrictEvidenceUrl(evidence.noVncUrl)) {
     throw new Error(`${role} smoke evidence is missing a valid HTTPS Sandbox identity URL`);
   }
   if (!Array.isArray(evidence.snapshots) || evidence.snapshots.some((snapshot) => !snapshot || !nonEmptyString(snapshot.id) || snapshot.status !== 'deleted')) {
@@ -222,7 +213,7 @@ let source = await readFile(sourcePath, 'utf8');
 function replaceStringField(field, value) {
   const pattern = new RegExp(`(^\\s*${field}:\\s*)'[^']*'(,?)$`, 'm');
   const next = source.replace(pattern, (_match, prefix, suffix) => `${prefix}'${value}'${suffix}`);
-  if (next === source) throw new Error(`could not update ${field} in ${sourcePath}`);
+  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
   source = next;
 }
 
@@ -232,7 +223,21 @@ function replaceScopeField(field, team, project) {
     'm',
   );
   const next = source.replace(pattern, (_match, prefix, separator, suffix) => `${prefix}'${team}'${separator}'${project}'${suffix}`);
-  if (next === source) throw new Error(`could not update ${field} in ${sourcePath}`);
+  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
+  source = next;
+}
+
+function replaceEnumField(field, values, replacement) {
+  const pattern = new RegExp(`(^\\s*${field}:\\s*)'(${values.join('|')})'(,?)$`, 'm');
+  const next = source.replace(pattern, (_match, prefix, _value, suffix) => `${prefix}'${replacement}'${suffix}`);
+  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
+  source = next;
+}
+
+function replaceBooleanField(field, replacement) {
+  const pattern = new RegExp(`(^\\s*${field}:\\s*)(true|false)(,?)$`, 'm');
+  const next = source.replace(pattern, (_match, prefix, _value, suffix) => `${prefix}${replacement}${suffix}`);
+  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
   source = next;
 }
 
@@ -248,11 +253,8 @@ replaceStringField('publisherSmokeUrl', args.get('publisher-url'));
 replaceStringField('consumerSmokeUrl', args.get('consumer-url'));
 replaceScopeField('publisher', args.get('publisher-team'), args.get('publisher-project'));
 replaceScopeField('consumer', args.get('consumer-team'), args.get('consumer-project'));
-if (!source.includes("publisherSmokeStatus: 'pending'")) throw new Error('publisher smoke status field is missing');
-if (!source.includes("consumerSmokeStatus: 'pending'")) throw new Error('consumer smoke status field is missing');
-if (!source.includes('crossProjectVerified: false')) throw new Error('cross-project verification field is missing');
-source = source.replace("publisherSmokeStatus: 'pending'", "publisherSmokeStatus: 'passed'");
-source = source.replace("consumerSmokeStatus: 'pending'", "consumerSmokeStatus: 'passed'");
-source = source.replace('crossProjectVerified: false', 'crossProjectVerified: true');
+replaceEnumField('publisherSmokeStatus', ['pending', 'passed'], 'passed');
+replaceEnumField('consumerSmokeStatus', ['pending', 'passed'], 'passed');
+replaceBooleanField('crossProjectVerified', 'true');
 await writeFile(sourcePath, source);
 console.log(`prepared promotion pin for ${reference}`);

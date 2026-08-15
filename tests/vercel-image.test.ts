@@ -95,6 +95,30 @@ describe('Vercel image pin validation', () => {
     expect(mismatched.errors.join(' ')).toContain('publisher scope must match image reference');
   });
 
+  it('rejects credential-bearing smoke evidence URL forms', () => {
+    const base = {
+      reference: 'vcr.vercel.com/publisher-team/publisher-project/devbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      baseReference: 'vcr.vercel.com/vercel/sandbox/universal@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      baseDigest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      sourceCommit: '4af448f5daba0f9daf02071250f4f5ad389c80df',
+      publisher: { team: 'publisher-team', project: 'publisher-project' },
+      consumer: { team: 'consumer-team', project: 'consumer-project' },
+      testedReference: 'vcr.vercel.com/publisher-team/publisher-project/devbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      publisherSmokeStatus: 'passed' as const,
+      consumerSmokeStatus: 'passed' as const,
+      crossProjectVerified: true,
+    };
+    for (const [publisherSmokeUrl, consumerSmokeUrl] of [
+      ['https://user:password@example.test/publisher', 'https://github.com/a/2'],
+      ['https://github.com/a/1?token=secret-value', 'https://github.com/a/2'],
+      ['https://github.com/a/1#secret=secret-value', 'https://github.com/a/2'],
+    ]) {
+      const result = validateVercelImagePin({ ...base, publisherSmokeUrl, consumerSmokeUrl });
+      expect(result.ok).toBe(false);
+      expect(result.errors.join(' ')).toContain('HTTPS smoke evidence URL');
+    }
+  });
+
   it('rejects a floating tag, mismatched smoke reference, and unproven consumer', () => {
     const result = validateVercelImagePin({
       reference: 'devbox:latest',

@@ -3,6 +3,12 @@ name: Vercel image supply chain
 # A scheduled run may detect Universal drift, but it follows the same reviewed
 # candidate/smoke/PR path as a manual run.  Nothing in this workflow merges or
 # releases a promotion PR.
+# Serialize all candidates so one commit/base pair cannot race its immutable
+# tag or promotion branch against another run.
+concurrency:
+  group: vercel-image-supply-chain
+  cancel-in-progress: false
+
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +37,9 @@ env:
   SMOKE_HTTP_TIMEOUT_MS: '10000'
   SMOKE_CLEANUP_TIMEOUT_MS: '120000'
   SMOKE_DELETE_VERIFY_TIMEOUT_MS: '30000'
+  BASE_DIGEST_TIMEOUT_MS: '120000'
+  BASE_DIGEST_SDK_TIMEOUT_MS: '30000'
+  BASE_DIGEST_CLEANUP_TIMEOUT_MS: '120000'
 
 jobs:
   candidate:
@@ -170,13 +179,45 @@ jobs:
         env:
           PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          BASE_DIGEST: ${{ steps.selected_base.outputs.digest }}
         run: |
           set -euo pipefail
-          tag="sha-${GITHUB_SHA}"
+          # Include the reviewed base digest so upstream drift never reuses an
+          # older image under the same source-commit tag.
+          tag="sha-${GITHUB_SHA}-${BASE_DIGEST#sha256:}"
           reference="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}:${tag}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "reference=${reference}" >> "$GITHUB_OUTPUT"
           printf '{"candidateTag":"%s","candidateReference":"%s"}\n' "${tag}" "${reference}" > "${ARTIFACT_DIR}/candidate.json"
+
+      - name: Check immutable candidate tag
+        id: tag
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          CANDIDATE_TAG: ${{ steps.candidate.outputs.tag }}
+          VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          set +e
+          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel vcr tag inspect "${VERCEL_IMAGE_REPOSITORY}" "${CANDIDATE_TAG}" \
+            --project "${VERCEL_PUBLISHER_PROJECT_ID}" --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --format json \
+            > "${ARTIFACT_DIR}/candidate-tag.json" 2> "${ARTIFACT_DIR}/candidate-tag.error"
+          inspect_status=$?
+          set -e
+          if [[ "${inspect_status}" -eq 0 ]]; then
+            # The helper requires the immutable tag's manifestDigest field.
+            existing_digest="$(node scripts/vercel/assert-candidate-tag.mjs < "${ARTIFACT_DIR}/candidate-tag.json")"
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            echo "existing_digest=${existing_digest}" >> "$GITHUB_OUTPUT"
+          elif cat "${ARTIFACT_DIR}/candidate-tag.error" "${ARTIFACT_DIR}/candidate-tag.json" | grep -Eqi '404|not found|does not exist'; then
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          else
+            cat "${ARTIFACT_DIR}/candidate-tag.error" >&2
+            exit "${inspect_status}"
+          fi
 
       - name: Authenticate Buildx to VCR
         if: ${{ steps.drift.outputs.skip != 'true' }}
@@ -192,10 +233,12 @@ jobs:
             > "${ARTIFACT_DIR}/docker-login.log" 2>&1
 
       - name: Build and push linux/amd64 zstd candidate
-        if: ${{ steps.drift.outputs.skip != 'true' }}
+        if: ${{ steps.drift.outputs.skip != 'true' && steps.tag.outputs.exists != 'true' }}
         env:
           CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
           BASE_DIGEST: ${{ steps.selected_base.outputs.digest }}
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
         run: |
           set -euo pipefail
           build_started_ms="$(date +%s%3N)"
@@ -238,6 +281,30 @@ jobs:
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'candidate manifest digest could not be resolved' >&2; exit 1; }
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           printf '{"candidateDigest":"%s"}\n' "${digest}" > "${ARTIFACT_DIR}/selected-candidate.json"
+
+      - name: Verify immutable candidate tag digest
+        if: ${{ steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          CANDIDATE_TAG: ${{ steps.candidate.outputs.tag }}
+          CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel vcr tag inspect "${VERCEL_IMAGE_REPOSITORY}" "${CANDIDATE_TAG}" \
+            --project "${VERCEL_PUBLISHER_PROJECT_ID}" --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --format json \
+            > "${ARTIFACT_DIR}/candidate-tag-final.json"
+          tag_digest="$(node scripts/vercel/assert-candidate-tag.mjs < "${ARTIFACT_DIR}/candidate-tag-final.json")"
+          [[ "${tag_digest}" == "${CANDIDATE_DIGEST}" ]] || {
+            echo "immutable candidate tag digest mismatch: ${tag_digest} != ${CANDIDATE_DIGEST}" >&2
+            exit 1
+          }
+          if [[ "${{ steps.tag.outputs.exists }}" == 'true' && "${{ steps.tag.outputs.existing_digest }}" != "${CANDIDATE_DIGEST}" ]]; then
+            echo 'existing immutable candidate tag changed during the run' >&2
+            exit 1
+          fi
 
       - name: Verify publisher project identity
         if: ${{ steps.drift.outputs.skip != 'true' }}
@@ -338,6 +405,9 @@ jobs:
       - name: Redact publisher evidence
         id: redact_publisher
         if: ${{ always() && steps.drift.outputs.skip != 'true' }}
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
         run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
 
       # This is the independent cross-project public-consumption gate; it is
@@ -360,6 +430,9 @@ jobs:
       - name: Redact all evidence
         id: redact_final
         if: always()
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
         run: |
           set +e
           node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
@@ -387,7 +460,11 @@ jobs:
         run: |
           set -euo pipefail
           branch="vercel-image/${GITHUB_SHA}"
-          git switch --create "${branch}"
+          if git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}"; then
+            git switch --create "${branch}" --track "origin/${branch}"
+          else
+            git switch --create "${branch}"
+          fi
           node scripts/vercel/promote-image.mjs \
             --reference "vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}@${CANDIDATE_DIGEST}" \
             --base-reference "vcr.vercel.com/vercel/sandbox/universal@${BASE_DIGEST}" \
@@ -404,13 +481,20 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/providers/vercel/image.ts
-          git commit -m "chore(vercel): promote image ${GITHUB_SHA}" -m "Refs #4"
-          git push --set-upstream origin "${branch}"
-          gh pr create \
-            --base main \
-            --head "${branch}" \
-            --title "chore(vercel): promote image ${GITHUB_SHA}" \
-            --body "$(cat <<EOF
+          if git diff --cached --quiet; then
+            echo 'promotion source already matches this candidate'
+          else
+            git commit -m "chore(vercel): promote image ${GITHUB_SHA}" -m "Refs #4"
+            git push --set-upstream origin "${branch}"
+          fi
+          if gh pr view --head "${branch}" --json number >/dev/null 2>&1; then
+            echo "promotion PR already exists for ${branch}"
+          else
+            gh pr create \
+              --base main \
+              --head "${branch}" \
+              --title "chore(vercel): promote image ${GITHUB_SHA}" \
+              --body "$(cat <<EOF
           ## Vercel image promotion
 
           This PR is opened only after the publisher and independent consumer smoke gates pass for the exact digest.
@@ -423,6 +507,7 @@ jobs:
           Review and merge this PR manually; the scheduled workflow never auto-merges or releases it.
           EOF
           )"
+          fi
 
       - name: Upload redacted evidence
         if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}

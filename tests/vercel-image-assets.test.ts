@@ -27,6 +27,16 @@ describe('Vercel image assets', () => {
     expect(dockerfile).not.toMatch(/(VERCEL_TOKEN|GH_TOKEN|PASSWORD=|SECRET=|COPY .*\\.env)/i);
   });
 
+  it('uses a reviewed dated Ubuntu package snapshot for reproducible apt inputs', async () => {
+    const dockerfile = await text(dockerfilePath);
+    expect(dockerfile).toContain('UBUNTU_SNAPSHOT=');
+    expect(dockerfile).toContain('snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}');
+    expect(dockerfile).toContain('check-valid-until=no');
+    expect(dockerfile).toContain('VERSION_CODENAME');
+    expect(dockerfile).toContain('rm -f /etc/apt/sources.list');
+    expect(dockerfile).not.toMatch(/apt-get update[\\s\\S]*archive\\.ubuntu\\.com/);
+  });
+
   it('ships explicit startup, status, and local image checks', async () => {
     const startup = await text(startupPath);
     const status = await text(statusPath);

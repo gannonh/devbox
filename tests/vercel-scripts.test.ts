@@ -13,6 +13,7 @@ import {
 } from '../scripts/vercel/smoke-contract.mjs';
 import { fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
 import { verifySandboxDeleted } from '../scripts/vercel/sandbox-cleanup.mjs';
+import { recoverOwnedResources } from '../scripts/vercel/sandbox-owned-recovery.mjs';
 
 const execFileAsync = promisify(execFile);
 const digest = 'sha256:' + 'a'.repeat(64);
@@ -161,6 +162,30 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(deletes).toBeGreaterThanOrEqual(3);
   });
 
+  it('keeps the Universal digest resolver bounded and cleanup-safe', async () => {
+    const resolver = await readFile('scripts/vercel/resolve-universal-digest.mjs', 'utf8');
+    expect(resolver).toContain('AbortController');
+    expect(resolver).toContain('Sandbox.list');
+    expect(resolver).toContain('Snapshot.list');
+    expect(resolver).toContain('resume: false');
+    expect(resolver).toContain('verifySandboxDeleted');
+    expect(resolver).toContain('base-digest-probe');
+  });
+
+  it('recovers owned resources discovered by tag after a lost create handle', async () => {
+    const recovered: string[] = [];
+    const deletedSnapshots: string[] = [];
+    const result = await recoverOwnedResources({
+      listSandboxes: async () => [{ name: 'owned-sandbox' }],
+      recoverSandbox: async (name: string) => { recovered.push(name); },
+      listSnapshots: async () => [{ id: 'owned-snapshot', status: 'ready' }],
+      deleteSnapshot: async (snapshot: { id: string }) => { deletedSnapshots.push(snapshot.id); },
+    });
+    expect(result.errors).toEqual([]);
+    expect(recovered).toEqual(['owned-sandbox']);
+    expect(deletedSnapshots).toEqual(['owned-snapshot']);
+  });
+
   it('requires executable working-binary probes for image and Sandbox checks', async () => {
     const status = await readFile('images/vercel/status-devbox.sh', 'utf8');
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
@@ -169,6 +194,14 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(smoke).toContain(probe);
     }
     expect(status).toContain('timeout');
+  });
+
+  it('extracts only a full digest from an immutable candidate tag response', async () => {
+    const valid = await runNode('scripts/vercel/assert-candidate-tag.mjs', process.env, [], JSON.stringify({ tag: { manifestDigest: digest } }));
+    expect(valid.code).toBe(0);
+    expect(valid.stdout.trim()).toBe(digest);
+    const invalid = await runNode('scripts/vercel/assert-candidate-tag.mjs', process.env, [], JSON.stringify({ tag: { manifestDigest: 'sha256:not-a-digest' } }));
+    expect(invalid.code).not.toBe(0);
   });
 
   it('accepts only fully-qualified VCR digest references at the smoke boundary', () => {
@@ -312,6 +345,28 @@ describe('Vercel supply-chain script boundaries', () => {
     }
   });
 
+  it('redacts arbitrary publisher and consumer token values before upload', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-redaction-secrets-'));
+    try {
+      const artifact = join(temp, 'error.json');
+      const publisherToken = 'publisher-arbitrary-token-123';
+      const consumerToken = 'consumer-arbitrary-token-456';
+      await writeFile(artifact, JSON.stringify({ error: `${publisherToken} ${consumerToken}`, redacted: false }));
+      const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
+        ...process.env,
+        VERCEL_PUBLISHER_TOKEN: publisherToken,
+        VERCEL_CONSUMER_TOKEN: consumerToken,
+      }, [artifact]);
+      expect(result.code).toBe(0);
+      const redacted = await readFile(artifact, 'utf8');
+      expect(redacted).not.toContain(publisherToken);
+      expect(redacted).not.toContain(consumerToken);
+      expect(redacted).toContain('[REDACTED]');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it('fails redaction on an unreadable artifact path', async () => {
     const result = await runNode(
       'scripts/vercel/redact-artifacts.mjs',
@@ -363,6 +418,63 @@ describe('Vercel supply-chain script boundaries', () => {
       const promoted = await readFile(sourcePath, 'utf8');
       expect(promoted).toContain("publisherSmokeStatus: 'passed'");
       expect(promoted).toContain('crossProjectVerified: true');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('re-promotes a second candidate from an already-promoted source pin', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-repeat-'));
+    try {
+      const sourcePath = join(temp, 'image.ts');
+      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const firstPublisher = join(temp, 'first-publisher.json');
+      const firstConsumer = join(temp, 'first-consumer.json');
+      const firstPublisherReport = validEvidence('publisher', 'publisher-team-id', 'publisher-project-id') as any;
+      const firstConsumerReport = validEvidence('consumer', 'consumer-team-id', 'consumer-project-id') as any;
+      firstPublisherReport.smokeUrl = 'https://github.com/gannonh/devbox/actions/runs/200#publisher-smoke';
+      firstConsumerReport.smokeUrl = 'https://github.com/gannonh/devbox/actions/runs/201#consumer-smoke';
+      await writeFile(firstPublisher, JSON.stringify(firstPublisherReport));
+      await writeFile(firstConsumer, JSON.stringify(firstConsumerReport));
+      const invoke = async (candidateReference: string, candidateDigest: string, publisherEvidence: string, consumerEvidence: string, sourceCommit: string) => runNode(
+        'scripts/vercel/promote-image.mjs',
+        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        [
+          '--reference', candidateReference,
+          '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+          '--source-commit', sourceCommit,
+          '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/200#publisher-smoke',
+          '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/201#consumer-smoke',
+          '--publisher-team', 'publisher-team', '--publisher-project', 'publisher-project',
+          '--consumer-team', 'consumer-team', '--consumer-project', 'consumer-project',
+          '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
+          '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
+          '--publisher-evidence', publisherEvidence, '--consumer-evidence', consumerEvidence,
+        ],
+      );
+      const first = await invoke(reference, digest, firstPublisher, firstConsumer, '4af448f5daba0f9daf02071250f4f5ad389c80df');
+      expect(first.code).toBe(0);
+
+      const secondDigest = 'sha256:' + 'c'.repeat(64);
+      const secondReference = `vcr.vercel.com/publisher-team/publisher-project/devbox@${secondDigest}`;
+      const secondPublisher = validEvidence('publisher', 'publisher-team-id', 'publisher-project-id') as any;
+      const secondConsumer = validEvidence('consumer', 'consumer-team-id', 'consumer-project-id') as any;
+      for (const report of [secondPublisher, secondConsumer]) {
+        report.imageReference = secondReference;
+        report.expectedDigest = secondDigest;
+        report.smokeUrl = report.role === 'publisher'
+          ? 'https://github.com/gannonh/devbox/actions/runs/200#publisher-smoke'
+          : 'https://github.com/gannonh/devbox/actions/runs/201#consumer-smoke';
+      }
+      const secondPublisherPath = join(temp, 'second-publisher.json');
+      const secondConsumerPath = join(temp, 'second-consumer.json');
+      await writeFile(secondPublisherPath, JSON.stringify(secondPublisher));
+      await writeFile(secondConsumerPath, JSON.stringify(secondConsumer));
+      const second = await invoke(secondReference, secondDigest, secondPublisherPath, secondConsumerPath, '5bf448f5daba0f9daf02071250f4f5ad389c80df');
+      expect(second.code).toBe(0);
+      const promoted = await readFile(sourcePath, 'utf8');
+      expect(promoted).toContain(`'${secondReference}'`);
+      expect(promoted).toContain("sourceCommit: '5bf448f5daba0f9daf02071250f4f5ad389c80df'");
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

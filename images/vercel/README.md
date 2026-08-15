@@ -34,7 +34,7 @@ upgrade require HTTP Basic Auth.
 
 ```sh
 docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \
-  /usr/local/bin/devbox-start
+  sh -c '/usr/local/bin/devbox-start && exec sleep infinity'
 ```
 
 Run the local contract check before pushing; it executes bounded version probes

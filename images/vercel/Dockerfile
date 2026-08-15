@@ -8,12 +8,27 @@ FROM vcr.vercel.com/vercel/sandbox/universal@sha256:${UNIVERSAL_BASE_DIGEST}
 
 USER root
 ARG DEBIAN_FRONTEND=noninteractive
+# Reviewed 2026-08-14 against the Ubuntu-based Universal source; update this
+# date only with a deliberate base-distro/package-set review.
+ARG UBUNTU_SNAPSHOT=20260801T000000Z
 
 # Universal already supplies the agents, runtimes, git, gh, sudo, and common
 # utilities.  This layer adds only the headed display and authenticated noVNC
-# path needed by devbox.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# path needed by devbox.  The dated snapshot freezes both package metadata and
+# package payload selection for this pinned Universal base.
+RUN set -eux; \
+    . /etc/os-release; \
+    test "${ID}" = 'ubuntu'; \
+    test -n "${VERSION_CODENAME}"; \
+    test "$(dpkg --print-architecture)" = 'amd64'; \
+    rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; \
+    printf '%s\n' \
+      "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} ${VERSION_CODENAME} main restricted universe multiverse" \
+      "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} ${VERSION_CODENAME}-updates main restricted universe multiverse" \
+      "deb [check-valid-until=no] https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT} ${VERSION_CODENAME}-security main restricted universe multiverse" \
+      > /etc/apt/sources.list.d/devbox-snapshot.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
       ca-certificates \
       chromium \
       fluxbox \
@@ -24,8 +39,8 @@ RUN apt-get update \
       x11-xserver-utils \
       x11vnc \
       xdg-utils \
-      xvfb \
-    && rm -rf /var/lib/apt/lists/*
+      xvfb; \
+    rm -rf /var/lib/apt/lists/*
 
 # Chromium is launched by the explicit display script.  Keep the browser
 # usable in Firecracker without relying on an image ENTRYPOINT or CMD.

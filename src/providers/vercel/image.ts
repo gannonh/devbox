@@ -1,3 +1,5 @@
+import { isStrictEvidenceUrl } from './strict-url.js';
+
 /**
  * The promoted Vercel image contract.
  *
@@ -99,14 +101,6 @@ function parseUniversalReference(value: string): VercelImageReference {
   };
 }
 
-function isHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 function isVercelSlug(value: string): boolean {
   return new RegExp(`^${SLUG}$`).test(value);
 }
@@ -156,10 +150,10 @@ export function validateVercelImagePin(pin: VercelImagePin): VercelImagePinValid
     errors.push('sourceCommit is uninitialized');
   }
 
-  if (!isHttpsUrl(pin.publisherSmokeUrl)) {
+  if (!isStrictEvidenceUrl(pin.publisherSmokeUrl)) {
     errors.push('publisherSmokeUrl must be an HTTPS smoke evidence URL');
   }
-  if (!isHttpsUrl(pin.consumerSmokeUrl)) {
+  if (!isStrictEvidenceUrl(pin.consumerSmokeUrl)) {
     errors.push('consumerSmokeUrl must be an HTTPS smoke evidence URL');
   }
   if (pin.publisherSmokeUrl === pin.consumerSmokeUrl) {

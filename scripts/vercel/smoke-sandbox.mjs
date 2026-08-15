@@ -17,7 +17,8 @@ import {
   REQUIRED_SMOKE_CHECKS,
 } from './smoke-contract.mjs';
 import { fetchWithTimeout } from './http-probe.mjs';
-import { TERMINAL_SESSION_STATES, verifySandboxDeleted } from './sandbox-cleanup.mjs';
+import { TERMINAL_SESSION_STATES, verifySandboxDeleted, boundedCall } from './sandbox-cleanup.mjs';
+import { recoverOwnedResources } from './sandbox-owned-recovery.mjs';
 
 const role = process.env.SMOKE_ROLE;
 const image = process.env.IMAGE_REF;
@@ -65,6 +66,9 @@ const smokeDeadlineTimer = setTimeout(() => {
 }, smokeTimeoutMs);
 const smokeSignal = smokeController.signal;
 const password = randomBytes(24).toString('base64url');
+const ownedId = randomBytes(12).toString('hex');
+const ownedName = `devbox-smoke-${role}-${ownedId}`;
+const ownedTag = `smoke-${role}-${ownedId}`;
 const username = 'devbox-smoke';
 const report = {
   redacted: false,
@@ -73,6 +77,8 @@ const report = {
   imageReference: image,
   expectedDigest,
   smokeUrl,
+  ownedName,
+  ownedTag,
   startedAt: new Date(startedAtMs).toISOString(),
   checks: [],
   timings: {},
@@ -231,7 +237,7 @@ async function listSnapshots(signal, targetName = sandbox.name) {
   return result.toArray();
 }
 
-async function listSessions(phase, target = sandbox, signal) {
+async function listSessions(phase, target = sandbox, signal, record = true) {
   const result = await target.listSessions({ limit: 100, sortOrder: 'asc', signal });
   const sessions = await result.toArray();
   const states = sessions.map((session) => ({
@@ -239,7 +245,8 @@ async function listSessions(phase, target = sandbox, signal) {
     status: session.status,
     observedAt: new Date().toISOString(),
   }));
-  report.sessionStates.push({ phase, states });
+  if (record) report.sessionStates.push({ phase, states });
+  else (report.cleanup.ownedSessionStates ??= []).push({ phase, states });
   return states;
 }
 
@@ -252,14 +259,14 @@ function isTransientCleanupError(error) {
     ['sandbox_stopping', 'sandbox_snapshotting'].includes(error.json?.error?.code);
 }
 
-async function verifyDeleted(signal) {
+async function verifyDeleted(name, signal, record = true) {
   const recoveryEvents = [];
   const result = await verifySandboxDeleted({
     timeoutMs: deleteVerifyTimeoutMs,
     operationTimeoutMs: sdkTimeoutMs,
     signal,
-    getSandbox: (options) => Sandbox.get({ ...credentials, name: sandbox.name, ...options }),
-    listSessions: (target, options) => listSessions(options.phase ?? 'after-delete-lookup', target, options.signal),
+    getSandbox: (options) => Sandbox.get({ ...credentials, name, ...options }),
+    listSessions: (target, options) => listSessions(options.phase ?? 'after-delete-lookup', target, options.signal, record),
     stopSandbox: (target, options) => target.stop(options),
     deleteSandbox: (target, options) => target.delete(options),
     isNotFound,
@@ -271,12 +278,46 @@ async function verifyDeleted(signal) {
       recoveryEvents.push(event);
     },
   });
-  if (recoveryEvents.length > 0) report.cleanup.recovery = recoveryEvents;
+  if (recoveryEvents.length > 0) {
+    report.cleanup.recovery ??= [];
+    report.cleanup.recovery.push(...recoveryEvents);
+  }
   if (result.errors.length > 0) {
     report.cleanup.errors ??= [];
     report.cleanup.errors.push(...result.errors);
   }
   return result;
+}
+
+async function recoverOwned(signal) {
+  const recovery = await recoverOwnedResources({
+    listSandboxes: ({ signal: requestSignal }) => boundedCall(
+      (innerSignal) => Sandbox.list({ ...credentials, namePrefix: ownedName, tags: { 'devbox-run': ownedTag }, signal: innerSignal }).then((page) => page.toArray()),
+      'owned smoke Sandbox discovery',
+      { signal: requestSignal, timeoutMs: sdkTimeoutMs },
+    ),
+    recoverSandbox: async (name, { signal: requestSignal }) => {
+      const result = await verifyDeleted(name, requestSignal, false);
+      if (!result.verified || !result.noRunningSession) throw new Error(`owned Sandbox ${name} was not fully deleted`);
+    },
+    listSnapshots: ({ signal: requestSignal }) => boundedCall(
+      (innerSignal) => Snapshot.list({ ...credentials, name: ownedName, limit: 100, signal: innerSignal }).then((page) => page.toArray()),
+      'owned smoke snapshot discovery',
+      { signal: requestSignal, timeoutMs: sdkTimeoutMs },
+    ),
+    deleteSnapshot: (snapshot, { signal: requestSignal }) => boundedCall(
+      (innerSignal) => snapshot.delete({ signal: innerSignal }),
+      `owned smoke snapshot ${snapshot.snapshotId ?? snapshot.id} deletion`,
+      { signal: requestSignal, timeoutMs: sdkTimeoutMs },
+    ),
+    signal,
+  });
+  report.cleanup.ownedRecovery = recovery;
+  if (recovery.errors.length > 0) {
+    report.cleanup.errors.push(...recovery.errors);
+    report.failed = true;
+  }
+  return recovery;
 }
 
 function finalSessionStatesAreTerminal() {
@@ -302,10 +343,11 @@ try {
   sandbox = await timed('create', (signal) => Sandbox.create({
     ...credentials,
     image,
+    name: ownedName,
     ports: [6081],
     persistent: false,
     timeout: 10 * 60 * 1000,
-    tags: { 'devbox-image': `smoke-${role}` },
+    tags: { 'devbox-image': `smoke-${role}`, 'devbox-run': ownedTag },
     signal,
   }), { timeoutMs: smokeTimeoutMs });
   report.sandboxName = sandbox.name;
@@ -453,13 +495,28 @@ try {
 
     try {
       await timed('delete', async (signal) => {
-        await sandbox.delete({ signal });
-        report.cleanup.deleted = true;
-        const verification = await verifyDeleted(signal);
+        let initialDeleteError;
+        try {
+          await boundedCall(
+            (requestSignal) => sandbox.delete({ signal: requestSignal }),
+            'initial Sandbox delete',
+            { signal, timeoutMs: sdkTimeoutMs },
+          );
+          report.cleanup.deleted = true;
+        } catch (error) {
+          initialDeleteError = error;
+          report.cleanup.recovery ??= [];
+          report.cleanup.recovery.push({ operation: 'initial-delete', outcome: 'rejected', detail: String(error).slice(0, 500) });
+        }
+        // Always verify/recover after the initial delete attempt, including a
+        // timeout or API rejection; the verifier itself never resumes.
+        const verification = await verifyDeleted(sandbox.name, signal);
         report.cleanup.deletionVerified = verification.verified;
         report.cleanup.noRunningSessionAfterDelete = verification.noRunningSession === true;
+        report.cleanup.stopped = report.cleanup.stopped || verification.noRunningSession === true;
+        report.cleanup.deleted = report.cleanup.deleted || verification.verified;
         if (!report.cleanup.deletionVerified || !report.cleanup.noRunningSessionAfterDelete) {
-          throw new Error('Sandbox deletion or no-running-session verification failed');
+          throw new Error(initialDeleteError ? 'initial delete rejected and recovery verification failed' : 'Sandbox deletion or no-running-session verification failed');
         }
         const residualAfterDelete = await listSnapshots(signal);
         report.snapshots = residualAfterDelete.map((snapshot) => ({ id: snapshot.snapshotId, status: snapshot.status }));
@@ -474,6 +531,25 @@ try {
       report.cleanup.deletionVerified = false;
       report.cleanup.noRunningSessionAfterDelete = false;
     }
+  }
+
+  try {
+    const ownedRecovery = await timed('owned-recovery', (signal) => recoverOwned(signal), {
+      signal: cleanupSignal,
+      timeoutMs: cleanupTimeoutMs,
+      respectSmokeDeadline: false,
+    });
+    if (ownedRecovery.errors.length === 0 && ownedRecovery.recoveredSandboxes.length > 0) {
+      report.cleanup.stopped = true;
+      report.cleanup.deleted = true;
+      report.cleanup.deletionVerified = true;
+      report.cleanup.noRunningSessionAfterDelete = true;
+      report.cleanup.snapshotsCleaned = true;
+    }
+  } catch (error) {
+    markCleanupFailure('deleted', error instanceof Error ? error.message : error);
+    report.cleanup.deletionVerified = false;
+    report.cleanup.noRunningSessionAfterDelete = false;
   }
   clearTimeout(cleanupTimer);
   report.cleanup.finalSessionStatesTerminal = finalSessionStatesAreTerminal();

@@ -31,7 +31,7 @@ function wait(ms, signal) {
   });
 }
 
-async function boundedCall(operation, label, { signal, timeoutMs }) {
+export async function boundedCall(operation, label, { signal, timeoutMs }) {
   throwIfAborted(signal);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`${label} has no remaining deadline`);
   const controller = new AbortController();
