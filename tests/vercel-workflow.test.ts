@@ -29,6 +29,11 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('--platform linux/amd64');
     expect(workflow).toContain('compression=zstd');
     expect(workflow).toContain('sha-${GITHUB_SHA}');
+    expect(workflow).toContain('UPSTREAM_COMMIT');
+    expect(workflow).toContain('provenance.json');
+    expect(workflow).not.toContain('UNIVERSAL_BASE_DIGEST');
+    expect(workflow).not.toContain('resolve-universal-digest.mjs');
+    expect(workflow).not.toContain('universal_digest');
     expect(workflow).toContain('wait-vcr-ready.mjs');
     expect(workflow).toContain('timeout-minutes: 45');
     expect(workflow).toContain('SMOKE_TIMEOUT_MS:');
@@ -36,6 +41,15 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('Preparing');
     expect(workflow).toContain('Unoptimized');
     expect(workflow).toContain('image_not_ready');
+  });
+
+  it('fails scheduled upstream drift closed before candidate publication', async () => {
+    const workflow = await workflowText();
+    expect(workflow).toContain('git ls-remote https://github.com/vercel/sandbox.git HEAD');
+    expect(workflow).toContain('upstream Universal provenance drift');
+    expect(workflow).toContain('reviewed provenance update');
+    expect(workflow).toContain('steps.provenance.outputs.upstream_commit');
+    expect(workflow).toContain('steps.provenance.outputs.ubuntu_base_reference');
   });
 
   it('serializes immutable tags and makes promotion branch/PR creation idempotent', async () => {
@@ -118,23 +132,29 @@ describe('Vercel image supply-chain workflow', () => {
     expect(runbook).toContain('vercel@58.11.0 sandbox snapshots delete');
     expect(runbook).toContain('devbox-smoke-publisher-');
     expect(runbook).toContain('devbox-smoke-consumer-');
-    expect(runbook).toContain('base-digest-probe-');
-    expect(runbook).toContain('RESOLVER_TAG');
+    expect(runbook).toContain('provenance.json');
+    expect(runbook).toContain('UPSTREAM_COMMIT');
     expect(runbook).toContain('--scope');
     expect(runbook).toContain('--tag');
     expect(runbook).toContain('sleep infinity');
     expect(imageReadme).toContain('sleep infinity');
   });
 
-  it('documents resolver evidence and manual digest-input artifact behavior', async () => {
+  it('documents mirrored Universal provenance and reviewed upstream updates', async () => {
     const workflow = await workflowText();
     const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
-    expect(workflow).toContain('base-digest.json');
-    expect(runbook).toContain('base-digest.json');
-    expect(runbook).not.toContain('base-digest-evidence.json');
-    expect(runbook).toContain('manual `universal_digest` input');
-    expect(runbook).toContain('resolver report is intentionally absent');
-    expect(runbook).toContain('selected-base.json');
+    const imageReadme = await readFile('images/vercel/README.md', 'utf8');
+    expect(workflow).toContain('provenance.json');
+    expect(workflow).toContain('git -C "${upstream_checkout}" fetch');
+    expect(workflow).toContain('pinned upstream Ubuntu Dockerfile hash mismatch');
+    expect(workflow).toContain('pinned upstream Universal Dockerfile hash mismatch');
+    expect(workflow).not.toContain('base-digest.json');
+    expect(runbook).toContain('provenance.json');
+    expect(runbook).toContain('upstream recipe');
+    expect(runbook).toContain('reviewed provenance update');
+    expect(runbook).not.toContain('universal_digest');
+    expect(imageReadme).toContain('provenance.json');
+    expect(imageReadme).not.toContain('UNIVERSAL_BASE_DIGEST');
   });
 
   it('documents the audited Vercel CLI version contract', async () => {
@@ -145,7 +165,7 @@ describe('Vercel image supply-chain workflow', () => {
 
   it('ships the workflow helper scripts', async () => {
     await Promise.all([
-      exists('scripts/vercel/resolve-universal-digest.mjs'),
+      exists('images/vercel/provenance.json'),
       exists('scripts/vercel/wait-vcr-ready.mjs'),
       exists('scripts/vercel/smoke-sandbox.mjs'),
       exists('scripts/vercel/smoke-contract.mjs'),

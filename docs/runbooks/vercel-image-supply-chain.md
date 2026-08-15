@@ -54,68 +54,54 @@ context, Dockerfile, checked-in pin, or workflow output.
 
 ## Image assets and local reproduction
 
-`images/vercel/` contains the focused Dockerfile and explicit runtime assets:
+`images/vercel/provenance.json` is the source of truth for the mirrored Universal
+inputs: the audited upstream repository and `UPSTREAM_COMMIT`, hashes of the
+upstream Ubuntu and Universal Dockerfiles, digest-pinned Ubuntu/Bun bases, the
+Node archive checksum, dated apt snapshot, and exact runtime package versions.
+The managed VMI digest and version inventory are parity evidence only; Docker
+never attempts to pull the managed VMI.
 
-- `Dockerfile` starts from `vcr.vercel.com/vercel/sandbox/universal` with a
-  required manifest digest build argument and adds Chromium, Xvfb, fluxbox,
-  x11vnc, noVNC/websockify, and the Basic Auth HTTP/WebSocket proxy. Apt uses
-  the reviewed dated `UBUNTU_SNAPSHOT` source, verifies an Ubuntu amd64 base,
-  and disables floating archive/security indexes.
-- `start-devbox.sh` starts every process explicitly and requires the runtime
-  `DEVBOX_NOVNC_PASSWORD`; it is not an image `ENTRYPOINT` or `CMD`.
-- `status-devbox.sh` checks the non-root identity and passwordless sudo, then
-  runs bounded five-second `--version`/`-version` probes for all four agents,
-  Node.js/Bun/Python/Chromium, `gh`, and the display/proxy binaries; runtime
-  mode also exits nonzero unless Xvfb, fluxbox, x11vnc, websockify, and the auth
-  proxy are all running.
-- `check-local-image.sh` inspects `Config.User`, `Config.Entrypoint`, and
-  `Config.Cmd`, then runs the status check with an explicit command.
+`images/vercel/Dockerfile` reproduces that reviewed upstream recipe, then adds
+Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the Basic Auth proxy.
+`start-devbox.sh` starts every service explicitly; the image clears its inherited
+shell command with an empty `CMD []`, so no runtime behavior depends on Docker
+defaults. `status-devbox.sh` and `check-local-image.sh` verify the non-root user,
+passwordless sudo, tools, display binaries, and empty runtime defaults.
 
-Resolve a base digest with a scoped Vercel credential, then build locally:
+Build and inspect the exact checked-in provenance locally:
 
 ```sh
-export VERCEL_TOKEN=... # shell environment only; never paste into logs
-export VERCEL_TEAM_ID=...
-export VERCEL_PROJECT_ID=...
-export VERCEL_PUBLISHER_TEAM_SLUG=...
-# VCR CLI calls in CI also pass --scope "$VERCEL_PUBLISHER_TEAM_SLUG".
-export BASE_DIGEST_EVIDENCE="$PWD/.vercel-image-evidence/base-digest.json"
-base_digest="$(node scripts/vercel/resolve-universal-digest.mjs)"
 docker buildx build \
   --platform linux/amd64 \
-  --build-arg "UNIVERSAL_BASE_DIGEST=${base_digest#sha256:}" \
   --load -t devbox-vercel:local images/vercel
 images/vercel/check-local-image.sh devbox-vercel:local
 ```
 
-The promoted artifact uses the same `linux/amd64` Buildx output with zstd
-compression. To update the apt snapshot, first verify the pinned Universal
-base's `/etc/os-release` codename and architecture, choose a dated snapshot
-that contains the reviewed package set, update `UBUNTU_SNAPSHOT` and its
-review date in the Dockerfile, then rerun the image asset, Buildx, smoke, and
-release gates; never restore a moving archive URL. Use a throwaway runtime
-password and keep the container alive
-while inspecting the explicit start:
+Use a throwaway runtime password and keep the container alive while checking the
+explicit startup path:
 
 ```sh
 docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \
   sh -c '/usr/local/bin/devbox-start && exec sleep infinity'
 ```
 
+To update Universal, fetch the proposed upstream commit, hash its
+`images/ubuntu/Dockerfile` and `images/universal/Dockerfile`, review recipe
+changes, then update every affected digest, checksum, version, and snapshot in
+`provenance.json` and the Dockerfile together. A reviewed provenance update must
+pass the local image check and both real Sandbox smoke gates; never update only
+the commit or restore floating inputs.
+
 ## Candidate, readiness, and smoke workflow
 
 Run **Actions → Vercel image supply chain → Run workflow** for a manual
-candidate, optionally supplying a full `sha256:<64 hex>` Universal digest.
-The nightly schedule resolves the current Universal digest by creating a
-short-lived Sandbox, compares it with the checked-in base digest, and skips
-unchanged runs. A changed digest follows exactly the same path and never
-merges a PR automatically.
-
-For a manual `universal_digest` input, the resolver is skipped and the resolver
-report is intentionally absent; review the supplied full digest together with
-`selected-base.json` instead. `base-digest.json` is expected only when the
-resolver actually runs, so its absence is expected for this manual-input case;
-the candidate and smoke evidence gates still apply.
+candidate. The workflow validates `provenance.json`, fetches the exact
+`UPSTREAM_COMMIT`, and verifies both recorded upstream Dockerfile hashes before
+building. The nightly schedule compares upstream HEAD with `UPSTREAM_COMMIT`.
+Unchanged provenance skips cleanly; drift fails closed with
+`upstream-drift.json` and requires a reviewed provenance update before the
+normal candidate, smoke, and promotion path can run. It never builds floating
+upstream state, auto-merges, or releases.
 
 The candidate job has a 45-minute GitHub Actions timeout. It gives each HTTP
 request 10 seconds, ordinary SDK calls 30 seconds, commands 60 seconds, each
@@ -124,7 +110,7 @@ minutes; these `SMOKE_*` bounds are intentionally explicit and should only be
 changed with a reviewed contract update.
 
 The workflow serializes candidate runs with a non-canceling concurrency group.
-The candidate tag includes both source commit and selected base digest; an
+The candidate tag includes the devbox source commit, upstream recipe commit, and Ubuntu base digest prefix; an
 existing tag is reused only after its `manifestDigest` matches the inspected
 candidate digest, and a mismatch fails closed. Promotion reuses an existing
 open branch PR instead of creating duplicate proposals; closed or merged PRs
@@ -134,7 +120,7 @@ The workflow:
 
 1. Installs the audited `vercel@58.11.0` CLI, then logs Buildx into VCR
    through `--password-stdin`, builds the immutable
-   `sha-<commit>-<base-digest>` tag for `linux/amd64` with zstd, and resolves
+   `sha-<commit>-<upstream-commit>-<ubuntu-digest>` tag for `linux/amd64` with zstd, and resolves
    its manifest digest.
 2. Verifies the flat publisher repository response with an explicit
    `--scope <publisher-team-slug>`, then correlates the publisher project/team
@@ -207,7 +193,7 @@ publisher-only candidate cannot update it.
 ## Rollback
 
 Rollback is a normal reviewed source change: restore a previously tested
-`VERCEL_IMAGE_REFERENCE`, its matching base/evidence metadata, and publish the
+`VERCEL_IMAGE_REFERENCE`, its matching provenance/evidence metadata, and publish the
 package through the normal release process. Do not retag a digest or edit a
 registry image in place. Existing **named Sandboxes retain their creation
 image** until they are removed; delete and recreate a named Sandbox to pick up
@@ -246,17 +232,6 @@ npx vercel@58.11.0 sandbox snapshots list \
   --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
   --name "${OWNED_SMOKE_NAME}"
 
-# Universal resolver probe resources, using the resolver report's exact name/tag.
-export RESOLVER_NAME='<base-digest-probe-name-from-report>'
-export RESOLVER_TAG='<base-digest-probe-tag-from-report>'
-npx vercel@58.11.0 sandbox list --all \
-  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
-  --name-prefix 'base-digest-probe-' \
-  --tag "devbox-run=${RESOLVER_TAG}"
-npx vercel@58.11.0 sandbox snapshots list \
-  --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}" \
-  --name "${RESOLVER_NAME}"
-
 # Delete only IDs/names confirmed by the matching report and listing.
 npx vercel@58.11.0 sandbox snapshots delete '<snapshot-id-from-list>' \
   --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}"
@@ -264,10 +239,7 @@ npx vercel@58.11.0 sandbox remove "${OWNED_SMOKE_NAME}" \
   --project "${VERCEL_PROJECT_ID}" --scope "${VERCEL_TEAM_SLUG}"
 ```
 
-Review the uploaded `publisher-smoke.json`, `consumer-smoke.json`, and
-`base-digest.json` first when the resolver ran; for a manual `universal_digest`
-input, review `selected-base.json` and the supplied digest instead because the
-resolver report is intentionally absent. Use the matching token/team/project scope
+Review the uploaded `provenance.json`, `publisher-smoke.json`, and `consumer-smoke.json`. Use the matching token/team/project scope
 and the unique `devbox-run` tag recorded in each report; delete only matching
 publisher, consumer, or resolver Sandboxes and snapshot IDs, never named user
 workspaces. Re-run the workflow after cleanup and confirm every matching

@@ -9,14 +9,18 @@ issue: https://github.com/gannonh/devbox/issues/4
 
 ## Decision
 
-Devbox's Vercel Sandbox image is built from a manifest-digest-pinned
-`vcr.vercel.com/vercel/sandbox/universal` base and is promoted only as a
-fully-qualified public VCR digest reference. The Dockerfile receives the base
-manifest digest as a required build argument, builds only `linux/amd64` with
-Buildx zstd output, and defines neither `ENTRYPOINT` nor `CMD`; Sandbox startup
-is explicit through `/usr/local/bin/devbox-start`.
+Devbox's Vercel Sandbox image mirrors the audited open-source Universal recipe
+at a full upstream commit. `images/vercel/provenance.json` pins the upstream
+Dockerfile hashes, digest-pinned Ubuntu and Bun bases, dated apt snapshot,
+download checksums, exact runtime versions, and observed managed-VMI parity.
+The managed VMI itself is not an OCI build base: credentialed Docker/Buildx
+pulls return `not found`, so the build never claims to derive from that
+inaccessible reference. The image builds only `linux/amd64` with Buildx zstd
+output, has no `ENTRYPOINT`, clears Ubuntu's inherited shell command with empty
+`CMD []`, and starts Sandbox services explicitly through
+`/usr/local/bin/devbox-start`.
 
-A candidate is immutable (`sha-<source-commit>-<base-digest>`), waits for VCR readiness under
+A candidate is immutable (`sha-<source-commit>-<upstream-commit>-<ubuntu-digest>`), waits for VCR readiness under
 an enforced child-process deadline, and must pass two real Sandbox gates:
 publisher-project filesystem/runtime checks and independent consumer-project
 public-pull checks. All VCR CLI calls use the audited `vercel@58.11.0` version
@@ -35,14 +39,18 @@ existing tags are reused only when their inspected manifest digest matches, and
 promotion branch/PR creation is idempotent for an open matching PR; closed
 or merged PRs do not suppress a new promotion proposal. Apt inputs come from a reviewed
 dated Ubuntu snapshot matched to the pinned base distro rather than a moving
-archive index. The pin in `src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
+archive index. Candidate validation fetches the exact upstream commit and
+recomputes both recorded Dockerfile hashes; release validation binds the pin to
+the exact checked-in provenance artifact. The pin in `src/providers/vercel/image.ts` is changed only by a reviewed promotion PR that
 consumes redacted publisher/consumer evidence for the exact digest, URLs,
 complete named checks, timings, scopes, and cleanup. Promotion also rejects
 empty IDs/URLs, non-HTTPS noVNC URLs, malformed or unordered ISO timestamps,
 insane durations, missing final owned-resource convergence, and malformed
 cleanup-error arrays. Evidence upload fails
-closed if redaction fails. A scheduled Universal-drift check may open that PR
-but cannot merge or release it.
+closed if redaction fails. A scheduled upstream drift check never builds
+floating inputs: unchanged provenance skips, while drift records evidence and
+requires a reviewed provenance/recipe update before the same candidate gates
+can run. It cannot merge or release changes.
 
 ## Rationale
 
@@ -56,9 +64,8 @@ unrelated identity fields from one aggregate response. Centralized artifact
 redaction receives both actual publisher and consumer token values in every
 redaction path, keeping readiness, session, snapshot, stage-timing, and cleanup
 evidence useful without placing credentials in logs or image layers. Owned
-Sandbox tags/names support recovery after lost handles, including bounded
-Universal digest probing and final snapshot verification. Because
-`Snapshot.list()` returns plain metadata, every cleanup resolves the metadata
+Sandbox tags/names support recovery after lost handles and final snapshot
+verification. Because `Snapshot.list()` returns plain metadata, every cleanup resolves the metadata
 `id` with `Snapshot.get` before bounded instance deletion; owned name/tag and
 snapshot discovery continue through an abortable cleanup grace window. Broad
 collection-discovery failures are never treated as empty results: a fresh final
@@ -81,7 +88,11 @@ errors fail the gate closed.
 
 - Floating `latest` or a bare project-relative image reference: these allow
   the tested bytes to differ from the promoted bytes.
-- Docker `ENTRYPOINT`/`CMD`: Vercel Sandbox ignores both for custom images.
+- Direct `FROM vcr.vercel.com/vercel/sandbox/universal`: authenticated live
+  Docker/Buildx checks prove the managed VMI is Sandbox-resolvable but not
+  OCI-pullable.
+- Runtime-bearing Docker `ENTRYPOINT`/`CMD`: Vercel Sandbox ignores both for
+  custom images; only an empty `CMD []` clears Ubuntu's inherited shell.
 - Scheduled auto-promotion: upstream drift must pass the same smoke and review
   gates as a manually requested candidate.
 - A registry visibility mutation in CI: public publication is a one-time,

@@ -12,13 +12,17 @@ async function text(path: string): Promise<string> {
 }
 
 describe('Vercel image assets', () => {
-  it('uses a digest-pinned Universal base and leaves runtime startup explicit', async () => {
+  it('uses a digest-pinned Ubuntu mirror and leaves runtime startup explicit', async () => {
     const dockerfile = await text(dockerfilePath);
     expect(dockerfile).toMatch(
-      /FROM vcr\.vercel\.com\/vercel\/sandbox\/universal@sha256:\$\{UNIVERSAL_BASE_DIGEST\}/,
+      /FROM docker\.io\/library\/ubuntu:26\.04@sha256:[a-f0-9]{64} AS ubuntu-base/,
     );
-    expect(dockerfile).not.toMatch(/^\s*(ENTRYPOINT|CMD)\b/m);
+    expect(dockerfile).not.toContain('vcr.vercel.com/vercel/sandbox/universal');
+    expect(dockerfile).not.toContain('UNIVERSAL_BASE_DIGEST');
+    expect(dockerfile).not.toMatch(/^\s*ENTRYPOINT\b/m);
+    expect(dockerfile.match(/^\s*CMD\b.*$/gm)).toEqual(['CMD []']);
     expect(dockerfile).toContain('USER ubuntu');
+    expect(dockerfile).toContain('ENV HOME=/vercel');
     expect(dockerfile).toContain('xvfb');
     expect(dockerfile).toContain('fluxbox');
     expect(dockerfile).toContain('x11vnc');
@@ -44,8 +48,11 @@ describe('Vercel image assets', () => {
     expect(startup).toContain('basic-auth-proxy.mjs');
     expect(startup).toContain('x11vnc');
     expect(startup).toContain('websockify');
+    expect(startup).toContain('127.0.0.1:${NOVNC_INTERNAL_PORT}');
     expect(startup).toContain('DEVBOX_NOVNC_PASSWORD');
     expect(status).toContain('sudo -n true');
+    expect(status).toContain("'Xvfb -help'");
+    expect(status).toContain("'websockify --help'");
     expect(status).toContain('exit "${failed}"');
     expect(status).toContain('%s=running');
     expect(status).toContain('%s=stopped');

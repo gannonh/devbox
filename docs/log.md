@@ -45,3 +45,6 @@
 
 ## 2026-08-15 (3)
 * **Vercel image live SDK API correction**: Added `sortBy: 'name'` to owned Sandbox discovery, bounded `Snapshot.list()` pages to 50 in resolver/smoke paths, aligned the runbook with `base-digest.json`, and documented manual digest-input runs without resolver evidence.
+
+## 2026-08-15 (4)
+* **Vercel Universal mirror correction**: Credentialed verification proved the managed Universal VMI is not OCI-pullable, so the user approved a deterministic mirror of its open-source recipe. Added checked-in provenance, digest/checksum/version pins, verified upstream Dockerfile hashes, an official pinned Chrome-for-Testing archive, empty inherited `CMD`, loopback-only internal noVNC, exact provenance-bound release validation, corrected live probes, and a successful local image/runtime/auth check.

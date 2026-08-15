@@ -39,8 +39,8 @@ check_image() {
     for probe in \
       'pi --version' 'claude --version' 'codex --version' 'opencode --version' \
       'gh --version' 'node --version' 'bun --version' 'python --version' \
-      'chromium --version' 'Xvfb -version' 'fluxbox --version' \
-      'x11vnc -version' 'websockify --version'; do
+      'chromium --version' 'Xvfb -help' 'fluxbox --version' \
+      'x11vnc -version' 'websockify --help'; do
       # shellcheck disable=SC2086
       if ! probe_binary ${probe}; then
         failed=1

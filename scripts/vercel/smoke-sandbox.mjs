@@ -385,10 +385,10 @@ try {
     'bun --version',
     'python --version',
     'chromium --version',
-    'Xvfb -version',
+    'Xvfb -help',
     'fluxbox --version',
     'x11vnc -version',
-    'websockify --version',
+    'websockify --help',
   ].map((probe) => probe.split(' '));
   let binaryProbesPassed = true;
   for (const [binary, versionFlag] of binaryProbes) {

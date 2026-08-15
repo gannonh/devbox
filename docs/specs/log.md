@@ -26,3 +26,6 @@
 
 ## 2026-08-15 (2)
 * **Vercel image final quality cleanup**: Required independent final owned listings, authoritative deleted/absent snapshot metadata, actual SDK behavior fixtures, open-only promotion PR reuse, pinned role-specific orphan cleanup, and fail-closed resolver evidence writes.
+
+## 2026-08-15 (3)
+* **Vercel image base correction**: Updated approved issue #4 after live VCR checks proved the managed Universal VMI cannot be used as an OCI `FROM`. The build now mirrors its pinned open-source recipe with checked provenance while retaining the immutable candidate, publisher/consumer smoke, cleanup, promotion, and rollback gates.

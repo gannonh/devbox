@@ -63,7 +63,7 @@ wait_for_display
 start_detached fluxbox env DISPLAY="${DISPLAY}" fluxbox
 start_detached x11vnc x11vnc -display "${DISPLAY}" -rfbport "${VNC_PORT}" -localhost -shared -forever -nopw
 wait_for_port "${VNC_PORT}"
-start_detached websockify websockify --web=/usr/share/novnc "${NOVNC_INTERNAL_PORT}" "127.0.0.1:${VNC_PORT}"
+start_detached websockify websockify --web=/usr/share/novnc "127.0.0.1:${NOVNC_INTERNAL_PORT}" "127.0.0.1:${VNC_PORT}"
 wait_for_port "${NOVNC_INTERNAL_PORT}"
 start_detached auth-proxy env \
   DEVBOX_NOVNC_PORT="${NOVNC_PORT}" \

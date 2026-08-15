@@ -22,7 +22,6 @@ import { deleteListedSnapshot } from '../scripts/vercel/snapshot-cleanup.mjs';
 
 const execFileAsync = promisify(execFile);
 const digest = 'sha256:' + 'a'.repeat(64);
-const baseDigest = 'sha256:' + 'b'.repeat(64);
 const reference = `vcr.vercel.com/publisher-team/publisher-project/devbox@${digest}`;
 
 function validEvidence(role: string, teamId: string, projectId: string) {
@@ -168,34 +167,27 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(deletes).toBeGreaterThanOrEqual(3);
   });
 
-  it('keeps the Universal digest resolver bounded and cleanup-safe', async () => {
-    const resolver = await readFile('scripts/vercel/resolve-universal-digest.mjs', 'utf8');
-    expect(resolver).toContain('AbortController');
-    expect(resolver).toContain('Sandbox.list');
-    expect(resolver).toContain('Snapshot.list');
-    expect(resolver).toContain('resume: false');
-    expect(resolver).toContain('verifySandboxDeleted');
-    expect(resolver).toContain('base-digest-probe');
+  it('does not ship the obsolete runtime Universal digest resolver', async () => {
+    await expect(access('scripts/vercel/resolve-universal-digest.mjs')).rejects.toThrow();
+    const workflow = await readFile('.github/workflows/vercel-image.yml', 'utf8');
+    expect(workflow).not.toContain('resolve-universal-digest.mjs');
+    expect(workflow).not.toContain('universal_digest');
+    expect(workflow).toContain('images/vercel/provenance.json');
   });
 
   it('uses live API-valid filters and bounded pages for owned cleanup', async () => {
-    const scripts = await Promise.all([
-      readFile('scripts/vercel/resolve-universal-digest.mjs', 'utf8'),
-      readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8'),
-    ]);
-    for (const source of scripts) {
-      const sandboxListCalls = [...source.matchAll(/Sandbox\.list\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
-      const ownedSandboxListCalls = sandboxListCalls.filter((call) => call.includes('namePrefix'));
-      expect(ownedSandboxListCalls.length).toBeGreaterThan(0);
-      for (const call of ownedSandboxListCalls) expect(call).toContain("sortBy: 'name'");
+    const source = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
+    const sandboxListCalls = [...source.matchAll(/Sandbox\.list\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
+    const ownedSandboxListCalls = sandboxListCalls.filter((call) => call.includes('namePrefix'));
+    expect(ownedSandboxListCalls.length).toBeGreaterThan(0);
+    for (const call of ownedSandboxListCalls) expect(call).toContain("sortBy: 'name'");
 
-      const snapshotListCalls = [...source.matchAll(/Snapshot\.list\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
-      expect(snapshotListCalls.length).toBeGreaterThan(0);
-      for (const call of snapshotListCalls) {
-        const limit = call.match(/limit\s*:\s*(\d+)/)?.[1];
-        expect(limit).toBeDefined();
-        expect(Number(limit)).toBeLessThanOrEqual(50);
-      }
+    const snapshotListCalls = [...source.matchAll(/Snapshot\.list\(\{([\s\S]*?)\}\)/g)].map((match) => match[1]);
+    expect(snapshotListCalls.length).toBeGreaterThan(0);
+    for (const call of snapshotListCalls) {
+      const limit = call.match(/limit\s*:\s*(\d+)/)?.[1];
+      expect(limit).toBeDefined();
+      expect(Number(limit)).toBeLessThanOrEqual(50);
     }
   });
 
@@ -484,7 +476,7 @@ describe('Vercel supply-chain script boundaries', () => {
         { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
         [
           '--reference', reference,
-          '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+          '--provenance-file', 'images/vercel/provenance.json',
           '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
           '--publisher-url', publisher.smokeUrl,
           '--consumer-url', consumer.smokeUrl,
@@ -502,33 +494,10 @@ describe('Vercel supply-chain script boundaries', () => {
     }
   });
 
-  it('fails Universal resolution when required evidence cannot be written', async () => {
-    const temp = await mkdtemp(join(tmpdir(), 'vercel-evidence-write-'));
-    try {
-      const blockedDirectory = join(temp, 'blocked');
-      await writeFile(blockedDirectory, 'not-a-directory');
-      const env = { ...process.env };
-      delete env.VERCEL_TOKEN;
-      delete env.VERCEL_TEAM_ID;
-      delete env.VERCEL_PROJECT_ID;
-      const result = await runNode('scripts/vercel/resolve-universal-digest.mjs', {
-        ...env,
-        BASE_DIGEST_TIMEOUT_MS: '20',
-        BASE_DIGEST_CLEANUP_TIMEOUT_MS: '20',
-        BASE_DIGEST_EVIDENCE: join(blockedDirectory, 'report.json'),
-      });
-      expect(result.code).not.toBe(0);
-      expect(result.stderr).toMatch(/evidence write/i);
-      expect(result.stderr).toMatch(/Universal digest|credentials|timed out/i);
-    } finally {
-      await rm(temp, { recursive: true, force: true });
-    }
-  });
-
   it('requires executable working-binary probes for image and Sandbox checks', async () => {
     const status = await readFile('images/vercel/status-devbox.sh', 'utf8');
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
-    for (const probe of ['pi --version', 'claude --version', 'codex --version', 'opencode --version', 'gh --version', 'node --version', 'bun --version', 'python --version', 'chromium --version', 'Xvfb -version', 'fluxbox --version', 'x11vnc -version', 'websockify --version']) {
+    for (const probe of ['pi --version', 'claude --version', 'codex --version', 'opencode --version', 'gh --version', 'node --version', 'bun --version', 'python --version', 'chromium --version', 'Xvfb -help', 'fluxbox --version', 'x11vnc -version', 'websockify --help']) {
       expect(status).toContain(probe);
       expect(smoke).toContain(probe);
     }
@@ -743,7 +712,7 @@ describe('Vercel supply-chain script boundaries', () => {
         { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
         [
           '--reference', reference,
-          '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+          '--provenance-file', 'images/vercel/provenance.json',
           '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
           '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/100#publisher-smoke',
           '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/101#consumer-smoke',
@@ -781,7 +750,7 @@ describe('Vercel supply-chain script boundaries', () => {
         { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
         [
           '--reference', candidateReference,
-          '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+          '--provenance-file', 'images/vercel/provenance.json',
           '--source-commit', sourceCommit,
           '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/200#publisher-smoke',
           '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/201#consumer-smoke',
@@ -811,7 +780,7 @@ describe('Vercel supply-chain script boundaries', () => {
       await writeFile(secondPublisherPath, JSON.stringify(secondPublisher));
       await writeFile(secondConsumerPath, JSON.stringify(secondConsumer));
       const second = await invoke(secondReference, secondDigest, secondPublisherPath, secondConsumerPath, '5bf448f5daba0f9daf02071250f4f5ad389c80df');
-      expect(second.code).toBe(0);
+      expect(second.code, second.stderr).toBe(0);
       const promoted = await readFile(sourcePath, 'utf8');
       expect(promoted).toContain(`'${secondReference}'`);
       expect(promoted).toContain("sourceCommit: '5bf448f5daba0f9daf02071250f4f5ad389c80df'");
@@ -842,7 +811,7 @@ describe('Vercel supply-chain script boundaries', () => {
           { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
           [
             '--reference', reference,
-            '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+            '--provenance-file', 'images/vercel/provenance.json',
             '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
             '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/100#publisher-smoke',
             '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/101#consumer-smoke',
@@ -886,7 +855,7 @@ describe('Vercel supply-chain script boundaries', () => {
           { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
           [
             '--reference', reference,
-            '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+            '--provenance-file', 'images/vercel/provenance.json',
             '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
             '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/100#publisher-smoke',
             '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/101#consumer-smoke',
@@ -920,7 +889,7 @@ describe('Vercel supply-chain script boundaries', () => {
         },
         [
           '--reference', reference,
-          '--base-reference', `vcr.vercel.com/vercel/sandbox/universal@${baseDigest}`,
+          '--provenance-file', 'images/vercel/provenance.json',
           '--source-commit', '4af448f5daba0f9daf02071250f4f5ad389c80df',
           '--publisher-url', 'https://github.com/gannonh/devbox/actions/runs/100#publisher-smoke',
           '--consumer-url', 'https://github.com/gannonh/devbox/actions/runs/101#consumer-smoke',

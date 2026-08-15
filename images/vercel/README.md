@@ -1,36 +1,36 @@
-# Vercel Sandbox image
+# Vercel Sandbox Universal mirror
 
-This image extends the digest-pinned `vcr.vercel.com/vercel/sandbox/universal`
-image with Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and a small
-HTTP/WebSocket Basic Auth proxy. Universal already supplies `pi`, Claude Code,
-Codex, OpenCode, Node.js, Bun, Python, `gh`, `sudo`, and common utilities.
+This image mirrors the audited open-source `vercel/sandbox` Universal recipe
+on digest-pinned Ubuntu and Bun bases, then adds Chromium, Xvfb, fluxbox,
+x11vnc, noVNC/websockify, and a small HTTP/WebSocket Basic Auth proxy. The
+checked-in [`provenance.json`](./provenance.json) is the source of truth for
+the upstream commit and recipe hashes, observed managed-VMI inventory, base
+references, Node checksum, apt snapshot, and exact runtime package versions.
 
 ## Build
 
-The Universal digest is intentionally supplied as a required build argument;
-there is no floating fallback:
+Build only the pinned `linux/amd64` image; the Dockerfile has no floating base
+fallback or runtime package-install path:
 
 ```sh
-export UNIVERSAL_BASE_DIGEST=sha256:<64-hex-digits>
 docker buildx build \
   --platform linux/amd64 \
-  --build-arg UNIVERSAL_BASE_DIGEST="${UNIVERSAL_BASE_DIGEST#sha256:}" \
   --load \
   -t devbox-vercel:local \
   images/vercel
 ```
 
 Build the promoted candidate through `.github/workflows/vercel-image.yml` so
-Buildx uses zstd compression and the exact base digest detected in the Vercel
-Sandbox.  Do not add credentials or source repositories to this context.
+Buildx uses zstd compression and the reviewed provenance. Do not add
+credentials or source repositories to this context.
 
 ## Runtime
 
 Vercel Sandbox ignores Docker `ENTRYPOINT` and `CMD`; call the explicit
 `/usr/local/bin/devbox-start` command after `Sandbox.create()`. Supply
 `DEVBOX_NOVNC_PASSWORD` through the SDK command environment. The exposed port
-is `DEVBOX_NOVNC_PORT` (6081 by default), and both `/vnc.html` and its WebSocket
-upgrade require HTTP Basic Auth.
+is `DEVBOX_NOVNC_PORT` (6081 by default), and both `/vnc.html` and its
+WebSocket upgrade require HTTP Basic Auth.
 
 ```sh
 docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \

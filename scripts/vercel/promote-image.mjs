@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Update the sole checked-in Vercel image pin after validated smoke evidence. */
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import {
   parseFullyQualifiedVcrReference,
@@ -16,7 +17,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
   args.set(key.slice(2), process.argv[index + 1]);
 }
 const required = [
-  'reference', 'base-reference', 'source-commit', 'publisher-url', 'consumer-url',
+  'reference', 'provenance-file', 'source-commit', 'publisher-url', 'consumer-url',
   'publisher-team', 'publisher-project', 'consumer-team', 'consumer-project',
   'publisher-team-id', 'publisher-project-id', 'consumer-team-id', 'consumer-project-id',
   'publisher-evidence', 'consumer-evidence',
@@ -26,14 +27,8 @@ for (const key of required) {
 }
 
 const reference = args.get('reference');
-const baseReference = args.get('base-reference');
+const provenancePath = args.get('provenance-file');
 const imageInfo = parseFullyQualifiedVcrReference(reference);
-if (!/^vcr\.vercel\.com\/vercel\/sandbox\/universal@sha256:[a-f0-9]{64}$/.test(baseReference)) {
-  throw new Error('base reference must be a digest-pinned Universal VCR reference');
-}
-if (!/^sha256:[a-f0-9]{64}$/.test(baseReference.slice(baseReference.indexOf('@') + 1))) {
-  throw new Error('base reference must contain a full sha256 digest');
-}
 if (!/^[a-f0-9]{40}$/.test(args.get('source-commit'))) {
   throw new Error('source commit must be a full commit SHA');
 }
@@ -73,6 +68,33 @@ function validTiming(timing) {
     Math.abs(timing.durationMs - (finishedMs - startedMs)) <= 1_000 &&
     Math.abs(timing.durationMs - (timing.finishedEpochMs - timing.startedEpochMs)) <= 1_000;
 }
+let provenanceRaw;
+let provenance;
+try {
+  provenanceRaw = await readFile(provenancePath, 'utf8');
+  provenance = JSON.parse(provenanceRaw);
+} catch {
+  throw new Error('provenance file must be valid JSON');
+}
+if (
+  provenance.schemaVersion !== 1 ||
+  provenance.platform !== 'linux/amd64' ||
+  !/^https:\/\/github\.com\/vercel\/sandbox$/.test(provenance.upstream?.repository ?? '') ||
+  !/^[a-f0-9]{40}$/.test(provenance.upstream?.commit ?? '') ||
+  !/^[a-f0-9]{64}$/.test(provenance.upstream?.ubuntuDockerfileSha256 ?? '') ||
+  !/^[a-f0-9]{64}$/.test(provenance.upstream?.universalDockerfileSha256 ?? '') ||
+  !/^sha256:[a-f0-9]{64}$/.test(provenance.observedManagedVmi?.digest ?? '') ||
+  !/^docker\.io\/library\/ubuntu:26\.04@sha256:[a-f0-9]{64}$/.test(provenance.baseImages?.ubuntu ?? '') ||
+  !/^docker\.io\/oven\/bun:1\.3\.14@sha256:[a-f0-9]{64}$/.test(provenance.baseImages?.bun ?? '') ||
+  !/^24\.19\.0$/.test(provenance.node?.version ?? '') ||
+  provenance.node?.platform !== 'linux-x64' ||
+  !/^[a-f0-9]{64}$/.test(provenance.node?.sha256 ?? '') ||
+  !/^\d{8}T\d{6}Z$/.test(provenance.aptSnapshot ?? '')
+) {
+  throw new Error('provenance file does not match the audited Universal mirror contract');
+}
+const provenanceDigest = `sha256:${createHash('sha256').update(provenanceRaw).digest('hex')}`;
+
 if (args.get('publisher-team') !== imageInfo.team || args.get('publisher-project') !== imageInfo.project) {
   throw new Error('publisher scope must match the candidate image reference');
 }
@@ -247,8 +269,14 @@ source = source.replace(
   `export const VERCEL_IMAGE_REFERENCE =\n  '${reference}';`,
 );
 if (!source.includes(`'${reference}'`)) throw new Error('could not update VERCEL_IMAGE_REFERENCE');
-replaceStringField('baseReference', baseReference);
-replaceStringField('baseDigest', baseReference.slice(baseReference.indexOf('@') + 1));
+const provenanceSource = `export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = ${JSON.stringify(provenance, null, 2)};`;
+const provenancePattern = /export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = \{[\s\S]*?\n\};/m;
+const nextSource = source.replace(provenancePattern, provenanceSource);
+if (nextSource === source && !provenancePattern.test(source)) {
+  throw new Error('could not update VERCEL_IMAGE_PROVENANCE');
+}
+source = nextSource;
+replaceStringField('provenanceDigest', provenanceDigest);
 replaceStringField('sourceCommit', args.get('source-commit'));
 replaceStringField('publisherSmokeUrl', args.get('publisher-url'));
 replaceStringField('consumerSmokeUrl', args.get('consumer-url'));
