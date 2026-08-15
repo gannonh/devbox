@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 const obsoletePaths = [
   'dist/commands/attach.',
@@ -32,9 +33,18 @@ describe('package build artifacts', () => {
     expect(packageJson.scripts?.build).toMatch(/clean/);
     expect(packageJson.scripts?.prepack).toContain('build');
 
-    const files = packageFiles();
-    for (const obsoletePath of obsoletePaths) {
-      expect(files.some((file) => file.startsWith(obsoletePath))).toBe(false);
+    const stalePath = join(process.cwd(), 'dist', 'commands', 'attach.js');
+    mkdirSync(dirname(stalePath), { recursive: true });
+    writeFileSync(stalePath, '// stale build output\n');
+
+    try {
+      const files = packageFiles();
+      expect(existsSync(stalePath)).toBe(false);
+      for (const obsoletePath of obsoletePaths) {
+        expect(files.some((file) => file.startsWith(obsoletePath))).toBe(false);
+      }
+    } finally {
+      rmSync(stalePath, { force: true });
     }
   });
 });

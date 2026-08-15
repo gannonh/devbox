@@ -144,6 +144,24 @@ describe('CLI provider routing', () => {
     }
   });
 
+  it('rejects invalid init flags even when init help is requested', async () => {
+    const cases: Array<{ args: string[]; message: string }> = [
+      { args: ['init', '--help', '--provider', 'local'], message: 'unknown or misplaced option for init' },
+      { args: ['init', '--help', '--unknown'], message: 'unknown or misplaced option for init' },
+    ];
+
+    for (const { args, message } of cases) {
+      const io = streams();
+      const code = await dispatch(args, io, {
+        repoRoot: '/repo',
+        registry: { local: provider('local'), vercel: provider('vercel') },
+        tty: false,
+      });
+      expect(code, args.join(' ')).toBe(2);
+      expect(io.output().stderr.toLowerCase(), args.join(' ')).toContain(message);
+    }
+  });
+
   it('propagates provider operation errors with their stable exit code', async () => {
     const local = provider('local');
     local.up = vi.fn(async () => {

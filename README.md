@@ -49,10 +49,11 @@ npx @gannonh/devbox <branch> --stop                  # stop (keeps worktree + co
 npx @gannonh/devbox <branch> --rm                    # remove container + worktree + branch
 npx @gannonh/devbox <branch> --url                   # print the noVNC URL
 npx @gannonh/devbox <branch> --open                  # open the noVNC URL in a browser
-npx @gannonh/devbox <branch> --password              # retrieve display credentials
+npx @gannonh/devbox <branch> --password              # unsupported by the local provider
 npx @gannonh/devbox --list                           # list local devbox containers
 npx @gannonh/devbox --provider local --list          # filter list by provider
 
+# `--password` is unsupported by the local provider and returns a concise error.
 # `vercel` is reserved for a future release; local is the only implemented provider.
 npx @gannonh/devbox --provider vercel <branch>
 ```

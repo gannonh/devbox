@@ -356,16 +356,19 @@ export function parseCliArgs(args: string[]): ParsedCommand {
   if (first === '--help' || first === '-h') return { kind: 'help', scope: 'global' };
 
   if (first === 'init') {
-    if (rest.includes('--help') || rest.includes('-h')) return { kind: 'help', scope: 'init' };
     let force = false;
+    let help = false;
     for (const flag of rest) {
       if (flag === '--force') {
         if (force) return usageError('duplicate --force flag');
         force = true;
+      } else if (flag === '--help' || flag === '-h') {
+        help = true;
       } else {
         return usageError(`unknown or misplaced option for init: ${flag}`);
       }
     }
+    if (help) return { kind: 'help', scope: 'init' };
     return { kind: 'init', force };
   }
 
@@ -421,6 +424,13 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+type ExitCodeCarrier = { exitCode?: unknown };
+
+function errorExitCode(error: unknown, fallback: number): number {
+  if (typeof error !== 'object' || error === null || !('exitCode' in error)) return fallback;
+  return Number((error as ExitCodeCarrier).exitCode) || fallback;
+}
+
 function errorWasReported(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'reported' in error
     && (error as { reported?: unknown }).reported === true;
@@ -433,9 +443,7 @@ async function runProviderOperation(
   try {
     return operationCode(await operation());
   } catch (error) {
-    const exitCode = typeof error === 'object' && error !== null && 'exitCode' in error
-      ? Number((error as { exitCode?: unknown }).exitCode) || 1
-      : 1;
+    const exitCode = errorExitCode(error, 1);
     if (!errorWasReported(error)) io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
     return exitCode;
   }
@@ -455,9 +463,7 @@ async function displayCredentials(
     io.stdout.write(`username: ${result.username}\npassword: ${result.password}\n`);
     return 0;
   } catch (error) {
-    const exitCode = typeof error === 'object' && error !== null && 'exitCode' in error
-      ? Number((error as { exitCode?: unknown }).exitCode) || 1
-      : 1;
+    const exitCode = errorExitCode(error, 1);
     if (!errorWasReported(error)) io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
     return exitCode;
   }
@@ -499,9 +505,7 @@ export async function dispatch(
   try {
     provider = resolveProvider(parsed.provider, registry);
   } catch (error) {
-    const exitCode = typeof error === 'object' && error !== null && 'exitCode' in error
-      ? Number((error as { exitCode?: unknown }).exitCode) || 1
-      : 2;
+    const exitCode = errorExitCode(error, 2);
     io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
     return exitCode;
   }
