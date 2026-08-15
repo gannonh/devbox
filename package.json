@@ -15,7 +15,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc",
+    "prepack": "npm run build",
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

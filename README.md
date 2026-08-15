@@ -42,14 +42,20 @@ Open the headed display in your browser (the `init` output and the ready banner 
 ## Commands
 
 ```bash
-npx @gannonh/devbox init              # scaffold config into this repo
-npx @gannonh/devbox <branch>          # boot (or re-enter) a box for a branch
-npx @gannonh/devbox <branch> --attach # re-enter a running box
-npx @gannonh/devbox <branch> --stop   # stop (keeps worktree + container)
-npx @gannonh/devbox <branch> --rm     # remove container + worktree + branch
-npx @gannonh/devbox <branch> --url    # print the noVNC URL
-npx @gannonh/devbox <branch> --open   # open the noVNC URL in a browser
-npx @gannonh/devbox --list            # list devbox containers + URLs
+npx @gannonh/devbox init                              # scaffold config into this repo
+npx @gannonh/devbox <branch>                          # boot a local box (default provider)
+npx @gannonh/devbox <branch> --attach                # re-enter a running box
+npx @gannonh/devbox <branch> --stop                  # stop (keeps worktree + container)
+npx @gannonh/devbox <branch> --rm                    # remove container + worktree + branch
+npx @gannonh/devbox <branch> --url                   # print the noVNC URL
+npx @gannonh/devbox <branch> --open                  # open the noVNC URL in a browser
+npx @gannonh/devbox <branch> --password              # unsupported by the local provider
+npx @gannonh/devbox --list                           # list local devbox containers
+npx @gannonh/devbox --provider local --list          # filter list by provider
+
+# `--password` is unsupported by the local provider and returns a concise error.
+# `vercel` is reserved for a future release; local is the only implemented provider.
+npx @gannonh/devbox --provider vercel <branch>
 ```
 
 ## What `init` creates

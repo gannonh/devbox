@@ -7,6 +7,7 @@
  */
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import type { Writable } from 'node:stream';
 
 export interface ShellRunner {
   /** Run a command, return stdout (trimmed). Throws on non-zero exit. */
@@ -31,10 +32,12 @@ export interface ExecOptions {
   stdin?: string;
   /** If true, suppress stderr output (pipe to /dev/null). */
   silentStderr?: boolean;
+  /** Route child stderr to a caller-owned stream instead of process.stderr. */
+  stderr?: Writable;
   /** If set, stream stdout chunks to this stream (e.g. process.stderr) with
    *  the given prefix, while also capturing into the returned stdout string.
    *  Used for devcontainer up so the user sees build progress live. */
-  streamStdoutTo?: { stream: NodeJS.WriteStream; prefix: string };
+  streamStdoutTo?: { stream: Writable; prefix: string };
 }
 
 export interface ExecResult {
@@ -57,9 +60,15 @@ export class RealShellRunner implements ShellRunner {
       const child = spawn(command, args, {
         cwd: options?.cwd,
         env: options?.env as Record<string, string> | undefined,
-        stdio: ['pipe', 'pipe', options?.silentStderr ? 'ignore' : 'inherit'],
+        stdio: ['pipe', 'pipe', options?.silentStderr ? 'ignore' : options?.stderr ? 'pipe' : 'inherit'],
       });
       let stdout = '';
+      let settled = false;
+      const finish = (result: ExecResult): void => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
       child.stdout?.on('data', (data: Buffer) => {
         stdout += data.toString();
         if (options?.streamStdoutTo) {
@@ -70,12 +79,22 @@ export class RealShellRunner implements ShellRunner {
           }
         }
       });
+      if (options?.stderr) {
+        child.stderr?.on('data', (data: Buffer) => {
+          options.stderr?.write(data);
+        });
+      }
       if (options?.stdin && child.stdin) {
         child.stdin.write(options.stdin);
         child.stdin.end();
       }
+      child.on('error', () => {
+        // Match shell command-not-found behavior while keeping execQuiet's
+        // non-throwing contract and the provider error boundary intact.
+        finish({ stdout, code: 127 });
+      });
       child.on('close', (code) => {
-        resolve({ stdout, code: code ?? 0 });
+        finish({ stdout, code: code ?? 0 });
       });
     });
   }
@@ -145,10 +164,16 @@ export function escapeShellSingleQuote(value: string): string {
 }
 
 /**
- * Check if a command is available on the system (like bash's `command -v`).
+ * Check if a command is available through a supplied shell runner.
+ * Providers use this seam so prerequisite failures remain testable without
+ * spawning host commands.
  */
-export async function commandExists(cmd: string): Promise<boolean> {
-  const { execQuiet } = new RealShellRunner();
-  const result = await execQuiet('which', [cmd], { silentStderr: true });
+export async function commandExistsWithRunner(runner: ShellRunner, cmd: string): Promise<boolean> {
+  const result = await runner.execQuiet('which', [cmd], { silentStderr: true });
   return result.code === 0;
+}
+
+/** Check if a command is available on the host. */
+export async function commandExists(cmd: string): Promise<boolean> {
+  return commandExistsWithRunner(new RealShellRunner(), cmd);
 }

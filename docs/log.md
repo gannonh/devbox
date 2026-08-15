@@ -23,18 +23,34 @@
 * **OKF navigation**: Linked the approved epic from the bundle and specs indexes; the GitHub issues remain the source of truth for the new specification.
 
 ## 2026-08-14 (3)
-* **Vercel image supply chain build**: Added the digest-pinned Universal-derived image, explicit display/auth-proxy runtime, local contract check, bounded readiness gate, publisher and independent consumer Sandbox smoke workflow, redacted evidence artifacts, reviewed promotion PR generation, release pin validation, and operator runbook for issue [#4](https://github.com/gannonh/devbox/issues/4).
+
+* **Provider foundation**: Added the typed lifecycle boundary and registry for Issue [#3](https://github.com/gannonh/devbox/issues/3), moved Docker/devcontainer lifecycle code under `src/providers/local/`, and preserved local as the default provider.
+* **CLI grammar**: Added `--provider local|vercel`, provider-filtered `--list`, `--password`, stable argument errors, and explicit unsupported results for local display credentials without adding Vercel SDK behavior.
+* **Architecture record**: Accepted [ADR 0001](./adrs/0001-provider-boundary.md) for the provider registry and local-provider isolation.
 
 ## 2026-08-14 (4)
-* **Vercel image supply-chain compliance hardening**: Enforced all display/proxy process health, cancellable readiness deadlines, token-distinct consumer scopes and identity checks, strict smoke-reference and pin-scope parsing, terminal session/deletion/snapshot cleanup, evidence-gated promotion, structured stage timings, normalized visibility parsing, and consumer credential rotation guidance; credentialed live verification remains outside the local boundary.
+
+* **Quality hardening**: Cleaned `dist` before builds and packs, handled missing child executables through the runner error boundary, and routed devcontainer stderr to caller-owned streams with regression coverage.
+* **Spec navigation**: Updated the implemented package design's source paths to the local provider layout and cross-linked ADR 0001.
+* **Residual risk**: The one-shot CLI still uses a module-global logger stream; converting it to a request-bound logger remains deferred to avoid widening the parity refactor.
 
 ## 2026-08-14 (5)
-* **Vercel image supply-chain second review fixes**: Correlated the documented flat VCR repository response with explicitly scoped project/team responses, pinned the audited Vercel CLI, made deletion lookup non-resuming, strengthened named-check/timing/URL evidence validation, and made artifact publication fail closed on redaction errors.
+
+* **Roadmap correction**: Updated the specs roadmap to show #3 implemented with complete acceptance evidence in open PR #8 (awaiting sign-off/merge), #4 as the remaining active Build phase, and #5 → #6 → #7 dependency order unchanged.
 
 ## 2026-08-14 (6)
-* **Vercel image supply-chain smoke liveness hardening**: Added abortable HTTP and bounded SDK/smoke/cleanup deadlines, eventual-consistency deletion recovery with final stop/delete attempts, executable version probes for required tools, and strict evidence primitive validation with malformed fixtures; credentialed live verification remains outside the local boundary.
+* **Vercel image supply chain build**: Added the digest-pinned Universal-derived image, explicit display/auth-proxy runtime, local contract check, bounded readiness gate, publisher and independent consumer Sandbox smoke workflow, redacted evidence artifacts, reviewed promotion PR generation, release pin validation, and operator runbook for issue [#4](https://github.com/gannonh/devbox/issues/4).
 
 ## 2026-08-14 (7)
+* **Vercel image supply-chain compliance hardening**: Enforced all display/proxy process health, cancellable readiness deadlines, token-distinct consumer scopes and identity checks, strict smoke-reference and pin-scope parsing, terminal session/deletion/snapshot cleanup, evidence-gated promotion, structured stage timings, normalized visibility parsing, and consumer credential rotation guidance; credentialed live verification remains outside the local boundary.
+
+## 2026-08-14 (8)
+* **Vercel image supply-chain second review fixes**: Correlated the documented flat VCR repository response with explicitly scoped project/team responses, pinned the audited Vercel CLI, made deletion lookup non-resuming, strengthened named-check/timing/URL evidence validation, and made artifact publication fail closed on redaction errors.
+
+## 2026-08-14 (9)
+* **Vercel image supply-chain smoke liveness hardening**: Added abortable HTTP and bounded SDK/smoke/cleanup deadlines, eventual-consistency deletion recovery with final stop/delete attempts, executable version probes for required tools, and strict evidence primitive validation with malformed fixtures; credentialed live verification remains outside the local boundary.
+
+## 2026-08-14 (10)
 * **Vercel image supply-chain quality corrections**: Made promotion repeatable, passed both real tokens to all redaction paths, recovered owned resources after lost handles, bounded Universal digest probing, serialized and idempotent candidate publication, pinned apt metadata to a reviewed Ubuntu snapshot, shared strict evidence URL validation, and corrected scoped orphan/runtime runbook commands.
 
 ## 2026-08-15
@@ -54,3 +70,7 @@
 
 ## 2026-08-15 (6)
 * **Final credential and evidence hardening**: Bound same-repository credentialed verification to a repository-owner-applied full-head-SHA label, restricted manual dispatch to the owner and default branch, isolated write-capable promotion from the read-only candidate job, commit-pinned third-party actions, passed only ten required Vercel secrets, rebuilt every run under a never-reused candidate tag, preserved byte-hashed exact-digest raw OCI/zstd proof, required complete correlated runtime inventories, reconciled transient deletion errors, and verified remote promotion branch ancestry/content before reuse.
+
+## 2026-08-15 (7)
+
+* **Verified phase integration**: Merged the verified provider foundation and Vercel image supply chain, preserved both ADRs and their history during branch convergence, and unblocked the core Vercel workspace lifecycle phase.

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { RealShellRunner, escapeShellSingleQuote, commandExists } from '../src/lib/shell.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -120,6 +121,23 @@ describe('RealShellRunner.execQuiet', () => {
     const runner = new RealShellRunner();
     const result = await runner.execQuiet('false', [], { silentStderr: true });
     expect(result.code).toBe(1);
+  });
+
+  it('returns a stable non-zero code when the executable is missing', async () => {
+    const runner = new RealShellRunner();
+    const result = await runner.execQuiet('/definitely/missing/devbox-command', [], { silentStderr: true });
+    expect(result).toEqual({ stdout: '', code: 127 });
+  });
+
+  it('routes child stderr to the caller-provided stream', async () => {
+    const runner = new RealShellRunner();
+    const stderr = new PassThrough();
+    let output = '';
+    stderr.on('data', (chunk) => { output += chunk.toString(); });
+
+    await runner.execQuiet(process.execPath, ['-e', "process.stderr.write('child stderr')"], { stderr });
+
+    expect(output).toBe('child stderr');
   });
 });
 

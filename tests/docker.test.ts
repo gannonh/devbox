@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { idLabel, containerFor, containerForAll, novncUrlFor, containerName } from '../src/lib/docker.js';
+import { idLabel, containerFor, containerForAll, novncUrlFor, containerName } from '../src/providers/local/docker.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {

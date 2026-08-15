@@ -1,9 +1,9 @@
 /**
  * devbox stop — stop the box (keeps worktree + container).
  */
-import type { LauncherContext } from '../lib/context.js';
-import { containerForAll } from '../lib/docker.js';
-import { warn, info } from '../lib/log.js';
+import type { LauncherContext } from './context.js';
+import { containerForAll } from './docker.js';
+import { warn, info } from '../../lib/log.js';
 
 export async function stop(ctx: LauncherContext, branch: string): Promise<number> {
   const { runner } = ctx;
