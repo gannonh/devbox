@@ -97,20 +97,21 @@ export async function resolveVercelCredentials(
     ) {
       throw new Error('Invalid Vercel OIDC token: OIDC payload must contain string owner_id and project_id');
     }
+    const oidcScope = {
+      teamId: payload.owner_id.trim(),
+      projectId: payload.project_id.trim(),
+    };
     const linkedScope = await readLinkedScope(options.repoRoot, false);
     if (
       linkedScope &&
-      (linkedScope.teamId !== payload.owner_id || linkedScope.projectId !== payload.project_id)
+      (linkedScope.teamId !== oidcScope.teamId || linkedScope.projectId !== oidcScope.projectId)
     ) {
       throw new Error('Vercel scope conflict between OIDC token and linked project');
     }
-    return { token: oidcToken, teamId: payload.owner_id, projectId: payload.project_id };
+    return { token: oidcToken, ...oidcScope };
   }
 
   const linkedScope = await readLinkedScope(options.repoRoot, true);
-  if (!linkedScope) {
-    throw new Error('Vercel project link is missing');
-  }
   if (options.deviceAuth) {
     return options.deviceAuth(linkedScope);
   }
@@ -122,6 +123,9 @@ async function authenticateWithDeviceAuth(
   scope: LinkedScope,
   options: CredentialResolutionOptions,
 ): Promise<VercelCredentials> {
+  if (!options.onDeviceAuthorization) {
+    throw new Error('onDeviceAuthorization callback is required for device authentication');
+  }
   const primitives: DeviceAuthPrimitives = {
     OAuth: options.deviceAuthPrimitives?.OAuth ?? sdkOAuth,
     pollForToken: options.deviceAuthPrimitives?.pollForToken ?? sdkPollForToken,
@@ -157,6 +161,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function readLinkedScope(repoRoot: string, required: true): Promise<LinkedScope>;
+function readLinkedScope(repoRoot: string, required: false): Promise<LinkedScope | null>;
 async function readLinkedScope(repoRoot: string, required: boolean): Promise<LinkedScope | null> {
   const pathname = join(repoRoot, '.vercel', 'project.json');
 
@@ -183,7 +189,7 @@ async function readLinkedScope(repoRoot: string, required: boolean): Promise<Lin
     ) {
       throw new Error('project.json must contain non-empty string orgId and projectId');
     }
-    return { teamId: parsed.orgId, projectId: parsed.projectId };
+    return { teamId: parsed.orgId.trim(), projectId: parsed.projectId.trim() };
   } catch (error) {
     throw new Error(
       `Malformed Vercel project link: ${error instanceof Error ? error.message : String(error)}`,

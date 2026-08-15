@@ -88,6 +88,27 @@ describe('Vercel credential resolution', () => {
     expect(deviceAuth).not.toHaveBeenCalled();
   });
 
+  it('trims linked and OIDC scope identifiers before comparing and returning them', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: ' linked-team ',
+      projectId: ' linked-project ',
+    }));
+    const oidc = `header.${Buffer.from(JSON.stringify({
+      owner_id: ' linked-team ',
+      project_id: ' linked-project ',
+    })).toString('base64url')}.signature`;
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: { VERCEL_OIDC_TOKEN: oidc },
+    })).resolves.toMatchObject({
+      teamId: 'linked-team',
+      projectId: 'linked-project',
+    });
+  });
+
   it('requires a linked project before device auth', async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
     const deviceAuth = vi.fn();
@@ -117,6 +138,44 @@ describe('Vercel credential resolution', () => {
 
     expect(deviceAuth).not.toHaveBeenCalled();
     expect(OAuth).not.toHaveBeenCalled();
+  });
+
+  it('requires a device authorization renderer on the real SDK auth path', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const OAuth = vi.fn();
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuthPrimitives: { OAuth },
+    })).rejects.toThrow(/onDeviceAuthorization/i);
+    expect(OAuth).not.toHaveBeenCalled();
+  });
+
+  it('allows a complete injected device auth function without a renderer', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'linked-team',
+      projectId: 'linked-project',
+    }));
+    const deviceAuth = vi.fn().mockResolvedValue({
+      token: 'device-token',
+      teamId: 'linked-team',
+      projectId: 'linked-project',
+    });
+
+    await expect(resolveVercelCredentials({ repoRoot, env: {}, deviceAuth })).resolves.toEqual({
+      token: 'device-token',
+      teamId: 'linked-team',
+      projectId: 'linked-project',
+    });
+    expect(deviceAuth).toHaveBeenCalledWith({ teamId: 'linked-team', projectId: 'linked-project' });
   });
 
   it('uses injected SDK auth primitives for device authentication', async () => {

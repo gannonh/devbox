@@ -50,9 +50,24 @@ export interface MetadataLock {
   release(): Promise<void>;
 }
 
+export interface MetadataLockOwner {
+  pid: number;
+  id: string;
+  acquiredAt: number;
+}
+
+export type MetadataLockOwnerWriter = (
+  handle: FileHandle,
+  owner: MetadataLockOwner,
+) => Promise<void>;
+
 export interface MetadataLockOptions {
   timeoutMs?: number;
   retryMs?: number;
+  staleLockMs?: number;
+  now?: () => number;
+  isProcessAlive?: (pid: number) => boolean;
+  ownerWriter?: MetadataLockOwnerWriter;
 }
 
 export interface VercelMetadataStore {
@@ -85,7 +100,7 @@ export function createVercelMetadataStore(
   return {
     path: pathname,
     lockPath,
-    read: async () => readMetadata(pathname),
+    read: async () => readMetadata(pathname, provider, repoKeyHash),
     write: async (metadata) => writeMetadata(pathname, directory, {
       ...metadata,
       schemaVersion: 1,
@@ -112,7 +127,11 @@ export function createVercelMetadataStore(
   };
 }
 
-async function readMetadata(pathname: string): Promise<VercelMetadata | null> {
+async function readMetadata(
+  pathname: string,
+  expectedProvider: string,
+  expectedRepoKeyHash: string,
+): Promise<VercelMetadata | null> {
   await assertSecureFileIfPresent(pathname, 'metadata');
   let content: string;
   try {
@@ -128,7 +147,7 @@ async function readMetadata(pathname: string): Promise<VercelMetadata | null> {
   } catch (error) {
     throw new Error(`Malformed Vercel metadata: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return parseMetadata(parsed);
+  return parseMetadata(parsed, expectedProvider, expectedRepoKeyHash);
 }
 
 async function writeMetadata(
@@ -178,42 +197,199 @@ async function acquireMetadataLock(
   await ensurePrivateDirectory(directory);
   const timeoutMs = options.timeoutMs ?? 10_000;
   const retryMs = options.retryMs ?? 25;
-  const startedAt = Date.now();
-  const owner = `${process.pid}:${randomUUID()}`;
-  let handle: FileHandle | undefined;
+  const staleLockMs = options.staleLockMs ?? 30_000;
+  const now = options.now ?? Date.now;
+  const isAlive = options.isProcessAlive ?? isProcessAlive;
+  const ownerWriter = options.ownerWriter ?? writeLockOwner;
+  const startedAt = now();
+  validateDuration(timeoutMs, 'timeoutMs');
+  validateDuration(retryMs, 'retryMs');
+  validateDuration(staleLockMs, 'staleLockMs');
 
-  while (!handle) {
+  while (true) {
+    const owner: MetadataLockOwner = {
+      pid: process.pid,
+      id: randomUUID(),
+      acquiredAt: now(),
+    };
+    let handle: FileHandle | undefined;
     try {
       handle = await open(lockPath, 'wx', FILE_MODE);
-      await handle.writeFile(owner, 'utf8');
-      await handle.sync();
+      await ownerWriter(handle, owner);
     } catch (error) {
-      if (handle) await handle.close();
-      handle = undefined;
+      if (handle) {
+        await unlinkOwnedLockAfterFailure(lockPath);
+        await closeHandle(handle);
+        throw error;
+      }
       if (!isNodeError(error, 'EEXIST')) throw error;
-      await assertSecureFileIfPresent(lockPath, 'metadata lock');
-      if (Date.now() - startedAt >= timeoutMs) {
+      const state = await inspectLock(lockPath, now(), staleLockMs, isAlive);
+      if (state === 'stale') {
+        await removeStaleLock(lockPath, now, staleLockMs, isAlive);
+        continue;
+      }
+      if (state === 'gone') continue;
+      if (now() - startedAt >= timeoutMs) {
         throw new Error(`Timed out waiting for Vercel metadata lock: ${lockPath}`);
       }
       await sleep(retryMs);
     }
+
+    if (!handle) continue;
+    let pathRemoved = false;
+    let handleClosed = false;
+    let released = false;
+    return {
+      path: lockPath,
+      release: async () => {
+        if (released) return;
+        let failure: unknown;
+        if (!pathRemoved) {
+          try {
+            await unlink(lockPath);
+            pathRemoved = true;
+          } catch (error) {
+            if (isNodeError(error, 'ENOENT')) pathRemoved = true;
+            else failure = error;
+          }
+        }
+        if (!handleClosed) {
+          try {
+            await handle!.close();
+            handleClosed = true;
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+        if (pathRemoved && handleClosed) released = true;
+        if (failure) throw failure;
+      },
+    };
+  }
+}
+
+async function writeLockOwner(handle: FileHandle, owner: MetadataLockOwner): Promise<void> {
+  await handle.writeFile(JSON.stringify(owner) + '\n', 'utf8');
+  await handle.sync();
+}
+
+async function unlinkOwnedLockAfterFailure(lockPath: string): Promise<void> {
+  try {
+    await unlink(lockPath);
+  } catch (error) {
+    if (!isNodeError(error, 'ENOENT')) return;
+  }
+}
+
+async function closeHandle(handle: FileHandle): Promise<void> {
+  try {
+    await handle.close();
+  } catch {
+    // The original owner-write failure is the actionable error.
+  }
+}
+
+type LockInspection = 'live' | 'stale' | 'gone';
+
+async function inspectLock(
+  lockPath: string,
+  now: number,
+  staleLockMs: number,
+  isAlive: (pid: number) => boolean,
+): Promise<LockInspection> {
+  let stats;
+  try {
+    stats = await lstat(lockPath);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return 'gone';
+    throw error;
+  }
+  if (!stats.isFile()) throw new Error(`Metadata lock path is not a regular file: ${lockPath}`);
+  if ((stats.mode & 0o077) !== 0) {
+    throw new Error(`Insecure metadata lock mode for ${lockPath}; expected owner-only access`);
   }
 
-  let released = false;
-  return {
-    path: lockPath,
-    release: async () => {
-      if (released) return;
-      released = true;
-      await handle?.close();
-      try {
-        const currentOwner = await readFile(lockPath, 'utf8');
-        if (currentOwner === owner) await unlink(lockPath);
-      } catch (error) {
-        if (!isNodeError(error, 'ENOENT')) throw error;
-      }
-    },
-  };
+  let raw: string;
+  try {
+    raw = await readFile(lockPath, 'utf8');
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return 'gone';
+    throw error;
+  }
+  const owner = parseLockOwner(raw);
+  if (owner && isAlive(owner.pid)) return 'live';
+  if (owner && !isAlive(owner.pid)) return 'stale';
+  return now - stats.mtimeMs >= staleLockMs ? 'stale' : 'live';
+}
+
+async function removeStaleLock(
+  lockPath: string,
+  now: () => number,
+  staleLockMs: number,
+  isAlive: (pid: number) => boolean,
+): Promise<void> {
+  const quarantinePath = `${lockPath}.${randomUUID()}.stale`;
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(lockPath, 'r');
+    const stats = await handle.stat();
+    if (!stats.isFile() || (stats.mode & 0o077) !== 0) return;
+    const raw = await handle.readFile('utf8');
+    const state = classifyLockContents(raw, stats.mtimeMs, now(), staleLockMs, isAlive);
+    if (state !== 'stale') return;
+    await rename(lockPath, quarantinePath);
+    await unlink(quarantinePath);
+  } catch (error) {
+    if (!isNodeError(error, 'ENOENT')) throw error;
+  } finally {
+    if (handle) await closeHandle(handle);
+  }
+}
+
+function parseLockOwner(raw: string): MetadataLockOwner | null {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!isRecord(value)) return null;
+    if (
+      typeof value.pid !== 'number' ||
+      !Number.isInteger(value.pid) ||
+      value.pid <= 0 ||
+      typeof value.id !== 'string' ||
+      value.id.length === 0 ||
+      typeof value.acquiredAt !== 'number' ||
+      !Number.isFinite(value.acquiredAt)
+    ) return null;
+    return { pid: value.pid, id: value.id, acquiredAt: value.acquiredAt };
+  } catch {
+    return null;
+  }
+}
+
+function classifyLockContents(
+  raw: string,
+  mtimeMs: number,
+  now: number,
+  staleLockMs: number,
+  isAlive: (pid: number) => boolean,
+): LockInspection {
+  const owner = parseLockOwner(raw);
+  if (owner && isAlive(owner.pid)) return 'live';
+  if (owner && !isAlive(owner.pid)) return 'stale';
+  return now - mtimeMs >= staleLockMs ? 'stale' : 'live';
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isNodeError(error, 'EPERM');
+  }
+}
+
+function validateDuration(value: number, field: string): void {
+  if (!Number.isFinite(value) || value < 0) throw new Error(`Metadata lock ${field} must be non-negative`);
 }
 
 async function ensurePrivateDirectory(directory: string): Promise<void> {
@@ -269,8 +445,27 @@ function serializeMetadata(metadata: VercelMetadata): Record<string, unknown> {
   return serialized;
 }
 
-function parseMetadata(value: unknown): VercelMetadata {
+function parseMetadata(
+  value: unknown,
+  expectedProvider: string,
+  expectedRepoKeyHash: string,
+): VercelMetadata {
   if (!isRecord(value)) throw new Error('Malformed Vercel metadata: expected an object');
+  const allowedFields = new Set([
+    'schemaVersion',
+    'provider',
+    'repoKeyHash',
+    'teamId',
+    'projectId',
+    'identity',
+    'sandboxId',
+    'snapshotIds',
+    'residual',
+  ]);
+  const unknownFields = Object.keys(value).filter((key) => !allowedFields.has(key));
+  if (unknownFields.length > 0) {
+    throw new Error(`Unknown Vercel metadata field(s): ${unknownFields.join(', ')}`);
+  }
   if (
     value.schemaVersion !== 1 ||
     typeof value.provider !== 'string' ||
@@ -279,6 +474,12 @@ function parseMetadata(value: unknown): VercelMetadata {
     typeof value.projectId !== 'string'
   ) {
     throw new Error('Malformed Vercel metadata: missing required non-secret fields');
+  }
+  if (value.provider !== expectedProvider) {
+    throw new Error(`Vercel metadata provider mismatch: expected ${expectedProvider}`);
+  }
+  if (value.repoKeyHash !== expectedRepoKeyHash) {
+    throw new Error('Vercel metadata repo key mismatch');
   }
   const metadata: VercelMetadata = {
     schemaVersion: 1,

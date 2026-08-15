@@ -73,15 +73,15 @@ export function sanitizeVercelName(value: string, maxLength = MAX_VERCEL_NAME_LE
   if (!Number.isInteger(maxLength) || maxLength < 1) {
     throw new Error('Vercel name maxLength must be a positive integer');
   }
-  let sanitized = value
+  const sanitized = value
     .normalize('NFKD')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-{2,}/g, '-');
-  if (!sanitized) sanitized = 'devbox';
-  sanitized = sanitized.slice(0, maxLength).replace(/-+$/g, '');
-  return sanitized || 'devbox';
+  const candidate = sanitized || 'devbox';
+  const bounded = candidate.slice(0, maxLength).replace(/-+$/g, '');
+  return bounded || 'd';
 }
 
 export function createVercelIdentity(input: VercelIdentityInput): VercelSandboxIdentity {

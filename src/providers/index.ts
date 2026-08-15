@@ -24,6 +24,8 @@ export {
 export type {
   MetadataLock,
   MetadataLockOptions,
+  MetadataLockOwner,
+  MetadataLockOwnerWriter,
   VercelMetadata,
   VercelMetadataIdentity,
   VercelMetadataInput,

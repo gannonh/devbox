@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createVercelIdentity,
   normalizeGitHubRemote,
+  sanitizeVercelName,
 } from '../src/providers/vercel/identity.js';
 
 describe('Vercel identity', () => {
@@ -48,5 +49,28 @@ describe('Vercel identity', () => {
       expect(variant.tags.identity).not.toBe(baseline.tags.identity);
       expect(variant.tags).not.toEqual(baseline.tags);
     }
+  });
+
+  it('honors every positive name length and hashes long shared prefixes', () => {
+    for (const maxLength of [1, 2, 3, 7, 31, 63]) {
+      const sanitized = sanitizeVercelName('A name with punctuation and a long suffix', maxLength);
+      expect(sanitized.length).toBeLessThanOrEqual(maxLength);
+      expect(sanitized).toMatch(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+    }
+
+    const shared = 'shared-prefix-'.repeat(12);
+    const first = createVercelIdentity({
+      remote: `https://github.com/${shared}owner/${shared}repo-a`,
+      branch: `${shared}branch-a`,
+      packageVersion: '1.2.3',
+    });
+    const second = createVercelIdentity({
+      remote: `https://github.com/${shared}owner/${shared}repo-b`,
+      branch: `${shared}branch-b`,
+      packageVersion: '1.2.3',
+    });
+
+    expect(first.name).not.toBe(second.name);
+    expect(first.tags.identity).not.toBe(second.tags.identity);
   });
 });
