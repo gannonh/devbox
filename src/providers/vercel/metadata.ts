@@ -9,6 +9,7 @@ export type {
 } from './metadata-lock.js';
 export type {
   VercelIdentityTags,
+  VercelCreateConfiguration,
   VercelMetadata,
   VercelMetadataIdentity,
   VercelMetadataInput,

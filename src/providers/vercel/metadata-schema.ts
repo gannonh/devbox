@@ -20,6 +20,17 @@ export interface VercelResidualMetadata {
   reason?: string;
 }
 
+export interface VercelCreateConfiguration {
+  imageReference: string;
+  sourceUrl: string;
+  sourceRevision: string;
+  requestedBranch: string;
+  needsBranchSetup: boolean;
+  persistent: true;
+  keepLastSnapshots: 1;
+  timeoutMs: number;
+}
+
 export interface VercelMetadataInput {
   teamId: string;
   projectId: string;
@@ -27,6 +38,7 @@ export interface VercelMetadataInput {
   sandboxId?: string;
   snapshotIds?: string[];
   residual?: VercelResidualMetadata;
+  configuration?: VercelCreateConfiguration;
 }
 
 export interface VercelMetadata extends VercelMetadataInput {
@@ -42,6 +54,7 @@ const INPUT_FIELDS = [
   'sandboxId',
   'snapshotIds',
   'residual',
+  'configuration',
 ] as const;
 const STORED_FIELDS = [
   'schemaVersion',
@@ -52,6 +65,16 @@ const STORED_FIELDS = [
 const IDENTITY_FIELDS = ['name', 'repository', 'branch', 'packageVersion', 'tags'] as const;
 const TAG_FIELDS = ['provider', 'repository', 'branch', 'version', 'identity'] as const;
 const RESIDUAL_FIELDS = ['sandboxIds', 'snapshotIds', 'reason'] as const;
+const CONFIGURATION_FIELDS = [
+  'imageReference',
+  'sourceUrl',
+  'sourceRevision',
+  'requestedBranch',
+  'needsBranchSetup',
+  'persistent',
+  'keepLastSnapshots',
+  'timeoutMs',
+] as const;
 
 export function validateMetadataInput(value: unknown): VercelMetadataInput {
   const input = expectRecord(value, 'Vercel metadata input');
@@ -63,6 +86,7 @@ export function validateMetadataInput(value: unknown): VercelMetadataInput {
     ...(input.sandboxId === undefined ? {} : { sandboxId: requireString(input.sandboxId, 'sandboxId') }),
     ...(input.snapshotIds === undefined ? {} : { snapshotIds: parseStringArray(input.snapshotIds, 'snapshotIds') }),
     ...(input.residual === undefined ? {} : { residual: parseResidual(input.residual) }),
+    ...(input.configuration === undefined ? {} : { configuration: parseConfiguration(input.configuration) }),
   };
 }
 
@@ -91,6 +115,7 @@ export function parseStoredMetadata(
     ...(stored.sandboxId === undefined ? {} : { sandboxId: stored.sandboxId }),
     ...(stored.snapshotIds === undefined ? {} : { snapshotIds: stored.snapshotIds }),
     ...(stored.residual === undefined ? {} : { residual: stored.residual }),
+    ...(stored.configuration === undefined ? {} : { configuration: stored.configuration }),
   });
   return { schemaVersion: 1, provider, repoKeyHash, ...input };
 }
@@ -135,6 +160,42 @@ function parseResidual(value: unknown): VercelResidualMetadata {
     ...(residual.sandboxIds === undefined ? {} : { sandboxIds: parseStringArray(residual.sandboxIds, 'residual.sandboxIds') }),
     ...(residual.snapshotIds === undefined ? {} : { snapshotIds: parseStringArray(residual.snapshotIds, 'residual.snapshotIds') }),
     ...(residual.reason === undefined ? {} : { reason: requireString(residual.reason, 'residual.reason') }),
+  };
+}
+
+function parseConfiguration(value: unknown): VercelCreateConfiguration {
+  const configuration = expectRecord(value, 'Vercel metadata configuration');
+  assertExactKeys(
+    configuration,
+    CONFIGURATION_FIELDS,
+    CONFIGURATION_FIELDS,
+    'Vercel metadata configuration',
+  );
+  if (configuration.needsBranchSetup !== true && configuration.needsBranchSetup !== false) {
+    throw new Error('Metadata configuration.needsBranchSetup must be a boolean');
+  }
+  if (configuration.persistent !== true) {
+    throw new Error('Metadata configuration.persistent must be true');
+  }
+  if (configuration.keepLastSnapshots !== 1) {
+    throw new Error('Metadata configuration.keepLastSnapshots must be 1');
+  }
+  if (
+    typeof configuration.timeoutMs !== 'number' ||
+    !Number.isFinite(configuration.timeoutMs) ||
+    configuration.timeoutMs <= 0
+  ) {
+    throw new Error('Metadata configuration.timeoutMs must be positive');
+  }
+  return {
+    imageReference: requireString(configuration.imageReference, 'configuration.imageReference'),
+    sourceUrl: requireString(configuration.sourceUrl, 'configuration.sourceUrl'),
+    sourceRevision: requireString(configuration.sourceRevision, 'configuration.sourceRevision'),
+    requestedBranch: requireString(configuration.requestedBranch, 'configuration.requestedBranch'),
+    needsBranchSetup: configuration.needsBranchSetup,
+    persistent: true,
+    keepLastSnapshots: 1,
+    timeoutMs: configuration.timeoutMs,
   };
 }
 

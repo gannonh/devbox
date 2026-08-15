@@ -6,6 +6,37 @@ import { join } from 'node:path';
 import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
 
 describe('Vercel metadata', () => {
+  it('stores non-secret create configuration for idempotent validation', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
+    const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });
+
+    await store.write({
+      teamId: 'team',
+      projectId: 'project',
+      configuration: {
+        imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
+        sourceUrl: 'https://github.com/acme/repo.git',
+        sourceRevision: 'main',
+        requestedBranch: 'feature/new',
+        needsBranchSetup: true,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+    });
+
+    await expect(store.read()).resolves.toMatchObject({
+      configuration: {
+        imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
+        sourceRevision: 'main',
+        requestedBranch: 'feature/new',
+        needsBranchSetup: true,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+    });
+  });
   it('writes and reads non-secret scope metadata with mode 0600', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({
