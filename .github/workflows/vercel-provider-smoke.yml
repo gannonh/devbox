@@ -16,11 +16,16 @@ on:
         required: true
         type: string
     secrets:
-      VERCEL_TOKEN:
+      # The credential source is the verified Issue #4 VERCEL_CONSUMER_* triad
+      # (devbox-uat Sandbox project). The smoke and redaction steps map those
+      # values into the script environment under the exact generic
+      # VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID names the smoke script
+      # requires; nothing is inherited or re-exported.
+      VERCEL_CONSUMER_TOKEN:
         required: true
-      VERCEL_TEAM_ID:
+      VERCEL_CONSUMER_TEAM_ID:
         required: true
-      VERCEL_PROJECT_ID:
+      VERCEL_CONSUMER_PROJECT_ID:
         required: true
       GITHUB_FIXTURE_TOKEN:
         required: true
@@ -192,9 +197,9 @@ jobs:
       - name: Run real provider smoke
         if: success() && steps.guard.outcome == 'success'
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GITHUB_FIXTURE_TOKEN: ${{ secrets.GITHUB_FIXTURE_TOKEN }}
           GITHUB_FIXTURE_REPOSITORY: ${{ secrets.GITHUB_FIXTURE_REPOSITORY }}
           GITHUB_FIXTURE_BRANCH: ${{ secrets.GITHUB_FIXTURE_BRANCH }}
@@ -208,9 +213,9 @@ jobs:
         id: redact
         if: always() && steps.guard.outcome == 'success'
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GITHUB_FIXTURE_TOKEN: ${{ secrets.GITHUB_FIXTURE_TOKEN }}
           GITHUB_FIXTURE_REPOSITORY: ${{ secrets.GITHUB_FIXTURE_REPOSITORY }}
           GITHUB_FIXTURE_BRANCH: ${{ secrets.GITHUB_FIXTURE_BRANCH }}

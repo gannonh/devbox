@@ -26,8 +26,35 @@ function environment(overrides: Record<string, string | undefined> = {}): Record
 }
 
 // The nine secret-backed fixture/credential inputs shared by the caller and
-// the reusable smoke workflow, derived from the single in-code contract.
-const PROVIDER_SMOKE_SECRETS = REQUIRED_VERCEL_PROVIDER_SMOKE_ENV.filter((name) => name !== 'SMOKE_REPORT');
+// the reusable smoke workflow. The Vercel triad is sourced from the verified
+// Issue #4 VERCEL_CONSUMER_* secrets; the script environment keeps the exact
+// generic VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID names through
+// PROVIDER_SMOKE_SECRET_TO_ENV.
+const PROVIDER_SMOKE_SECRETS = [
+  'VERCEL_CONSUMER_TOKEN',
+  'VERCEL_CONSUMER_TEAM_ID',
+  'VERCEL_CONSUMER_PROJECT_ID',
+  'GITHUB_FIXTURE_TOKEN',
+  'GITHUB_FIXTURE_REPOSITORY',
+  'GITHUB_FIXTURE_BRANCH',
+  'GITHUB_FIXTURE_DEFAULT_BRANCH',
+  'GITHUB_FIXTURE_EXPECTED_FILE',
+  'GITHUB_FIXTURE_EXPECTED_CONTENT',
+] as const;
+
+// Exact mapping from each workflow secret interface name to the script
+// environment name that receives its value in the smoke and redaction steps.
+const PROVIDER_SMOKE_SECRET_TO_ENV: Record<string, string> = {
+  VERCEL_CONSUMER_TOKEN: 'VERCEL_TOKEN',
+  VERCEL_CONSUMER_TEAM_ID: 'VERCEL_TEAM_ID',
+  VERCEL_CONSUMER_PROJECT_ID: 'VERCEL_PROJECT_ID',
+  GITHUB_FIXTURE_TOKEN: 'GITHUB_FIXTURE_TOKEN',
+  GITHUB_FIXTURE_REPOSITORY: 'GITHUB_FIXTURE_REPOSITORY',
+  GITHUB_FIXTURE_BRANCH: 'GITHUB_FIXTURE_BRANCH',
+  GITHUB_FIXTURE_DEFAULT_BRANCH: 'GITHUB_FIXTURE_DEFAULT_BRANCH',
+  GITHUB_FIXTURE_EXPECTED_FILE: 'GITHUB_FIXTURE_EXPECTED_FILE',
+  GITHUB_FIXTURE_EXPECTED_CONTENT: 'GITHUB_FIXTURE_EXPECTED_CONTENT',
+};
 
 // Parse a workflow YAML structurally (js-yaml is a transitive dep via
 // vitest/eslint; dynamic import keeps it out of package.json dependencies),
@@ -144,6 +171,11 @@ describe('Vercel provider smoke configuration', () => {
     for (const secret of PROVIDER_SMOKE_SECRETS) {
       expect(workflow).toMatch(new RegExp(`${secret}:[\\s\\S]*?required: true`));
     }
+    // The generic VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID names are the
+    // script environment contract only; they must never appear as secrets.
+    expect(workflow).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
+    expect(workflow).not.toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}');
+    expect(workflow).not.toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}');
   });
 
   it('defends reusable calls with trusted events and an exact full source SHA', async () => {
@@ -203,6 +235,12 @@ describe('Vercel provider smoke configuration', () => {
     }
     expect(Object.keys(secrets).sort()).toEqual([...PROVIDER_SMOKE_SECRETS].sort());
     expect(caller.secrets).not.toBe('inherit');
+    // The caller must source the Vercel triad from the consumer secrets; the
+    // generic secret names are absent from the repository.
+    const ciText = await readFile('.github/workflows/ci.yml', 'utf8');
+    expect(ciText).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
+    expect(ciText).not.toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}');
+    expect(ciText).not.toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}');
   });
 
   it('structurally parses the called workflow inputs, secrets, and evidence env contract', async () => {
@@ -233,8 +271,8 @@ describe('Vercel provider smoke configuration', () => {
     expect(JSON.stringify((steps[0] as Record<string, unknown>).env)).not.toContain('${{ secrets.');
     const smokeStep = steps.find((s) => s.name === 'Run real provider smoke') as Record<string, unknown>;
     const smokeEnv = smokeStep.env as Record<string, string>;
-    for (const name of PROVIDER_SMOKE_SECRETS) {
-      expect(smokeEnv[name]).toBe('${{ secrets.' + name + ' }}');
+    for (const secret of PROVIDER_SMOKE_SECRETS) {
+      expect(smokeEnv[PROVIDER_SMOKE_SECRET_TO_ENV[secret]]).toBe('${{ secrets.' + secret + ' }}');
     }
     expect(smokeEnv.SMOKE_REPORT).toBe('${{ env.ARTIFACT_DIR }}/provider-smoke.json');
     const upload = steps.find((s) => s.name === 'Upload redacted provider smoke evidence') as Record<string, unknown>;
@@ -277,8 +315,8 @@ describe('Vercel provider smoke configuration', () => {
     for (const line of workflow.split('\n').filter((value) => value.trim().startsWith('uses: '))) {
       expect(line).toMatch(/uses: [^@]+@[a-f0-9]{40}(?:\s+#.*)?$/);
     }
-    for (const name of REQUIRED_VERCEL_PROVIDER_SMOKE_ENV.filter((value) => value !== 'SMOKE_REPORT')) {
-      expect(workflow).toContain(name + ': ${{ secrets.' + name + ' }}');
+    for (const secret of PROVIDER_SMOKE_SECRETS) {
+      expect(workflow).toContain(PROVIDER_SMOKE_SECRET_TO_ENV[secret] + ': ${{ secrets.' + secret + ' }}');
     }
   });
 
@@ -300,7 +338,10 @@ describe('Vercel provider smoke configuration', () => {
     expect(workflow).toContain('Validate promoted image pin before credentials');
     expect(workflow).toContain('configuration; it uses no Vercel CLI or GitHub CLI.');
     expect(smokeStep).toContain("if: success() && steps.guard.outcome == 'success'");
-    expect(smokeStep).toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
+    expect(smokeStep).toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}');
+    expect(smokeStep).toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}');
+    expect(smokeStep).toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}');
+    expect(smokeStep).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
     expect(redactStep).toContain("if: always() && steps.guard.outcome == 'success'");
     expect(redactStep).toContain('GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.GITHUB_FIXTURE_EXPECTED_CONTENT }}');
     expect(smokeStep).not.toContain('steps.pin.outcome');

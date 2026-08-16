@@ -74,15 +74,28 @@ Create these exact repository secrets:
 
 | Secret | Contract |
 | --- | --- |
-| `VERCEL_TOKEN` | Least-privilege token for the Sandbox project |
-| `VERCEL_TEAM_ID` | Exact Vercel team/account ID for that token |
-| `VERCEL_PROJECT_ID` | Exact Vercel project ID for that token |
+| `VERCEL_CONSUMER_TOKEN` | Verified Issue #4 consumer token for the `devbox-uat` Sandbox project |
+| `VERCEL_CONSUMER_TEAM_ID` | Exact Vercel team/account ID for that consumer token |
+| `VERCEL_CONSUMER_PROJECT_ID` | Exact Vercel project ID for that consumer token |
 | `GITHUB_FIXTURE_TOKEN` | Read-only token able to clone the private fixture |
 | `GITHUB_FIXTURE_REPOSITORY` | Exact `owner/repository` pair |
 | `GITHUB_FIXTURE_BRANCH` | Branch expected to exist for the existing path |
 | `GITHUB_FIXTURE_DEFAULT_BRANCH` | Expected GitHub API default branch |
 | `GITHUB_FIXTURE_EXPECTED_FILE` | Safe relative POSIX path to assert after clone |
 | `GITHUB_FIXTURE_EXPECTED_CONTENT` | Exact expected file bytes (multiline allowed) |
+
+The Vercel credential source is the same `VERCEL_CONSUMER_*` triad verified by
+Issue #4 for the `devbox-uat` Sandbox project (shared with the image supply
+chain; the consumer token must not be the publisher token). The provider-smoke
+workflow declares these consumer names in its `workflow_call` secret interface,
+and the caller maps them explicitly; the smoke and redaction steps then place
+the values in the script environment under the exact generic
+`VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` names the smoke script
+requires. Generic `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` secrets
+are not used, nothing is inherited, and no value is re-exported. Manual
+`workflow_dispatch` runs resolve the same consumer names from the
+`vercel-provider-smoke` environment (GitHub does not support trigger-level
+`workflow_dispatch` secrets), so both dispatch paths share one secret contract.
 
 The script builds the checked-in production adapters and validates
 `VERCEL_IMAGE_PIN` before reading the cloud configuration. This checkout now

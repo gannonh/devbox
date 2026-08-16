@@ -63,9 +63,9 @@ describe('Vercel image supply-chain workflow', () => {
     expect(ci).not.toContain('pull_request_target');
     expect(ci).toMatch(/vercel-provider-smoke:[\s\S]*?permissions:\n\s+contents: read[\s\S]*?uses: \.\/\.github\/workflows\/vercel-provider-smoke\.yml/);
     for (const secret of [
-      'VERCEL_TOKEN',
-      'VERCEL_TEAM_ID',
-      'VERCEL_PROJECT_ID',
+      'VERCEL_CONSUMER_TOKEN',
+      'VERCEL_CONSUMER_TEAM_ID',
+      'VERCEL_CONSUMER_PROJECT_ID',
       'GITHUB_FIXTURE_TOKEN',
       'GITHUB_FIXTURE_REPOSITORY',
       'GITHUB_FIXTURE_BRANCH',
@@ -75,6 +75,12 @@ describe('Vercel image supply-chain workflow', () => {
     ]) {
       expect(ci).toContain(`${secret}: \${{ secrets.${secret} }}`);
     }
+    // The generic Vercel triad secret names are absent from the repository and
+    // must never be referenced by the caller; the smoke script still receives
+    // the exact generic names in its environment from the consumer secrets.
+    expect(ci).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
+    expect(ci).not.toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}');
+    expect(ci).not.toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}');
   });
 
   it('documents exact provider-smoke authorization and stale-label behavior', async () => {

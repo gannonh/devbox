@@ -115,8 +115,13 @@ effectively self-review (the event guard remains the boundary).
 
 Configure these repository secrets exactly:
 
-- `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` — one least-privilege
-  Vercel credential triad for the Sandbox project.
+- `VERCEL_CONSUMER_TOKEN`, `VERCEL_CONSUMER_TEAM_ID`, `VERCEL_CONSUMER_PROJECT_ID`
+  — the verified Issue #4 consumer credential triad for the `devbox-uat`
+  Sandbox project (the same secrets the image supply chain consumes). The
+  smoke workflow maps these values into the script environment under the exact
+  generic `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` names the smoke
+  script requires; nothing is inherited or re-exported. Generic
+  `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` secrets are not used.
 - `GITHUB_FIXTURE_TOKEN` — a read-only token that can clone the private fixture.
 - `GITHUB_FIXTURE_REPOSITORY` — exact `owner/repository`.
 - `GITHUB_FIXTURE_BRANCH` — the branch expected to exist for the `existing` path.
