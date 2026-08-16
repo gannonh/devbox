@@ -71,20 +71,21 @@ function validTiming(timing) {
     Math.abs(timing.durationMs - (timing.finishedEpochMs - timing.startedEpochMs)) <= 1_000;
 }
 const canonicalProvenancePath = 'images/vercel/provenance.json';
-let candidateProvenanceRaw;
-let canonicalProvenanceRaw;
-let candidateProvenance;
-let provenance;
-try {
-  [candidateProvenanceRaw, canonicalProvenanceRaw] = await Promise.all([
-    readFile(provenancePath, 'utf8'),
-    readFile(canonicalProvenancePath, 'utf8'),
-  ]);
-  candidateProvenance = JSON.parse(candidateProvenanceRaw);
-  provenance = JSON.parse(canonicalProvenanceRaw);
-} catch {
-  throw new Error('candidate and canonical provenance files must be valid JSON');
+async function readProvenanceFile(path, label) {
+  let raw;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch {
+    throw new Error(`${label} provenance file is missing or unreadable`);
+  }
+  try {
+    return { raw, parsed: JSON.parse(raw) };
+  } catch {
+    throw new Error(`${label} provenance file is not valid JSON`);
+  }
 }
+const candidateProvenance = (await readProvenanceFile(provenancePath, 'candidate')).parsed;
+const { raw: canonicalProvenanceRaw, parsed: provenance } = await readProvenanceFile(canonicalProvenancePath, 'canonical');
 if (
   !candidateProvenance || typeof candidateProvenance !== 'object' || Array.isArray(candidateProvenance) ||
   candidateProvenance.redacted !== true
