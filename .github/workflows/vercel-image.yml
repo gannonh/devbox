@@ -502,7 +502,7 @@ jobs:
       SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
       CANDIDATE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
       UPSTREAM_COMMIT: ${{ needs.candidate.outputs.upstream_commit }}
-      PROVENANCE_FILE: images/vercel/provenance.json
+      PROVENANCE_FILE: ${{ runner.temp }}/vercel-image-evidence/provenance.json
     steps:
       - name: Checkout verified source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

@@ -159,6 +159,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('id: redact_final');
     expect(workflow).toContain("if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}");
     expect(workflow).toContain('promote-image.mjs');
+    expect(workflow).toContain('PROVENANCE_FILE: ${{ runner.temp }}/vercel-image-evidence/provenance.json');
     expect(workflow).toContain('cross-project');
     expect(workflow).toContain('redacted');
     const publisherRedact = workflow.match(/- name: Redact publisher evidence[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';

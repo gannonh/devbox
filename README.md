@@ -145,12 +145,15 @@ credentials only; they are never command arguments, report fields, or files.
 If recovery finds an ambiguous duplicate, do not blindly run `--rm`: resolve it
 in the Vercel console or manually identify the exact owned resource first.
 
-The checked-in `VERCEL_IMAGE_PIN` is currently the intentional zero/unpromoted
-bootstrap pin. Until a reviewed image promotion replaces it, this workflow
-fails early with a blocked/not-run report; that is not evidence of a real
-provider execution. First-use device auth remains under the repository scope
-lock, so concurrent first-use commands serialize confirmation and credential
-persistence; later branch operations release the lock before the terminal.
+The checked-in `VERCEL_IMAGE_PIN` now references the reviewed public image and
+its independent Issue #4 publisher/consumer evidence. A local provider-smoke
+invocation therefore reaches credential validation and fails only when the
+required configuration is absent; that is not evidence of a provider
+execution. Real provider smoke still awaits a trusted default-branch
+credentialed workflow dispatch. First-use device auth remains under the
+repository scope lock, so concurrent first-use commands serialize confirmation
+and credential persistence; later branch operations release the lock before the
+terminal.
 
 ## Design spec
 

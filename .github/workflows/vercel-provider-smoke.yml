@@ -94,7 +94,7 @@ jobs:
 
       # dist/providers/vercel/image.js is compiled directly from the reviewed
       # src/providers/vercel/image.ts pin; no workflow image override is allowed.
-      - name: Reject an unpromoted image pin early
+      - name: Validate promoted image pin before credentials
         id: pin
         run: |
           set -euo pipefail
@@ -105,8 +105,8 @@ jobs:
           NODE
 
       # The script repeats the pin check before reading the secret-backed
-      # config, then writes a blocked report even when the checked-in pin is
-      # still zero. It uses no Vercel CLI or GitHub CLI.
+      # config. With a valid pin, a local invocation fails only on missing
+      # configuration; it uses no Vercel CLI or GitHub CLI.
       - name: Run real provider smoke
         if: always() && steps.guard.outcome == 'success'
         env:

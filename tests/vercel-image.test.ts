@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   parseVercelImageReference,
+  VERCEL_IMAGE_PIN,
   VERCEL_IMAGE_PROVENANCE,
   validateVercelImagePin,
 } from '../src/providers/vercel/image.js';
@@ -107,6 +108,15 @@ describe('Vercel image pin validation', () => {
       { ...pin, provenance: { ...VERCEL_IMAGE_PROVENANCE, aptSnapshot: '20260802T000000Z' } },
       raw,
     )).toThrow(/provenance does not match/);
+  });
+
+  it('keeps the checked-in pin provenance canonical and byte-digest bound', () => {
+    const raw = readFileSync('images/vercel/provenance.json', 'utf8');
+    const digest = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
+
+    expect(VERCEL_IMAGE_PIN.provenanceDigest).toBe(digest);
+    expect(JSON.stringify(VERCEL_IMAGE_PIN.provenance)).toBe(JSON.stringify(JSON.parse(raw)));
+    expect(validateVercelImagePin(VERCEL_IMAGE_PIN).ok).toBe(true);
   });
 
   it('rejects a floating tag, mismatched smoke reference, and unproven consumer', () => {

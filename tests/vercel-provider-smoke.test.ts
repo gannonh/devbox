@@ -70,9 +70,14 @@ describe('Vercel provider smoke configuration', () => {
       .toThrow(/owner\/repository/i);
   });
 
-  it('rejects the checked-in zero image pin before any provider API call', () => {
-    expect(() => assertPromotedVercelImagePin(VERCEL_IMAGE_PIN))
-      .toThrow(/blocked.*unpromoted|uninitialized/i);
+  it('accepts the checked-in promoted image pin before credential validation', () => {
+    expect(assertPromotedVercelImagePin(VERCEL_IMAGE_PIN)).toMatchObject({
+      registry: 'vcr.vercel.com',
+      team: 'astro-labs',
+      project: 'devbox',
+      repository: 'devbox',
+      digest: 'sha256:a4aa03890d74f5251f3861c4f6e96afeab3d0b7881b8206fa0de4223bdf051f7',
+    });
   });
 
   it('uses production Sandbox and terminal adapters with bounded cleanup evidence', async () => {
@@ -146,11 +151,13 @@ describe('Vercel provider smoke configuration', () => {
     }
   });
 
-  it('keeps secret-bearing smoke steps behind the trusted guard while preserving pin-blocked reports', async () => {
+  it('keeps secret-bearing smoke steps behind the trusted guard after pin validation', async () => {
     const workflow = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
     const smokeStep = workflow.match(/- name: Run real provider smoke[\s\S]*?(?=\n {6}- name:)/)?.[0] ?? '';
     const redactStep = workflow.match(/- name: Redact all provider smoke evidence[\s\S]*?(?=\n {6}- name:)/)?.[0] ?? '';
     expect(workflow).toContain('id: pin');
+    expect(workflow).toContain('Validate promoted image pin before credentials');
+    expect(workflow).toContain('configuration; it uses no Vercel CLI or GitHub CLI.');
     expect(smokeStep).toContain("if: always() && steps.guard.outcome == 'success'");
     expect(smokeStep).toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
     expect(redactStep).toContain("if: always() && steps.guard.outcome == 'success'");

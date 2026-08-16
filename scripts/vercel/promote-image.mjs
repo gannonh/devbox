@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /** Update the sole checked-in Vercel image pin after validated smoke evidence. */
-import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { inspect, isDeepStrictEqual } from 'node:util';
 import {
   parseFullyQualifiedVcrReference,
   REQUIRED_SMOKE_CHECKS,
@@ -68,13 +70,31 @@ function validTiming(timing) {
     Math.abs(timing.durationMs - (finishedMs - startedMs)) <= 1_000 &&
     Math.abs(timing.durationMs - (timing.finishedEpochMs - timing.startedEpochMs)) <= 1_000;
 }
-let provenanceRaw;
+const canonicalProvenancePath = 'images/vercel/provenance.json';
+let candidateProvenanceRaw;
+let canonicalProvenanceRaw;
+let candidateProvenance;
 let provenance;
 try {
-  provenanceRaw = await readFile(provenancePath, 'utf8');
-  provenance = JSON.parse(provenanceRaw);
+  [candidateProvenanceRaw, canonicalProvenanceRaw] = await Promise.all([
+    readFile(provenancePath, 'utf8'),
+    readFile(canonicalProvenancePath, 'utf8'),
+  ]);
+  candidateProvenance = JSON.parse(candidateProvenanceRaw);
+  provenance = JSON.parse(canonicalProvenanceRaw);
 } catch {
-  throw new Error('provenance file must be valid JSON');
+  throw new Error('candidate and canonical provenance files must be valid JSON');
+}
+if (
+  !candidateProvenance || typeof candidateProvenance !== 'object' || Array.isArray(candidateProvenance) ||
+  candidateProvenance.redacted !== true
+) {
+  throw new Error('candidate provenance must contain exactly top-level redacted:true');
+}
+const unredactedCandidateProvenance = { ...candidateProvenance };
+delete unredactedCandidateProvenance.redacted;
+if (!isDeepStrictEqual(unredactedCandidateProvenance, provenance)) {
+  throw new Error('redacted candidate provenance does not match canonical reviewed provenance');
 }
 if (
   provenance.schemaVersion !== 1 ||
@@ -91,9 +111,9 @@ if (
   !/^[a-f0-9]{64}$/.test(provenance.node?.sha256 ?? '') ||
   !/^\d{8}T\d{6}Z$/.test(provenance.aptSnapshot ?? '')
 ) {
-  throw new Error('provenance file does not match the audited Universal mirror contract');
+  throw new Error('canonical provenance file does not match the audited Universal mirror contract');
 }
-const provenanceDigest = `sha256:${createHash('sha256').update(provenanceRaw).digest('hex')}`;
+const provenanceDigest = `sha256:${createHash('sha256').update(canonicalProvenanceRaw).digest('hex')}`;
 
 if (args.get('publisher-team') !== imageInfo.team || args.get('publisher-project') !== imageInfo.project) {
   throw new Error('publisher scope must match the candidate image reference');
@@ -269,7 +289,20 @@ source = source.replace(
   `export const VERCEL_IMAGE_REFERENCE =\n  '${reference}';`,
 );
 if (!source.includes(`'${reference}'`)) throw new Error('could not update VERCEL_IMAGE_REFERENCE');
-const provenanceSource = `export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = ${JSON.stringify(provenance, null, 2)};`;
+function formatProvenance(value) {
+  const lines = inspect(value, { breakLength: Infinity, compact: false, depth: null }).split('\n');
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const line = lines[index].trim();
+    const nextLine = lines[index + 1].trim();
+    if (line === '}') {
+      lines[index] += ',';
+    } else if (line && (nextLine === '}' || nextLine === '},') && !/[,{]$/.test(line) && !line.endsWith('}')) {
+      lines[index] += ',';
+    }
+  }
+  return lines.join('\n');
+}
+const provenanceSource = `export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = ${formatProvenance(provenance)};`;
 const provenancePattern = /export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = \{[\s\S]*?\n\};/m;
 const nextSource = source.replace(provenancePattern, provenanceSource);
 if (nextSource === source && !provenancePattern.test(source)) {
@@ -285,5 +318,16 @@ replaceScopeField('consumer', args.get('consumer-team'), args.get('consumer-proj
 replaceEnumField('publisherSmokeStatus', ['pending', 'passed'], 'passed');
 replaceEnumField('consumerSmokeStatus', ['pending', 'passed'], 'passed');
 replaceBooleanField('crossProjectVerified', 'true');
-await writeFile(sourcePath, source);
+async function writeAtomically(path, content) {
+  const temporaryPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    const mode = (await stat(path)).mode;
+    await writeFile(temporaryPath, content, { encoding: 'utf8', mode, flag: 'wx' });
+    await rename(temporaryPath, path);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+await writeAtomically(sourcePath, source);
 console.log(`prepared promotion pin for ${reference}`);

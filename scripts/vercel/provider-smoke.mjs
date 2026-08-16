@@ -577,8 +577,8 @@ async function writeReport() {
 async function main() {
   let config;
   try {
-    // This is intentionally the first provider-specific operation. A zero or
-    // pending pin must fail before credentials or a cloud API are touched.
+    // This is intentionally the first provider-specific operation. An invalid
+    // pin must fail before credentials or a cloud API are touched.
     const image = assertPromotedVercelImagePin(VERCEL_IMAGE_PIN);
     initializeSecretValues();
     report.image = { digest: image.digest };
