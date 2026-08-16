@@ -309,6 +309,148 @@ describe('Vercel sandbox cleanup', () => {
     expect(result.errors).toEqual([]);
   });
 
+  it('preserves persistent stop errors when terminal relists cannot prove stop succeeded', async () => {
+    let sessionReads = 0;
+    const sandbox = {
+      name: 'persistent-stop-failure',
+      status: 'running' as const,
+      tags: identityTags,
+    };
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => sandbox),
+      listSessions: vi.fn(async () => {
+        sessionReads += 1;
+        if (sessionReads === 1) throw new Error('temporary session listing failure');
+        return [{ id: 'session', status: 'stopped' as const }];
+      }),
+      stop: vi.fn(async () => { throw new Error('stop unavailable'); }),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: sandbox.name,
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 2,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(false);
+    expect(result.sandboxDeleted).toBe(false);
+    expect(adapter.delete).not.toHaveBeenCalled();
+    expect(result.errors).toEqual(['sandbox stop: stop unavailable']);
+  });
+
+  it('clears a stop error after a later stop succeeds', async () => {
+    let stopAttempts = 0;
+    const sandbox = {
+      name: 'stop-recovers',
+      status: 'running' as const,
+      tags: identityTags,
+    };
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => sandbox),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stop: vi.fn(async () => {
+        stopAttempts += 1;
+        if (stopAttempts === 1) throw new Error('temporary stop failure');
+        return { id: 'session', status: 'stopped' as const };
+      }),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: sandbox.name,
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 3,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(true);
+    expect(adapter.stop).toHaveBeenCalledTimes(2);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('clears a stop error when a later terminal sandbox needs no stop', async () => {
+    let getCalls = 0;
+    const sandbox = {
+      name: 'stop-not-needed-after-terminal-transition',
+      status: 'stopped' as const,
+      tags: identityTags,
+    };
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => {
+        getCalls += 1;
+        return getCalls === 1 ? { ...sandbox, status: 'running' as const } : sandbox;
+      }),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stop: vi.fn(async () => { throw new Error('temporary stop failure'); }),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: sandbox.name,
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 3,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(true);
+    expect(adapter.stop).toHaveBeenCalledOnce();
+    expect(result.errors).toEqual([]);
+  });
+
+  it('clears a stop error after authoritative sandbox absence', async () => {
+    let getCalls = 0;
+    const sandbox = {
+      name: 'stop-resolved-by-absence',
+      status: 'running' as const,
+      tags: identityTags,
+    };
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => {
+        getCalls += 1;
+        if (getCalls > 1) throw Object.assign(new Error('not found'), { notFound: true });
+        return sandbox;
+      }),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stop: vi.fn(async () => { throw new Error('temporary stop failure'); }),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: sandbox.name,
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 2,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(true);
+    expect(result.sandboxMissing).toBe(true);
+    expect(adapter.stop).toHaveBeenCalledOnce();
+    expect(adapter.delete).not.toHaveBeenCalled();
+    expect(result.errors).toEqual([]);
+  });
+
   it('clears transient session listing and stop errors after terminal observation', async () => {
     let sessionReads = 0;
     let deleted = false;
