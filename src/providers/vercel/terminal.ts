@@ -5,19 +5,35 @@ import {
   startTimeoutExtension,
   type VercelTerminalTimeoutOptions,
 } from './terminal-timeout.js';
+import {
+  BoundedBufferQueue,
+  DEFAULT_BACKPRESSURE_TIMEOUT_MS,
+  DEFAULT_MAX_PENDING_INPUT_BYTES,
+  DEFAULT_MAX_PENDING_OUTPUT_BYTES,
+  MAX_CONTROL_FRAME_BYTES,
+  pauseSocket,
+  restoreReadableState,
+  resumeSocket,
+  validateByteLimit,
+  validateTimeoutLimit,
+} from './terminal-flow.js';
 
 export type { VercelTerminalTimeoutOptions, VercelTerminalTimeoutScheduler } from './terminal-timeout.js';
 
 const OPEN = 1;
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
+const DEFAULT_DETACH_SIGNALS = ['SIGTERM', 'SIGHUP'] as const;
 const TERM = 'xterm-256color';
 const PS1 = `▲ \x01\x1b[2m\x02$PWD/\x01\x1b[0m\x02 `;
 
 export interface VercelTerminalWebSocket extends EventEmitter {
   readonly readyState: number;
   readonly bufferedAmount?: number;
+  readonly isPaused?: boolean;
   send(data: Buffer | string, callback?: (error?: Error) => void): void | boolean;
+  pause?: () => void;
+  resume?: () => void;
   close(code?: number, reason?: string): void;
 }
 
@@ -70,6 +86,9 @@ export interface VercelTerminalOptions {
   detachSignals?: readonly ('SIGTERM' | 'SIGHUP')[];
   getSize?: () => VercelTerminalSize;
   timeoutExtension?: VercelTerminalTimeoutOptions | false;
+  maxPendingInputBytes?: number;
+  maxPendingOutputBytes?: number;
+  backpressureTimeoutMs?: number;
 }
 
 export interface VercelTerminalAdapterDependencies {
@@ -166,13 +185,45 @@ async function attachTerminal(input: {
     return { status: 'detached', reason: 'error' };
   }
 
+  let maxPendingInputBytes: number;
+  let maxPendingOutputBytes: number;
+  let backpressureTimeoutMs: number;
+  try {
+    maxPendingInputBytes = validateByteLimit(
+      options.maxPendingInputBytes ?? DEFAULT_MAX_PENDING_INPUT_BYTES,
+      'input backpressure limit',
+    );
+    maxPendingOutputBytes = validateByteLimit(
+      options.maxPendingOutputBytes ?? DEFAULT_MAX_PENDING_OUTPUT_BYTES,
+      'output backpressure limit',
+    );
+    backpressureTimeoutMs = validateTimeoutLimit(
+      options.backpressureTimeoutMs ?? DEFAULT_BACKPRESSURE_TIMEOUT_MS,
+    );
+  } catch (error) {
+    writeError(streams.stderr, error, [interactive.token]);
+    closeSocket(socket);
+    return { status: 'detached', reason: 'error' };
+  }
+  const detachSignals = options.detachSignals ?? DEFAULT_DETACH_SIGNALS;
+  if (Buffer.byteLength(startFrame) > MAX_CONTROL_FRAME_BYTES) {
+    writeError(streams.stderr, new Error('Terminal start frame exceeds control frame limit'), [interactive.token]);
+    closeSocket(socket);
+    return { status: 'detached', reason: 'error' };
+  }
+
   return await new Promise<VercelTerminalResult>((resolve) => {
     let settled = false;
     let cleaned = false;
     let stopTimeoutExtension = () => {};
+    let outputDrainTimer: ReturnType<typeof setTimeout> | undefined;
+    let inputSendTimer: ReturnType<typeof setTimeout> | undefined;
+    let socketFlowPaused = false;
+    let inputFlowPaused = false;
     const sessionController = new AbortController();
     const reportError = (error: unknown) => writeError(streams.stderr, error, [interactive.token]);
-    const wasRaw = streams.stdin.isRaw ?? false;
+    const wasRaw = streams.stdin.isRaw;
+    const wasFlowing = streams.stdin.readableFlowing;
     const wasPaused = streams.stdin.isPaused();
     const cleanup = () => {
       if (cleaned) return;
@@ -186,27 +237,35 @@ async function attachTerminal(input: {
       streams.stdin.removeListener('data', onStdin);
       streams.stdin.removeListener('end', onEof);
       streams.stdin.removeListener('close', onInputClose);
+      streams.stdin.removeListener('error', onStdinError);
       signalSource.removeListener('SIGINT', onSigint);
       signalSource.removeListener('SIGWINCH', onResize);
-      for (const signal of options.detachSignals ?? []) {
+      for (const signal of detachSignals) {
         signalSource.removeListener(signal, onTermination);
       }
       options.signal?.removeEventListener('abort', onAbort);
+      if (outputDrainTimer !== undefined) clearTimeout(outputDrainTimer);
+      outputDrainTimer = undefined;
+      if (inputSendTimer !== undefined) clearTimeout(inputSendTimer);
+      inputSendTimer = undefined;
+      outputQueue.clear();
+      blockedOutputBytes = 0;
+      sendQueue.clear();
+      if (socketFlowPaused) {
+        resumeSocket(socket);
+        socketFlowPaused = false;
+      }
+      inputFlowPaused = false;
       stopTimeoutExtension();
       sessionController.abort();
-      if (streams.stdin.isTTY && streams.stdin.setRawMode) {
+      if (streams.stdin.isTTY && streams.stdin.setRawMode && wasRaw !== undefined) {
         try {
           streams.stdin.setRawMode(wasRaw);
         } catch {
           // Ignore errors restoring raw mode.
         }
       }
-      try {
-        if (wasPaused) streams.stdin.pause();
-        else streams.stdin.resume();
-      } catch {
-        // Ignore errors restoring stream flow.
-      }
+      restoreReadableState(streams.stdin, wasFlowing, wasPaused);
       closeSocket(socket);
     };
     const finish = (result: VercelTerminalResult) => {
@@ -215,9 +274,49 @@ async function attachTerminal(input: {
       cleanup();
       resolve(result);
     };
-    const outputQueue: Buffer[] = [];
+    const outputQueue = new BoundedBufferQueue(maxPendingOutputBytes);
+    let blockedOutputBytes = 0;
     let outputBackpressured = false;
     let pendingExitCode: number | undefined;
+    let pendingTerminalResult: Extract<VercelTerminalResult, { status: 'detached' }> | undefined;
+    const hasPendingOutput = () => outputQueue.byteLength > 0 || blockedOutputBytes > 0 || outputBackpressured;
+    const requestTerminal = (result: VercelTerminalResult) => {
+      if (result.status === 'exited') {
+        pendingExitCode = result.code;
+      } else if (!pendingTerminalResult) {
+        pendingTerminalResult = result;
+      }
+      maybeFinishPendingResult();
+    };
+    const maybeFinishPendingResult = () => {
+      if (settled || hasPendingOutput()) return;
+      if (pendingExitCode !== undefined) {
+        const code = pendingExitCode;
+        pendingExitCode = undefined;
+        pendingTerminalResult = undefined;
+        finish({ status: 'exited', code });
+      } else if (pendingTerminalResult) {
+        const result = pendingTerminalResult;
+        pendingTerminalResult = undefined;
+        finish(result);
+      }
+    };
+    const armOutputDrainTimeout = () => {
+      if (outputDrainTimer !== undefined) return;
+      outputDrainTimer = setTimeout(() => {
+        outputDrainTimer = undefined;
+        if (settled || !outputBackpressured) return;
+        reportError(new Error('Terminal stdout drain timed out'));
+        if (pendingExitCode !== undefined) {
+          const code = pendingExitCode;
+          pendingExitCode = undefined;
+          pendingTerminalResult = undefined;
+          finish({ status: 'exited', code });
+          return;
+        }
+        finish(pendingTerminalResult ?? { status: 'detached', reason: 'error' });
+      }, backpressureTimeoutMs);
+    };
     const flushOutput = () => {
       if (settled || outputBackpressured) return;
       while (outputQueue.length > 0 && !settled) {
@@ -225,8 +324,12 @@ async function attachTerminal(input: {
         if (!chunk) continue;
         try {
           if (!streams.stdout.write(chunk)) {
+            blockedOutputBytes = chunk.length;
             outputBackpressured = true;
+            pauseSocket(socket);
+            socketFlowPaused = true;
             streams.stdout.once('drain', onDrain);
+            armOutputDrainTimeout();
             return;
           }
         } catch (error) {
@@ -234,18 +337,26 @@ async function attachTerminal(input: {
           return;
         }
       }
-      if (pendingExitCode !== undefined && outputQueue.length === 0 && !outputBackpressured) {
-        const code = pendingExitCode;
-        pendingExitCode = undefined;
-        finish({ status: 'exited', code });
-      }
+      maybeFinishPendingResult();
     };
     const enqueueOutput = (chunk: Buffer) => {
-      outputQueue.push(chunk);
+      if (outputQueue.byteLength + blockedOutputBytes + chunk.length > maxPendingOutputBytes
+        || !outputQueue.enqueue(chunk)) {
+        reportError(new Error('Terminal output backpressure limit exceeded'));
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
       flushOutput();
     };
     const onDrain = () => {
       outputBackpressured = false;
+      blockedOutputBytes = 0;
+      if (outputDrainTimer !== undefined) clearTimeout(outputDrainTimer);
+      outputDrainTimer = undefined;
+      if (socketFlowPaused) {
+        resumeSocket(socket);
+        socketFlowPaused = false;
+      }
       flushOutput();
     };
     const onStdoutError = (error: unknown) => {
@@ -253,19 +364,28 @@ async function attachTerminal(input: {
       finish({ status: 'detached', reason: 'error' });
     };
     const requestExit = (code: number) => {
-      if (outputQueue.length === 0 && !outputBackpressured) {
-        finish({ status: 'exited', code });
-      } else {
-        pendingExitCode = code;
-      }
+      requestTerminal({ status: 'exited', code });
     };
     const onMessage = (data: unknown, isBinary: boolean) => {
+      let buffer: Buffer;
+      try {
+        buffer = toBuffer(data);
+      } catch (error) {
+        reportError(error);
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
+      if (buffer.length > maxPendingOutputBytes) {
+        reportError(new Error('Terminal output backpressure limit exceeded'));
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
       if (isBinary) {
-        enqueueOutput(toBuffer(data));
+        enqueueOutput(buffer);
         return;
       }
       try {
-        const message = JSON.parse(toBuffer(data).toString('utf8')) as {
+        const message = JSON.parse(buffer.toString('utf8')) as {
           type?: unknown;
           code?: unknown;
         };
@@ -273,35 +393,81 @@ async function attachTerminal(input: {
           requestExit(message.code);
           return;
         }
-        enqueueOutput(toBuffer(data));
+        enqueueOutput(buffer);
       } catch {
-        enqueueOutput(toBuffer(data));
+        enqueueOutput(buffer);
       }
     };
     const onSocketError = (error: unknown) => {
       reportError(error);
-      finish({ status: 'detached', reason: 'error' });
+      requestTerminal({ status: 'detached', reason: 'error' });
     };
-    const sendQueue: Buffer[] = [];
+    const sendQueue = new BoundedBufferQueue(maxPendingInputBytes);
     let sendInFlight = false;
     let waitingForSocketDrain = false;
+    let pendingInputResult: VercelTerminalResult | undefined;
+    const pauseInput = () => {
+      if (inputFlowPaused || settled) return;
+      try {
+        streams.stdin.pause();
+        inputFlowPaused = true;
+      } catch (error) {
+        reportError(error);
+        requestTerminal({ status: 'detached', reason: 'error' });
+      }
+    };
+    const resumeInput = () => {
+      if (!inputFlowPaused || settled) return;
+      try {
+        streams.stdin.resume();
+        inputFlowPaused = false;
+      } catch (error) {
+        reportError(error);
+        requestTerminal({ status: 'detached', reason: 'error' });
+      }
+    };
+    const completeInputSend = (error?: Error) => {
+      if (settled) return;
+      sendQueue.shift();
+      sendInFlight = false;
+      if (inputSendTimer !== undefined) clearTimeout(inputSendTimer);
+      inputSendTimer = undefined;
+      waitingForSocketDrain = false;
+      if (error) {
+        reportError(error);
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
+      flushSendQueue();
+      if (!sendInFlight && sendQueue.length === 0) {
+        resumeInput();
+        if (pendingInputResult) {
+          const result = pendingInputResult;
+          pendingInputResult = undefined;
+          requestTerminal(result);
+        }
+      }
+    };
     const flushSendQueue = () => {
       if (settled || sendInFlight || waitingForSocketDrain || sendQueue.length === 0) return;
-      const chunk = sendQueue.shift();
+      const chunk = sendQueue.peek();
       if (!chunk) return;
       sendInFlight = true;
-      const callbackSupported = socket.send.length >= 2;
+      pauseInput();
+      if (settled) {
+        sendInFlight = false;
+        return;
+      }
+      inputSendTimer = setTimeout(() => {
+        inputSendTimer = undefined;
+        if (!settled && sendInFlight) {
+          reportError(new Error('Terminal input send backpressure timed out'));
+          requestTerminal({ status: 'detached', reason: 'error' });
+        }
+      }, backpressureTimeoutMs);
       try {
-        if (callbackSupported) {
-          socket.send(chunk, (error) => {
-            if (error) {
-              reportError(error);
-              finish({ status: 'detached', reason: 'error' });
-              return;
-            }
-            sendInFlight = false;
-            flushSendQueue();
-          });
+        if (socket.send.length >= 2) {
+          socket.send(chunk, completeInputSend);
           return;
         }
         const accepted = socket.send(chunk);
@@ -310,51 +476,87 @@ async function attachTerminal(input: {
           socket.once('drain', onSocketDrain);
           return;
         }
-        sendInFlight = false;
-        flushSendQueue();
+        completeInputSend();
       } catch (error) {
-        reportError(error);
-        finish({ status: 'detached', reason: 'error' });
+        completeInputSend(error instanceof Error ? error : new Error(String(error)));
       }
     };
     const onSocketDrain = () => {
-      waitingForSocketDrain = false;
-      sendInFlight = false;
-      flushSendQueue();
+      if (settled) return;
+      completeInputSend();
     };
     const sendInput = (chunk: Buffer) => {
-      if (socket.readyState !== OPEN || settled) return;
-      sendQueue.push(chunk);
+      if (socket.readyState !== OPEN || settled || chunk.length === 0) return;
+      if (!sendQueue.enqueue(chunk)) {
+        reportError(new Error('Terminal input backpressure limit exceeded'));
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
       flushSendQueue();
     };
     const onStdin = (chunk: unknown) => {
-      const input = toBuffer(chunk);
+      let input: Buffer;
+      try {
+        input = toBuffer(chunk);
+      } catch (error) {
+        reportError(error);
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
       const escapeAt = input.indexOf(0x1d);
       if (escapeAt >= 0) {
         if (escapeAt > 0) sendInput(input.subarray(0, escapeAt));
-        finish({ status: 'detached', reason: 'escape' });
+        const result = { status: 'detached', reason: 'escape' } as const;
+        if (sendInFlight || sendQueue.length > 0) pendingInputResult = result;
+        else requestTerminal(result);
         return;
       }
       sendInput(input);
     };
     const onSigint = () => sendInput(Buffer.from([0x03]));
     // The official protocol defines no SIGTERM/SIGHUP frame; configured signals detach.
-    const onTermination = () => finish({ status: 'detached', reason: 'signal' });
-    const onEof = () => finish({ status: 'detached', reason: 'eof' });
-    const onInputClose = () => finish({ status: 'detached', reason: 'eof' });
+    const onTermination = () => requestTerminal({ status: 'detached', reason: 'signal' });
+    const onEof = () => requestTerminal({ status: 'detached', reason: 'eof' });
+    const onInputClose = () => requestTerminal({ status: 'detached', reason: 'eof' });
+    const onStdinError = (error: unknown) => {
+      reportError(error);
+      requestTerminal({ status: 'detached', reason: 'error' });
+    };
+    const sendControl = (frame: string) => {
+      if (Buffer.byteLength(frame) > MAX_CONTROL_FRAME_BYTES) {
+        reportError(new Error('Terminal control frame exceeds control frame limit'));
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
+      try {
+        if (socket.send.length >= 2) {
+          socket.send(frame, (error) => {
+            if (error) {
+              reportError(error);
+              requestTerminal({ status: 'detached', reason: 'error' });
+            }
+          });
+        } else {
+          socket.send(frame);
+        }
+      } catch (error) {
+        reportError(error);
+        requestTerminal({ status: 'detached', reason: 'error' });
+      }
+    };
     const onResize = () => {
       if (socket.readyState !== OPEN || settled) return;
       try {
         const nextSize = getSize();
         validateSize(nextSize);
-        socket.send(JSON.stringify({ type: 'resize', ...nextSize }));
+        sendControl(JSON.stringify({ type: 'resize', ...nextSize }));
       } catch (error) {
         reportError(error);
-        finish({ status: 'detached', reason: 'error' });
+        requestTerminal({ status: 'detached', reason: 'error' });
       }
     };
-    const onClose = () => finish({ status: 'detached', reason: 'close' });
-    const onAbort = () => finish({ status: 'detached', reason: 'abort' });
+    const onClose = () => requestTerminal({ status: 'detached', reason: 'close' });
+    const onAbort = () => requestTerminal({ status: 'detached', reason: 'abort' });
     socket.on('message', onMessage);
     socket.on('error', onSocketError);
     socket.on('close', onClose);
@@ -362,9 +564,10 @@ async function attachTerminal(input: {
     streams.stdin.on('data', onStdin);
     streams.stdin.on('end', onEof);
     streams.stdin.on('close', onInputClose);
+    streams.stdin.on('error', onStdinError);
     signalSource.on('SIGINT', onSigint);
     signalSource.on('SIGWINCH', onResize);
-    for (const signal of options.detachSignals ?? []) {
+    for (const signal of detachSignals) {
       signalSource.on(signal, onTermination);
     }
     if (streams.stdin.isTTY && streams.stdin.setRawMode) {
@@ -376,7 +579,13 @@ async function attachTerminal(input: {
         return;
       }
     }
-    if (wasPaused) streams.stdin.resume();
+    try {
+      streams.stdin.resume();
+    } catch (error) {
+      reportError(error);
+      requestTerminal({ status: 'detached', reason: 'error' });
+      return;
+    }
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) {
       onAbort();
