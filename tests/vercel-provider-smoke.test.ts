@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
-import { selectSmokeOwnedSandboxes } from '../scripts/vercel/smoke-reconciliation.mjs';
+import {
+  hasPreflightSandboxProof,
+  isExactSmokeSandboxRecord,
+  selectSmokeOwnedSandboxes,
+} from '../scripts/vercel/smoke-reconciliation.mjs';
 import {
   assertPromotedVercelImagePin,
   calculateVercelProviderSmokeBudget,
@@ -105,6 +109,34 @@ describe('Vercel provider smoke configuration', () => {
       valid.name,
       valid.name,
     ]);
+  });
+
+  it('requires exact current-path names before recovery cleanup', () => {
+    expect(isExactSmokeSandboxRecord({ name: 'owned-sandbox' }, 'owned-sandbox')).toBe(true);
+    expect(isExactSmokeSandboxRecord({ name: 'owned-sandbox-decoy' }, 'owned-sandbox')).toBe(false);
+  });
+
+  it('accepts sandboxMissing proof only when the authoritative final relist is absent', () => {
+    const cleanupResult = {
+      verified: true,
+      sandboxMissing: true,
+      errors: [],
+      finalSessions: [],
+    };
+    expect(hasPreflightSandboxProof({
+      cleanupResult,
+      expectedName: 'owned-sandbox',
+      finalListingSucceeded: true,
+      finalRecords: [],
+      sessionProof: false,
+    })).toBe(true);
+    expect(hasPreflightSandboxProof({
+      cleanupResult,
+      expectedName: 'owned-sandbox',
+      finalListingSucceeded: true,
+      finalRecords: [{ name: 'owned-sandbox' }],
+      sessionProof: false,
+    })).toBe(false);
   });
 
   it('budgets both sequential smoke paths plus per-path cleanup inside the outer deadline', () => {
@@ -219,6 +251,7 @@ describe('Vercel provider smoke configuration', () => {
     expect(finallyBlock.indexOf('recoverOwned')).toBeGreaterThan(finallyBlock.indexOf('cleanupVercelSandbox'));
     expect(source).toContain('SMOKE_NAME_PREFIX');
     expect(source).toContain('selectSmokeOwnedSandboxes');
+    expect(source).toContain('if (!sandbox || sandbox.name !== identity.name)');
   });
 
   it('uses valid GitHub fixture secret names in both workflow interfaces', async () => {

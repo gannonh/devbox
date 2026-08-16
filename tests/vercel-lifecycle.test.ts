@@ -11,7 +11,7 @@ import {
   createVercelLifecycle,
   VercelLifecycleError,
 } from '../src/providers/vercel/lifecycle.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
+import { parseVercelImageReference, VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
 import {
   createVercelSandboxClient,
@@ -67,6 +67,52 @@ function sandbox(): VercelSandboxHandle {
 }
 
 describe('Vercel lifecycle', () => {
+  it('fails closed when a returned Sandbox omits its image before metadata persistence', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-image-missing-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const write = vi.spyOn(metadata, 'write');
+    const handle = { ...sandbox(), image: undefined } as unknown as VercelSandboxHandle;
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: { ...source, requestedBranchExists: true, needsBranchSetup: false, source: { ...source.source, revision: source.requestedBranch } },
+      metadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.up()).rejects.toMatchObject({ code: 'identity_conflict' });
+    expect(client.getOrCreate).toHaveBeenCalledOnce();
+    expect(write).not.toHaveBeenCalled();
+    await expect(metadata.read()).resolves.toBeNull();
+  });
+
+  it('accepts an alternate Sandbox image serialization when the digest matches', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-image-digest-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const digest = parseVercelImageReference(VERCEL_IMAGE_PIN.reference).digest;
+    const handle = { ...sandbox(), image: `alternate.registry/devbox@${digest}` } as VercelSandboxHandle;
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: { ...source, requestedBranchExists: true, needsBranchSetup: false, source: { ...source.source, revision: source.requestedBranch } },
+      metadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.up()).resolves.toBe(handle);
+    await expect(metadata.read()).resolves.toMatchObject({ identity: { name: handle.name } });
+  });
+
   it('compensates a newly created sandbox when branch setup fails during onCreate', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-branch-compensation-verified-'));
     const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });

@@ -5,6 +5,34 @@ const SMOKE_NAME_PATTERN = new RegExp(`^${SMOKE_NAME_PREFIX}[a-z0-9-]+-([a-f0-9]
 const SMOKE_VERSION_PATTERN = new RegExp(`^${SMOKE_VERSION_PREFIX}[a-z0-9-]+-[a-f0-9]{16}$`);
 const IDENTITY_TAG_KEYS = ['branch', 'identity', 'provider', 'repository', 'version'];
 
+/** Return true only when a listed record is the current path's exact sandbox. */
+export function isExactSmokeSandboxRecord(record, expectedName) {
+  return Boolean(record && typeof record.name === 'string' && record.name === expectedName);
+}
+
+/**
+ * A preflight cleanup proves absence either through terminal session records or
+ * through an authoritative missing response, but only after the fresh relist
+ * confirms that the exact sandbox name is gone.
+ */
+export function hasPreflightSandboxProof({
+  cleanupResult,
+  expectedName,
+  finalListingSucceeded,
+  finalRecords,
+  sessionProof,
+}) {
+  if (
+    !finalListingSucceeded ||
+    cleanupResult?.verified !== true ||
+    !Array.isArray(cleanupResult.errors) ||
+    cleanupResult.errors.length > 0 ||
+    !Array.isArray(finalRecords) ||
+    finalRecords.some((record) => isExactSmokeSandboxRecord(record, expectedName))
+  ) return false;
+  return sessionProof === true || cleanupResult.sandboxMissing === true;
+}
+
 /** Return true only for the exact identity shape created by provider-smoke. */
 export function isSmokeOwnedSandbox(record, repositoryTag) {
   if (!record || typeof record.name !== 'string') return false;

@@ -35,6 +35,8 @@ import {
 import { createVercelTerminalAdapter } from '../../dist/providers/vercel/terminal.js';
 import { boundedCall } from './sandbox-cleanup.mjs';
 import {
+  hasPreflightSandboxProof,
+  isExactSmokeSandboxRecord,
   SMOKE_NAME_PREFIX,
   selectSmokeOwnedSandboxes,
 } from './smoke-reconciliation.mjs';
@@ -286,6 +288,7 @@ async function preflightSmokeResources(config, client, signal) {
   const discovered = [];
   const ignored = [];
   const cleaned = [];
+  const cleanupResults = new Map();
   const residual = [];
   const errors = [];
   let cleanupFailures = 0;
@@ -304,7 +307,7 @@ async function preflightSmokeResources(config, client, signal) {
       namePrefix: SMOKE_NAME_PREFIX,
       signal,
     });
-    return selectSmokeOwnedSandboxes(records, repositoryTag);
+    return { ...selectSmokeOwnedSandboxes(records, repositoryTag), records };
   };
 
   try {
@@ -326,11 +329,9 @@ async function preflightSmokeResources(config, client, signal) {
           signal,
         });
         addSensitiveValues(result.snapshotIds);
-        const sessionProof = hasTerminalSessionProof(result.finalSessions);
-        if (sessionProof) sessionProofCount += 1;
         if (result.snapshotsCleaned) snapshotsCleanedCount += 1;
-        if (result.verified && result.errors.length === 0 && sessionProof) {
-          cleaned.push(sandbox.name);
+        if (result.verified && result.errors.length === 0) {
+          cleanupResults.set(sandbox.name, { result, status: sandbox.status });
         } else {
           cleanupFailures += 1;
           residual.push({ name: sandbox.name, status: sandbox.status });
@@ -348,16 +349,44 @@ async function preflightSmokeResources(config, client, signal) {
   }
 
   let finalOwned = [];
+  let finalRecords = [];
+  let finalExactNames = [];
   if (firstListingSucceeded) {
     try {
       const finalSelection = await listCandidates();
       finalListingSucceeded = true;
       ignored.push(...finalSelection.ignored);
       finalOwned = finalSelection.owned;
+      finalRecords = finalSelection.records;
+      finalExactNames = finalRecords.filter((sandbox) => typeof sandbox?.name === 'string' && discovered.includes(sandbox.name));
       residual.push(...finalOwned.map((sandbox) => ({ name: sandbox.name, status: sandbox.status })));
-      if (finalOwned.length > 0) addError('preflight sandbox discovery still contains smoke-owned resources');
+      residual.push(...finalExactNames
+        .filter((sandbox) => !finalOwned.some((owned) => owned.name === sandbox.name))
+        .map((sandbox) => ({ name: sandbox.name, status: sandbox.status })));
+      if (finalOwned.length > 0 || finalExactNames.length > 0) addError('preflight sandbox discovery still contains smoke-owned resources');
     } catch (error) {
       addError(`preflight final sandbox discovery: ${errorMessage(error)}`);
+    }
+  }
+
+  for (const [name, { result, status }] of cleanupResults) {
+    const proved = hasPreflightSandboxProof({
+      cleanupResult: result,
+      expectedName: name,
+      finalListingSucceeded,
+      finalRecords,
+      sessionProof: hasTerminalSessionProof(result.finalSessions),
+    });
+    if (proved) {
+      cleaned.push(name);
+      sessionProofCount += 1;
+    } else {
+      cleanupFailures += 1;
+      if (finalListingSucceeded && !finalRecords.some((sandbox) => isExactSmokeSandboxRecord(sandbox, name))) {
+        residual.push({ name, status });
+      }
+      addError(`preflight cleanup for ${name} did not prove absence and terminal sessions`);
+      for (const detail of result.errors) addError(detail);
     }
   }
 
@@ -368,13 +397,13 @@ async function preflightSmokeResources(config, client, signal) {
     ignored: [...new Set(ignored.map((sandbox) => sandbox.name))],
     cleaned,
     residual,
-    discoveryConverged: finalListingSucceeded && finalOwned.length === 0,
+    discoveryConverged: finalListingSucceeded && finalOwned.length === 0 && finalExactNames.length === 0,
     snapshotsCleaned: discovered.length === 0 || snapshotsCleanedCount === discovered.length,
     sessionProof: discovered.length > 0 && sessionProofCount === discovered.length,
     errors,
     redact: errorMessage,
   });
-  const success = firstListingSucceeded && finalListingSucceeded && finalOwned.length === 0 && cleanupFailures === 0;
+  const success = firstListingSucceeded && finalListingSucceeded && finalOwned.length === 0 && finalExactNames.length === 0 && cleanupFailures === 0;
   return { success, evidence };
 }
 
@@ -390,7 +419,10 @@ async function recoverOwned(client, credentials, identity, pathReport, signal) {
       tags: { ...identity.tags },
       signal: requestSignal,
     }),
-    recoverSandbox: async (name, { signal: requestSignal }) => {
+    recoverSandbox: async (name, { signal: requestSignal, sandbox }) => {
+      if (!sandbox || sandbox.name !== identity.name) {
+        throw new Error('owned Sandbox listing did not match the current path identity');
+      }
       const result = await cleanupVercelSandbox({
         name,
         credentials,
