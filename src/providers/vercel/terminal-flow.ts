@@ -60,9 +60,9 @@ export function validateByteLimit(value: number, label: string): number {
   return value;
 }
 
-export function validateTimeoutLimit(value: number): number {
+export function validateTimeoutLimit(value: number, label = 'backpressure timeout'): number {
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error('Terminal backpressure timeout must be finite and positive');
+    throw new Error(`Terminal ${label} must be finite and positive`);
   }
   return Math.min(value, MAX_TIMER_DELAY_MS);
 }

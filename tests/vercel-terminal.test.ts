@@ -13,6 +13,7 @@ class FakeWebSocket extends EventEmitter implements VercelTerminalWebSocket {
   readyState = 0;
   bufferedAmount = 0;
   blockSends = false;
+  deferErrorAfterClose = false;
   pauseCount = 0;
   resumeCount = 0;
   private paused = false;
@@ -63,6 +64,13 @@ class FakeWebSocket extends EventEmitter implements VercelTerminalWebSocket {
     if (this.readyState === 3) return;
     this.readyState = 3;
     this.emit('close');
+    if (this.deferErrorAfterClose) {
+      queueMicrotask(() => this.emit('error', new Error('late connecting close error')));
+    }
+  }
+
+  setClosing(): void {
+    this.readyState = 2;
   }
 }
 
@@ -97,8 +105,10 @@ describe('Vercel terminal adapter', () => {
   it('opens an interactive endpoint and sends the official shell start frame', async () => {
     const token = 'token with spaces&symbols';
     const sockets: FakeWebSocket[] = [];
+    let webSocketOptions: { maxPayload: number } | undefined;
     const terminal = createVercelTerminalAdapter({
-      createWebSocket: (url) => {
+      createWebSocket: (url, options) => {
+        webSocketOptions = options;
         const socket = new FakeWebSocket(url);
         sockets.push(socket);
         queueMicrotask(() => socket.open());
@@ -123,18 +133,19 @@ describe('Vercel terminal adapter', () => {
     await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
 
     expect(sockets).toHaveLength(1);
+    expect(webSocketOptions).toEqual({ maxPayload: 16 * 1024 * 1024 });
     expect(sockets[0].url).toBe(
       `wss://interactive.example/session?existing=1&token=${encodeURIComponent(token)}`,
     );
     expect(sockets[0].sent).toHaveLength(1);
-    expect(JSON.parse(String(sockets[0].sent[0]))).toMatchObject({
+    expect(JSON.parse(String(sockets[0].sent[0]))).toEqual({
       type: 'start',
-      command: 'shell',
+      command: 'sh',
       args: [],
+      env: ['TERM=xterm-256color', expect.stringMatching(/^PS1=/)],
       cwd: '/vercel/sandbox/cloned-repository',
       cols: 120,
       rows: 40,
-      env: expect.arrayContaining(['TERM=xterm-256color']),
     });
 
     sockets[0].emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false);
@@ -192,6 +203,145 @@ describe('Vercel terminal adapter', () => {
     await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'abort' });
     expect(sockets[0].readyState).toBe(3);
     expect(terminalStreams.input.isRaw).toBe(false);
+  });
+
+  it('guards a deferred WebSocket error after abort closes a connecting socket', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const controller = new AbortController();
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        socket.deferErrorAfterClose = true;
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'connecting-token' }),
+    }, {
+      streams: streams(true),
+      signal: controller.signal,
+      signalSource: new EventEmitter(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+
+    controller.abort();
+
+    await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'abort' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
+  it('times out a connecting socket with a redacted actionable error', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const errors: Buffer[] = [];
+    const timers: Array<{ callback: () => void; delay: number }> = [];
+    const scheduler = {
+      setTimeout: (callback: () => void, delay: number) => {
+        const timer = { callback, delay };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout: () => {},
+    };
+    const token = 'connection-timeout-token';
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        socket.deferErrorAfterClose = true;
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const terminalStreams = streams(true);
+    terminalStreams.error.on('data', (chunk) => errors.push(Buffer.from(chunk)));
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      connectionTimeoutScheduler: scheduler,
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    expect(timers[0].delay).toBe(30_000);
+
+    timers[0].callback();
+
+    await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'error' });
+    expect(sockets[0].readyState).toBe(3);
+    expect(Buffer.concat(errors).toString()).toMatch(/connection timed out/);
+    expect(Buffer.concat(errors).toString()).not.toContain(token);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
+  it('handles sockets already closed or closing before waitForOpen', async () => {
+    for (const state of ['closed', 'closing'] as const) {
+      const sockets: FakeWebSocket[] = [];
+      const terminal = createVercelTerminalAdapter({
+        createWebSocket: (url) => {
+          const socket = new FakeWebSocket(url);
+          if (state === 'closed') socket.close();
+          else socket.setClosing();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+
+      await expect(terminal.attach({
+        openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+      }, {
+        streams: streams(),
+        signalSource: new EventEmitter(),
+        getSize: () => ({ cols: 80, rows: 24 }),
+      })).resolves.toEqual({ status: 'detached', reason: 'error' });
+      expect(sockets[0].readyState).toBe(3);
+    }
+  });
+
+  it('validates and caps the connection timeout scheduler delay', async () => {
+    const invalidFactory = vi.fn(() => new FakeWebSocket('wss://invalid.example'));
+    const invalidTerminal = createVercelTerminalAdapter({ createWebSocket: invalidFactory });
+    await expect(invalidTerminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: streams(),
+      signalSource: new EventEmitter(),
+      connectionTimeoutMs: 0,
+    })).resolves.toEqual({ status: 'detached', reason: 'error' });
+    expect(invalidFactory).not.toHaveBeenCalled();
+
+    const timers: Array<{ callback: () => void; delay: number }> = [];
+    const scheduler = {
+      setTimeout: (callback: () => void, delay: number) => {
+        const timer = { callback, delay };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout: () => {},
+    };
+    const sockets: FakeWebSocket[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const controller = new AbortController();
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: streams(),
+      signal: controller.signal,
+      signalSource: new EventEmitter(),
+      connectionTimeoutMs: 3_000_000_000,
+      connectionTimeoutScheduler: scheduler,
+    });
+    await vi.waitFor(() => expect(timers).toHaveLength(1));
+    expect(timers[0].delay).toBe(2_147_000_000);
+    controller.abort();
+    await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'abort' });
   });
 
   it.each([null, false, true] as const)('restores neutral/paused/flowing stdin state after exit (%s)', async (flowing) => {

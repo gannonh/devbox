@@ -4,6 +4,7 @@ import { redactSecrets } from './redaction.js';
 import {
   startTimeoutExtension,
   type VercelTerminalTimeoutOptions,
+  type VercelTerminalTimeoutScheduler,
 } from './terminal-timeout.js';
 import {
   BoundedBufferQueue,
@@ -25,6 +26,7 @@ const OPEN = 1;
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_DETACH_SIGNALS = ['SIGTERM', 'SIGHUP'] as const;
+const DEFAULT_CONNECTION_TIMEOUT_MS = 30_000;
 const TERM = 'xterm-256color';
 const PS1 = `▲ \x01\x1b[2m\x02$PWD/\x01\x1b[0m\x02 `;
 
@@ -86,6 +88,8 @@ export interface VercelTerminalOptions {
   signalSource?: EventEmitter;
   detachSignals?: readonly ('SIGTERM' | 'SIGHUP')[];
   getSize?: () => VercelTerminalSize;
+  connectionTimeoutMs?: number;
+  connectionTimeoutScheduler?: VercelTerminalTimeoutScheduler;
   timeoutExtension?: VercelTerminalTimeoutOptions | false;
   maxPendingInputBytes?: number;
   maxPendingOutputBytes?: number;
@@ -93,7 +97,7 @@ export interface VercelTerminalOptions {
 }
 
 export interface VercelTerminalAdapterDependencies {
-  createWebSocket?: (url: string) => VercelTerminalWebSocket;
+  createWebSocket?: (url: string, options: { maxPayload: number }) => VercelTerminalWebSocket;
   streams?: VercelTerminalStreams;
   signalSource?: EventEmitter;
 }
@@ -108,8 +112,8 @@ export interface VercelTerminalAdapter {
 export function createVercelTerminalAdapter(
   dependencies: VercelTerminalAdapterDependencies = {},
 ): VercelTerminalAdapter {
-  const createWebSocket = dependencies.createWebSocket ?? ((url: string) =>
-    new WebSocket(url) as unknown as VercelTerminalWebSocket);
+  const createWebSocket = dependencies.createWebSocket ?? ((url: string, options: { maxPayload: number }) =>
+    new WebSocket(url, options) as unknown as VercelTerminalWebSocket);
   const defaultStreams = dependencies.streams ?? processStreams();
   const defaultSignalSource = dependencies.signalSource ?? process;
 
@@ -127,7 +131,7 @@ export function createVercelTerminalAdapter(
 async function attachTerminal(input: {
   sandbox: VercelInteractiveSandbox;
   options: VercelTerminalOptions;
-  createWebSocket: (url: string) => VercelTerminalWebSocket;
+  createWebSocket: (url: string, options: { maxPayload: number }) => VercelTerminalWebSocket;
   streams: VercelTerminalStreams;
   signalSource: EventEmitter;
 }): Promise<VercelTerminalResult> {
@@ -142,6 +146,21 @@ async function attachTerminal(input: {
   }
   if (options.signal?.aborted) return { status: 'detached', reason: 'abort' };
 
+  let connectionTimeoutMs: number;
+  try {
+    connectionTimeoutMs = validateTimeoutLimit(
+      options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
+      'connection timeout',
+    );
+  } catch (error) {
+    writeError(streams.stderr, error, [interactive.token]);
+    return { status: 'detached', reason: 'error' };
+  }
+  const connectionTimeoutScheduler = options.connectionTimeoutScheduler ?? {
+    setTimeout: (callback: () => void, delay: number) => setTimeout(callback, delay),
+    clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  } satisfies VercelTerminalTimeoutScheduler;
+
   let socket: VercelTerminalWebSocket | undefined;
   try {
     const socketUrl = new URL(interactive.url);
@@ -149,13 +168,20 @@ async function attachTerminal(input: {
     socketUrl.search = socketUrl.search
       ? `${socketUrl.search}&${tokenQuery}`
       : `?${tokenQuery}`;
-    socket = createWebSocket(socketUrl.toString());
-    await waitForOpen(socket, options.signal);
+    socket = createWebSocket(socketUrl.toString(), { maxPayload: MAX_BUFFER_LIMIT_BYTES });
+    await waitForOpen(socket, options.signal, {
+      timeoutMs: connectionTimeoutMs,
+      scheduler: connectionTimeoutScheduler,
+    });
   } catch (error) {
     closeSocket(socket);
     if (options.signal?.aborted) return { status: 'detached', reason: 'abort' };
     writeError(streams.stderr, error, [interactive.token]);
     return { status: 'detached', reason: 'error' };
+  }
+  if (options.signal?.aborted) {
+    closeSocket(socket);
+    return { status: 'detached', reason: 'abort' };
   }
   if (!socket) {
     writeError(streams.stderr, new Error('WebSocket client was not created'));
@@ -173,7 +199,7 @@ async function attachTerminal(input: {
     const env = { TERM, PS1, ...(options.env ?? {}) };
     startFrame = JSON.stringify({
       type: 'start',
-      command: 'shell',
+      command: 'sh',
       args: [...(options.args ?? [])],
       env: Object.entries(env).map(([key, value]) => `${key}=${value}`),
       cwd: options.cwd ?? sandbox.cwd ?? '/vercel/sandbox',
@@ -629,12 +655,31 @@ async function attachTerminal(input: {
 
 function closeSocket(socket: VercelTerminalWebSocket | undefined): void {
   if (!socket) return;
+  installCloseErrorGuard(socket);
   try {
-    socket.on('error', ignoreSocketError);
     socket.close();
   } catch {
     // The socket may already be closed.
   }
+}
+
+function installCloseErrorGuard(socket: VercelTerminalWebSocket): () => void {
+  let removed = false;
+  let removalTimer: ReturnType<typeof setImmediate> | undefined;
+  const remove = () => {
+    if (removed) return;
+    removed = true;
+    if (removalTimer !== undefined) clearImmediate(removalTimer);
+    socket.removeListener('error', ignoreSocketError);
+    socket.removeListener('close', onClose);
+  };
+  const onClose = () => {
+    if (removalTimer === undefined) removalTimer = setImmediate(remove);
+  };
+  socket.on('error', ignoreSocketError);
+  if (socket.readyState === 3) onClose();
+  else socket.once('close', onClose);
+  return remove;
 }
 
 function ignoreSocketError(): void {
@@ -677,40 +722,66 @@ function toBuffer(data: unknown): Buffer {
   throw new Error('Unsupported WebSocket message data');
 }
 
-async function waitForOpen(socket: VercelTerminalWebSocket, signal?: AbortSignal): Promise<void> {
-  if (socket.readyState === OPEN) return;
+async function waitForOpen(
+  socket: VercelTerminalWebSocket,
+  signal: AbortSignal | undefined,
+  options: {
+    timeoutMs: number;
+    scheduler: VercelTerminalTimeoutScheduler;
+  },
+): Promise<void> {
+  const removeCloseErrorGuard = installCloseErrorGuard(socket);
+  if (socket.readyState === 3) {
+    return Promise.reject(new Error('WebSocket is already closed'));
+  }
+  if (socket.readyState === 2) {
+    return Promise.reject(new Error('WebSocket is already closing'));
+  }
+  if (signal?.aborted) {
+    closeSocket(socket);
+    return Promise.reject(signal.reason ?? new Error('Terminal connection aborted'));
+  }
   await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timer: unknown;
     const cleanup = () => {
       socket.removeListener('open', onOpen);
       socket.removeListener('error', onError);
       socket.removeListener('close', onClose);
       signal?.removeEventListener('abort', onAbort);
+      if (timer !== undefined) options.scheduler.clearTimeout(timer);
+      timer = undefined;
+    };
+    const settleReject = (error: unknown, close: boolean) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (close) closeSocket(socket);
+      reject(error instanceof Error ? error : new Error(String(error)));
     };
     const onOpen = () => {
+      if (settled) return;
+      settled = true;
       cleanup();
+      removeCloseErrorGuard();
       resolve();
     };
     const onError = (error: unknown) => {
-      cleanup();
-      reject(error instanceof Error ? error : new Error('WebSocket connection failed'));
+      settleReject(error instanceof Error ? error : new Error('WebSocket connection failed'), false);
     };
     const onClose = () => {
-      cleanup();
-      reject(new Error('WebSocket connection closed before opening'));
+      settleReject(new Error('WebSocket connection closed before opening'), false);
     };
     const onAbort = () => {
-      cleanup();
-      try {
-        socket.close();
-      } catch {
-        // The socket may already be closed.
-      }
-      reject(signal?.reason ?? new Error('Terminal connection aborted'));
+      settleReject(signal?.reason ?? new Error('Terminal connection aborted'), true);
+    };
+    const onTimeout = () => {
+      settleReject(new Error(`WebSocket connection timed out after ${options.timeoutMs}ms`), true);
     };
     socket.once('open', onOpen);
     socket.once('error', onError);
     socket.once('close', onClose);
     signal?.addEventListener('abort', onAbort, { once: true });
-    if (signal?.aborted) onAbort();
+    timer = options.scheduler.setTimeout(onTimeout, options.timeoutMs);
   });
 }
