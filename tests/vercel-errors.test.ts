@@ -36,18 +36,18 @@ describe('Vercel provider errors', () => {
     const token = 'category-secret-token';
     const encoded = encodeURIComponent(token);
     const cases = [
-      ['auth', new Error(`Missing Vercel credential(s): ${token}`)],
-      ['scope_link', new Error(`linked project.json is malformed ${token}`)],
-      ['confirmation', new Error(`confirmation requires a TTY ${token}`)],
-      ['private_repo', Object.assign(new Error(`failed to clone private GitHub repository ${token}`), { status: 401 })],
-      ['source', new Error(`Unable to resolve GitHub source branches: ls-remote ${token}`)],
+      ['auth', new Error(`Missing Vercel credential(s): ${token}; explicit triad is incomplete`)],
+      ['scope_link', new Error(`Malformed Vercel project link: linked project.json is malformed ${token}`)],
+      ['confirmation', new Error(`Vercel scope confirmation requires a TTY ${token}`)],
+      ['private_repo', Object.assign(new Error(`GitHub source access failed ${token}`), { status: 403, operation: 'source' })],
+      ['source', Object.assign(new Error(`source probe failed ${token}`), { code: 'github_source_resolution_failed' })],
       ['auth', Object.assign(new Error(`Vercel API ${token}`), { status: 403 })],
       ['missing', Object.assign(new Error(`resource ${token} not found`), { status: 404 })],
       ['stale', Object.assign(new Error(`resource ${token} gone`), { status: 410 })],
       ['identity', Object.assign(new Error(`identity conflict ${token}`), { status: 409 })],
-      ['image_not_ready', new Error(`image is preparing ${token}`)],
-      ['timeout', new Error(`request timed out ${token}`)],
-      ['aborted', Object.assign(new Error(`request ${token}`), { name: 'AbortError' })],
+      ['image_not_ready', Object.assign(new Error(`image readiness failed ${token}`), { code: 'image_not_ready' })],
+      ['timeout', Object.assign(new Error(`request failed ${token}`), { name: 'TimeoutError' })],
+      ['aborted', Object.assign(new Error(`request failed ${token}`), { name: 'AbortError' })],
       ['cleanup', Object.assign(new Error(`residual ${token}`), { code: 'cleanup_incomplete' })],
       ['route', Object.assign(new Error(`route ${token}`), { code: 'route_not_found' })],
       ['api', new Error(`unexpected response ${token}`)],
@@ -78,6 +78,22 @@ describe('Vercel provider errors', () => {
       action: 'up',
       branch: 'feature/ui',
     }).code).toBe('confirmation');
+  });
+
+  it('leaves generic lookalike text in the API category', () => {
+    for (const message of [
+      'operation undergone unexpectedly',
+      'preparing credentials',
+      'clone configuration failed',
+      'private network unavailable',
+      'file not found in configuration',
+      'resource gone',
+      'sandbox stale',
+      'request timed out in a payload field',
+    ]) {
+      expect(mapVercelError(new Error(message), { action: 'attach', branch: 'feature/ui' }).code, message)
+        .toBe('api');
+    }
   });
 
   it('uses action-specific recovery commands without a fake branch for list', () => {

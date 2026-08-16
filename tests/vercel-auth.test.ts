@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -162,6 +162,34 @@ describe('Vercel credential resolution', () => {
     });
   });
 
+  it('rejects a symlinked linked project file before device auth', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-symlink-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    const target = join(repoRoot, 'project-target.json');
+    await writeFile(target, JSON.stringify({ orgId: 'linked-team', projectId: 'linked-project' }));
+    await symlink(target, join(repoRoot, '.vercel', 'project.json'));
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuth: vi.fn(),
+    })).rejects.toThrow(/regular|symlink|symbolic|ELOOP/i);
+  });
+
+  it('rejects a group/world-writable linked project file', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-permissions-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    const pathname = join(repoRoot, '.vercel', 'project.json');
+    await writeFile(pathname, JSON.stringify({ orgId: 'linked-team', projectId: 'linked-project' }));
+    await chmod(pathname, 0o666);
+
+    await expect(resolveVercelCredentials({
+      repoRoot,
+      env: {},
+      deviceAuth: vi.fn(),
+    })).rejects.toThrow(/group\/world writable/i);
+  });
+
   it('requires a linked project before device auth', async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-'));
     const deviceAuth = vi.fn();
@@ -253,7 +281,7 @@ describe('Vercel credential resolution', () => {
     });
 
     await expect(resolveVercelCredentials({ repoRoot, env: {}, deviceAuth: mismatched })).rejects.toThrow(/scope mismatch/i);
-    await expect(resolveVercelCredentials({ repoRoot, env: {}, deviceAuth: empty })).rejects.toThrow(/non-empty token/i);
+    await expect(resolveVercelCredentials({ repoRoot, env: {}, deviceAuth: empty })).rejects.toThrow(/empty token/i);
   });
 
   it('cancels an injected auth function through the caller signal', async () => {

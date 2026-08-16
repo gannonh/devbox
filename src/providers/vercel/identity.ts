@@ -119,12 +119,8 @@ export function createVercelIdentity(input: VercelIdentityInput): VercelSandboxI
   const name = appendHash(humanName, identitySource, MAX_VERCEL_NAME_LENGTH);
   const tags = {
     provider: 'vercel',
-    repository: appendHash(
-      `${repository.host}-${repository.owner}-${repository.repository}`,
-      repository.canonical,
-      MAX_VERCEL_TAG_LENGTH,
-    ),
-    branch: appendHash(branch, branch, MAX_VERCEL_TAG_LENGTH),
+    repository: createVercelRepositoryTag(repository.canonical),
+    branch: createVercelBranchTag(branch),
     version: appendHash(versionSlug, packageVersion, MAX_VERCEL_TAG_LENGTH),
     identity: hash(identitySource),
   } as const;
@@ -138,6 +134,20 @@ export function createVercelIdentity(input: VercelIdentityInput): VercelSandboxI
     name,
     tags,
   };
+}
+
+export function createVercelRepositoryTag(remote: string): string {
+  const repository = normalizeGitHubRemote(remote);
+  return appendHash(
+    `${repository.host}-${repository.owner}-${repository.repository}`,
+    repository.canonical,
+    MAX_VERCEL_TAG_LENGTH,
+  );
+}
+
+export function createVercelBranchTag(branch: string): string {
+  const normalized = normalizeBranch(branch);
+  return appendHash(normalized, normalized, MAX_VERCEL_TAG_LENGTH);
 }
 
 export function normalizeBranch(branch: string): string {

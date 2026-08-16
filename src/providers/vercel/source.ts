@@ -1,13 +1,40 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { URL } from 'node:url';
 import { normalizeGitHubRemote, normalizeBranch, type GitHubRemoteIdentity } from './identity.js';
 import { shell, type ShellRunner } from '../../lib/shell.js';
-import { redactedError } from './redaction.js';
+import { redactSecrets } from './redaction.js';
+
+const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 
 export interface GitHubSourceRemote extends GitHubRemoteIdentity {
   url: string;
+}
+
+export type GitHubSourceErrorCode =
+  | 'github_origin_resolution_failed'
+  | 'github_origin_invalid'
+  | 'github_credentials_unavailable'
+  | 'github_branch_invalid'
+  | 'github_source_access_denied'
+  | 'github_source_resolution_failed'
+  | 'github_default_branch_unavailable'
+  | 'github_branch_probe_failed'
+  | 'github_clone_failed';
+
+export class GitHubSourceError extends Error {
+  readonly operation = 'source' as const;
+  readonly code: GitHubSourceErrorCode;
+  readonly status?: number;
+
+  constructor(code: GitHubSourceErrorCode, message: string, status?: number) {
+    super(message);
+    this.name = 'GitHubSourceError';
+    this.code = code;
+    this.status = status;
+  }
 }
 
 export interface GitSource {
@@ -60,13 +87,18 @@ export async function resolveGitHubSourceOrigin(
       silentStderr: true,
     });
   } catch (error) {
-    throw redactedError(new Error(`Unable to resolve GitHub origin: ${errorMessage(error)}`), knownSecrets);
+    throw createSourceError(
+      'github_origin_resolution_failed',
+      `Unable to resolve GitHub origin: ${errorMessage(error)}`,
+      error,
+      knownSecrets,
+    );
   }
 
   try {
     return normalizeGitHubSourceRemote(origin);
   } catch (error) {
-    throw redactedError(error, knownSecrets);
+    throw createSourceError('github_origin_invalid', errorMessage(error), error, knownSecrets);
   }
 }
 
@@ -138,7 +170,7 @@ export async function resolveGitHubToken(options: ResolveGitHubTokenOptions): Pr
   for (const value of [env.GH_TOKEN, env.GITHUB_TOKEN]) {
     if (!isNonEmpty(value)) continue;
     if (value.includes('\n') || value.includes('\r')) {
-      throw new Error('GitHub credential environment value must be single-line');
+      throw new GitHubSourceError('github_credentials_unavailable', 'GitHub credential environment value must be single-line');
     }
     return value.trim();
   }
@@ -150,11 +182,16 @@ export async function resolveGitHubToken(options: ResolveGitHubTokenOptions): Pr
       silentStderr: true,
     });
     if (!isNonEmpty(token) || token.includes('\n') || token.includes('\r')) {
-      throw new Error('gh auth token returned an empty or multi-line token');
+      throw new GitHubSourceError('github_credentials_unavailable', 'gh auth token returned an empty or multi-line token');
     }
     return token.trim();
   } catch (error) {
-    throw redactedError(new Error(`Unable to resolve GitHub credentials: ${errorMessage(error)}`));
+    if (error instanceof GitHubSourceError) throw error;
+    throw createSourceError(
+      'github_credentials_unavailable',
+      `Unable to resolve GitHub credentials: ${errorMessage(error)}`,
+      error,
+    );
   }
 }
 
@@ -163,7 +200,12 @@ export async function resolveGitHubSource(
 ): Promise<GitHubSourcePlan> {
   const runner = options.shellRunner ?? shell;
   const knownSecrets = configuredTokenSecrets(options.env);
-  const requestedBranch = normalizeRequestedSourceBranch(options.branch);
+  let requestedBranch: string;
+  try {
+    requestedBranch = normalizeRequestedSourceBranch(options.branch);
+  } catch (error) {
+    throw createSourceError('github_branch_invalid', errorMessage(error), error, knownSecrets);
+  }
   let origin: string;
   try {
     origin = await runner.exec('git', ['remote', 'get-url', 'origin'], {
@@ -171,14 +213,19 @@ export async function resolveGitHubSource(
       silentStderr: true,
     });
   } catch (error) {
-    throw redactedError(new Error(`Unable to resolve GitHub origin: ${errorMessage(error)}`), knownSecrets);
+    throw createSourceError(
+      'github_origin_resolution_failed',
+      `Unable to resolve GitHub origin: ${errorMessage(error)}`,
+      error,
+      knownSecrets,
+    );
   }
 
   let remote: GitHubSourceRemote;
   try {
     remote = normalizeGitHubSourceRemote(origin);
   } catch (error) {
-    throw redactedError(error, knownSecrets);
+    throw createSourceError('github_origin_invalid', errorMessage(error), error, knownSecrets);
   }
 
   const token = await resolveGitHubToken({
@@ -205,12 +252,31 @@ export async function resolveGitHubSource(
       return { defaultOutput, branchResult };
     }));
   } catch (error) {
-    throw redactedError(new Error(`Unable to resolve GitHub source branches: ${errorMessage(error)}`), probeSecrets);
+    const status = statusOf(error);
+    throw createSourceError(
+      status === 401 || status === 403 ? 'github_source_access_denied' : 'github_source_resolution_failed',
+      `Unable to resolve GitHub source branches: ${errorMessage(error)}`,
+      error,
+      probeSecrets,
+      status,
+    );
   }
-  const defaultBranch = parseRemoteDefaultBranch(defaultOutput);
+  let defaultBranch: string;
+  try {
+    defaultBranch = parseRemoteDefaultBranch(defaultOutput);
+  } catch (error) {
+    throw createSourceError(
+      'github_default_branch_unavailable',
+      errorMessage(error),
+      error,
+      probeSecrets,
+    );
+  }
   if (branchResult.code !== 0) {
-    throw redactedError(
-      new Error(`Unable to check the requested GitHub branch (git exited with code ${branchResult.code})`),
+    throw createSourceError(
+      'github_branch_probe_failed',
+      `Unable to check the requested GitHub branch (git exited with code ${branchResult.code})`,
+      undefined,
       probeSecrets,
     );
   }
@@ -271,8 +337,17 @@ async function withGitAskPass<T>(
   const helper = join(directory, 'askpass.sh');
   try {
     await chmod(directory, 0o700);
-    await writeFile(helper, GIT_ASKPASS_SCRIPT, { mode: 0o700 });
-    await chmod(helper, 0o700);
+    const handle = await open(
+      helper,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW,
+      0o700,
+    );
+    try {
+      await handle.writeFile(GIT_ASKPASS_SCRIPT, 'utf8');
+      await handle.chmod(0o700);
+    } finally {
+      await handle.close();
+    }
     const probeEnv: Record<string, string | undefined> = {
       ...process.env,
       ...(env ?? {}),
@@ -287,6 +362,27 @@ async function withGitAskPass<T>(
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function createSourceError(
+  code: GitHubSourceErrorCode,
+  message: string,
+  cause?: unknown,
+  secrets: readonly string[] = [],
+  status?: number,
+): GitHubSourceError {
+  return new GitHubSourceError(
+    code,
+    redactSecrets(message, secrets),
+    status ?? statusOf(cause),
+  );
+}
+
+function statusOf(error: unknown): number | undefined {
+  const candidate = error as { status?: unknown; response?: { status?: unknown } } | null;
+  if (typeof candidate?.status === 'number') return candidate.status;
+  if (typeof candidate?.response?.status === 'number') return candidate.response.status;
+  return undefined;
 }
 
 function configuredTokenSecrets(env: Record<string, string | undefined> | undefined): string[] {

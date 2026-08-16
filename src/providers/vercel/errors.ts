@@ -61,6 +61,7 @@ export function mapVercelError(
 
   const status = statusOf(error);
   const lifecycleCode = codeOf(error);
+  const operation = operationOf(error) ?? context.operation;
   const detail = safeDetail(error, context.secrets ?? []);
   const command = recoveryCommand(context);
   const message = detail.toLowerCase();
@@ -104,7 +105,7 @@ export function mapVercelError(
       2,
     );
   }
-  if (error instanceof VercelScopeConflictError || lifecycleCode === 'scope_conflict' || message.includes('scope conflict') || message.includes('stored vercel team/project')) {
+  if (error instanceof VercelScopeConflictError || lifecycleCode === 'scope_conflict') {
     return new VercelProviderError(
       'scope',
       `The stored Vercel team/project scope conflicts with this request; use the stored scope or remove its box with ${removeRecoveryCommand(context)}.`,
@@ -118,60 +119,60 @@ export function mapVercelError(
       2,
     );
   }
-  if (isScopeLinkError(message)) {
+  if (isScopeLinkError(message, lifecycleCode)) {
     return new VercelProviderError(
       'scope_link',
       `Vercel project scope is missing or malformed; run "vercel link" in the repository or set a complete VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID triad, then retry ${command}.`,
       2,
     );
   }
-  if (isPartialCredentialError(message) || message.includes('invalid vercel oidc token')) {
+  if (isPartialCredentialError(message) || lifecycleCode === 'invalid_vercel_oidc_token' || isInvalidOidcTokenError(message)) {
     return new VercelProviderError(
       'auth',
       `Vercel credentials are incomplete; set VERCEL_TOKEN, VERCEL_TEAM_ID, and VERCEL_PROJECT_ID together, then retry ${command}.`,
       2,
     );
   }
-  if (lifecycleCode === 'branch_setup_failed' || isPrivateRepoError(message)) {
+  if (lifecycleCode === 'branch_setup_failed' || isPrivateRepoError(status, operation, lifecycleCode)) {
     return new VercelProviderError(
       'private_repo',
       `GitHub source access failed; ensure the origin is a GitHub remote and GH_TOKEN, GITHUB_TOKEN, or "gh auth token" can read the private repository, then retry ${recoveryCommand(context)}.`,
       2,
     );
   }
-  if (isSourceError(message)) {
+  if (isSourceError(operation, lifecycleCode)) {
     return new VercelProviderError(
       'source',
       `GitHub source resolution failed; use a canonical GitHub origin and verify the default/requested branch, then retry ${recoveryCommand(context)}.`,
       2,
     );
   }
-  if (status === 401 || status === 403 || /\b(?:401|403)\b|unauthori[sz]ed|forbidden/.test(message)) {
+  if (status === 401 || status === 403 || isStableCode(lifecycleCode, ['unauthorized', 'forbidden', 'auth_failed'])) {
     return new VercelProviderError(
       'auth',
       `Vercel authentication or authorization failed; set valid VERCEL_TOKEN credentials for the displayed team/project and retry ${command}.`,
     );
   }
-  if (status === 404 || error instanceof VercelResourceNotFoundError || /\b404\b|not found/.test(message)) {
+  if (status === 404 || error instanceof VercelResourceNotFoundError || lifecycleCode === 'resource_not_found') {
     return new VercelProviderError(
       'missing',
       `The requested Vercel sandbox or resource was not found; run ${command} to recover or recreate it.`,
     );
   }
-  if (status === 410 || /\b410\b|stale|gone/.test(message)) {
+  if (status === 410 || lifecycleCode === 'stale') {
     return new VercelProviderError(
       'stale',
       `The Vercel sandbox resource is stale; retry ${removeRecoveryCommand(context)}, then create it again.`
     );
   }
-  if (status === 409 || /\b409\b|identity conflict|already exists/.test(message)) {
+  if (status === 409 || lifecycleCode === 'identity_conflict') {
     return new VercelProviderError(
       'identity',
       `The Vercel sandbox identity conflicts with an existing resource; remove the stale box with ${removeRecoveryCommand(context)} and retry.`,
       2,
     );
   }
-  if (status === 429 || /\b429\b|rate limit|quota/.test(message)) {
+  if (status === 429 || isStableCode(lifecycleCode, ['quota', 'rate_limit'])) {
     const retryAfter = retryAfterOf(error);
     const retry = retryAfter === undefined ? 'retry later' : `retry after ${retryAfter}`;
     return new VercelProviderError(
@@ -179,16 +180,16 @@ export function mapVercelError(
       `Vercel quota or rate limit reached; ${retry} and run ${command}.`,
     );
   }
-  if (isImageReadinessError(message)) {
+  if (lifecycleCode === 'image_not_ready' || isImageReadinessError(message)) {
     return new VercelProviderError(
       'image_not_ready',
       `The pinned Vercel image is not ready; wait for image readiness and retry ${command}.`,
     );
   }
-  if (isAbortError(error, message)) {
+  if (isAbortError(error, message, lifecycleCode)) {
     return new VercelProviderError('aborted', 'The Vercel operation was aborted; retry the command.');
   }
-  if (isTimeoutError(error, message)) {
+  if (isTimeoutError(error, message, lifecycleCode)) {
     return new VercelProviderError(
       'timeout',
       `The Vercel operation timed out; check network/authentication and retry ${command}.`,
@@ -255,10 +256,10 @@ function removeRecoveryCommand(context: VercelErrorContext): string {
 
 function isConfirmationError(message: string): boolean {
   return [
-    /\bvercel scope confirmation requires a tty\b/,
-    /\bvercel scope confirmation was refused\b/,
-    /\bconfirmation requires a tty\b/,
-    /\bconfirmation was refused\b/,
+    /^vercel scope confirmation requires a tty(?: \[redacted\])?$/,
+    /^vercel scope confirmation was refused(?: \[redacted\])?$/,
+    /^confirmation requires a tty(?: \[redacted\])?$/,
+    /^confirmation was refused(?: \[redacted\])?$/,
   ].some((pattern) => pattern.test(message));
 }
 
@@ -267,42 +268,62 @@ function isMetadataLockContention(error: unknown, message: string): boolean {
     || /^timed out waiting for vercel metadata lock: .+$/.test(message);
 }
 
-function isScopeLinkError(message: string): boolean {
-  return message.includes('project link') || message.includes('project.json') || message.includes('linked project');
+function isScopeLinkError(message: string, code: string | undefined): boolean {
+  return code === 'scope_link'
+    || /^vercel project link is missing: .+$/.test(message)
+    || /^vercel project link must (?:be a regular file|not be a symbolic link|not be group\/world writable): .+$/.test(message)
+    || /^malformed vercel project link: .+$/.test(message);
 }
 
 function isPartialCredentialError(message: string): boolean {
-  return message.includes('missing vercel credential') || message.includes('explicit triad is incomplete');
+  return /^missing vercel credential\(s\): .+; explicit triad is incomplete$/.test(message);
 }
 
-function isPrivateRepoError(message: string): boolean {
-  return message.includes('private')
-    || message.includes('unable to resolve github credentials')
-    || message.includes('clone')
-    || message.includes('git authentication')
-    || message.includes('repository access');
+function isInvalidOidcTokenError(message: string): boolean {
+  return /^invalid vercel oidc token: .+$/.test(message);
 }
 
-function isSourceError(message: string): boolean {
-  return message.includes('github origin')
-    || message.includes('github branch')
-    || message.includes('github source')
-    || message.includes('default branch')
-    || message.includes('ls-remote')
-    || message.includes('requested github branch')
-    || message.includes('git source');
+function isPrivateRepoError(
+  status: number | undefined,
+  operation: string | undefined,
+  code: string | undefined,
+): boolean {
+  return code === 'github_source_access_denied'
+    || code === 'github_credentials_unavailable'
+    || code === 'github_clone_failed'
+    || code === 'git_clone_failed'
+    || code === 'clone_failed'
+    || (operation === 'source' && (status === 401 || status === 403));
+}
+
+function isSourceError(operation: string | undefined, code: string | undefined): boolean {
+  return operation === 'source' || (code?.startsWith('github_') ?? false);
 }
 
 function isImageReadinessError(message: string): boolean {
-  return message.includes('image_not_ready') || message.includes('image not ready') || message.includes('preparing') || message.includes('unoptimized');
+  return /^image is preparing(?: \[redacted\])?$/.test(message)
+    || /^the pinned vercel image is not ready(?:; .+)?$/.test(message);
 }
 
-function isAbortError(error: unknown, message: string): boolean {
-  return (error instanceof Error && error.name === 'AbortError') || message.includes('aborted');
+function isAbortError(error: unknown, message: string, code: string | undefined): boolean {
+  return (error instanceof Error && error.name === 'AbortError')
+    || code === 'ABORT_ERR'
+    || /^vercel (?:authentication|operation) aborted$/.test(message);
 }
 
-function isTimeoutError(error: unknown, message: string): boolean {
-  return (error instanceof Error && error.name === 'TimeoutError') || message.includes('timed out') || message.includes('timeout');
+function isTimeoutError(error: unknown, message: string, code: string | undefined): boolean {
+  return (error instanceof Error && error.name === 'TimeoutError')
+    || code === 'ETIMEDOUT'
+    || /^vercel (?:authentication|operation) timed out$/.test(message);
+}
+
+function operationOf(error: unknown): string | undefined {
+  const candidate = error as { operation?: unknown } | null;
+  return typeof candidate?.operation === 'string' ? candidate.operation : undefined;
+}
+
+function isStableCode(code: string | undefined, expected: readonly string[]): boolean {
+  return code !== undefined && expected.includes(code);
 }
 
 function retryAfterOf(error: unknown): string | undefined {

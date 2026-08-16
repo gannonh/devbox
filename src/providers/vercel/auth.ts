@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import { clearTimeout, setTimeout } from 'node:timers';
 import {
@@ -241,7 +242,7 @@ function normalizeInjectedDeviceAuth(
 
 function requireAuthToken(value: unknown): string {
   if (!isNonEmptyString(value)) {
-    throw new Error('Injected device authentication returned a non-empty token');
+    throw new Error('Injected device authentication returned an empty token');
   }
   return value.trim();
 }
@@ -392,8 +393,15 @@ async function readLinkedScope(repoRoot: string, required: boolean, signal: Abor
   const pathname = join(repoRoot, '.vercel', 'project.json');
 
   let content: string;
+  let handle: FileHandle | undefined;
   try {
-    content = await readFile(pathname, { encoding: 'utf8', signal });
+    handle = await open(pathname, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const stats = await handle.stat();
+    if (!stats.isFile()) throw new Error(`Vercel project link must be a regular file: ${pathname}`);
+    if ((stats.mode & 0o022) !== 0) {
+      throw new Error(`Vercel project link must not be group/world writable: ${pathname}`);
+    }
+    content = await handle.readFile({ encoding: 'utf8', signal });
   } catch (error) {
     if (signal.aborted) throw cancellationError(signal);
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
@@ -402,7 +410,12 @@ async function readLinkedScope(repoRoot: string, required: boolean, signal: Abor
       }
       return null;
     }
+    if (error instanceof Error && 'code' in error && error.code === 'ELOOP') {
+      throw new Error(`Vercel project link must not be a symbolic link: ${pathname}`);
+    }
     throw error;
+  } finally {
+    if (handle) await handle.close();
   }
 
   try {

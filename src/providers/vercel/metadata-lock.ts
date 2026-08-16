@@ -39,7 +39,7 @@ export async function acquireMetadataLock(
       maxTimeout: retryDelay,
       randomize: false,
       maxRetryTime: timeoutMs,
-      unref: true,
+      unref: false,
     },
     ...(options.onCompromised === undefined ? {} : { onCompromised: options.onCompromised }),
   };

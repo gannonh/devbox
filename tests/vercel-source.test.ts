@@ -143,6 +143,29 @@ describe('Vercel GitHub source selection', () => {
     await expect(access(observed[0].helper)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('labels authenticated source probe failures with a stable source code', async () => {
+    const shellRunner = {
+      ...noOpShell,
+      exec: vi.fn(async (_command: string, args: string[]) => {
+        if (args[0] === 'remote') return 'https://github.com/acme/private.git';
+        if (args[0] === 'ls-remote') throw Object.assign(new Error('access denied'), { status: 403 });
+        throw new Error('unexpected command');
+      }),
+      execQuiet: vi.fn(),
+    };
+
+    await expect(resolveGitHubSource({
+      repoRoot: '/repo',
+      branch: 'feature/ui',
+      env: { GH_TOKEN: 'token' },
+      shellRunner,
+    })).rejects.toMatchObject({
+      code: 'github_source_access_denied',
+      operation: 'source',
+      status: 403,
+    });
+  });
+
   it('resolves origin and remote branch state without putting a token in argv', async () => {
     const token = 'gh-secret-token';
     const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
