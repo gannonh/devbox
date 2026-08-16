@@ -308,7 +308,7 @@ describe('Vercel provider smoke configuration', () => {
 
   it('runs quality and provider contracts at the support floor and current Node release', async () => {
     const ci = await readFile('.github/workflows/ci.yml', 'utf8');
-    expect(ci).toContain("node-version: ['20.18.1', '24']");
+    expect(ci).toContain("node-version: ['20.18.1', '26']");
     expect(ci).toContain('Provider and smoke workflow contracts');
     expect(ci).toContain('tests/provider-registry.test.ts');
     expect(ci).toContain('tests/cli-provider-routing.test.ts');
@@ -317,7 +317,7 @@ describe('Vercel provider smoke configuration', () => {
     expect(ci).toContain('tests/vercel-smoke-evidence.test.ts');
     expect(ci).toContain('tests/vercel-smoke-terminal.test.ts');
     expect(ci).toContain('tests/vercel-workflow.test.ts');
-    expect(ci).toContain("if: matrix.node-version == '24'");
+    expect(ci).toContain("if: matrix.node-version == '26'");
     expect(ci).toContain("if: matrix.node-version == '20.18.1'");
     expect(ci).toContain('npm run test');
   });
