@@ -90,7 +90,7 @@ jobs:
       github.event.action == 'labeled' &&
       github.actor == github.repository_owner &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.label.name == format('provider-smoke:{0}', github.event.pull_request.head.sha)
+      github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)
     permissions:
       contents: read
     uses: ./.github/workflows/vercel-provider-smoke.yml

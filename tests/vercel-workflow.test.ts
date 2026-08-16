@@ -55,7 +55,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(ci).toContain("github.event.action == 'labeled'");
     expect(ci).toContain('github.actor == github.repository_owner');
     expect(ci).toContain("github.event.pull_request.head.repo.full_name == github.repository");
-    expect(ci).toContain("github.event.label.name == format('provider-smoke:{0}', github.event.pull_request.head.sha)");
+    expect(ci).toContain("github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)");
     expect(ci).toContain('uses: ./.github/workflows/vercel-provider-smoke.yml');
     expect(ci).toContain('source_sha: ${{ github.event.pull_request.head.sha }}');
     expect(ci).toContain('path: both');
@@ -79,8 +79,8 @@ describe('Vercel image supply-chain workflow', () => {
 
   it('documents exact provider-smoke authorization and stale-label behavior', async () => {
     const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
-    expect(runbook).toContain('provider-smoke:<40-character-head-SHA>');
-    expect(runbook).toContain('provider-smoke:${head_sha}');
+    expect(runbook).toContain('psmoke:<40-character-head-SHA>');
+    expect(runbook).toContain('psmoke:${head_sha}');
     expect(runbook).toContain('gh pr edit <number> --add-label');
     expect(runbook).toContain('synchronize');
     expect(runbook).toContain('new exact-SHA label');

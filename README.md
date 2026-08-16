@@ -102,12 +102,16 @@ The live image workflow is secret-gated and never auto-promotes upstream drift.
 
 ## Real Vercel provider smoke
 
-The secret-gated provider terminal smoke is a separate manual workflow. Run
-**Actions → Vercel provider terminal smoke → Run workflow** on the default
-branch, then choose `both`, `existing`, or `missing`. It has no pull-request
-trigger, rejects non-default-branch or fork dispatches, and requires approval
-from the protected `vercel-provider-smoke` GitHub environment (so org-owned
-repositories do not depend on an impossible actor/owner equality).
+The secret-gated provider terminal smoke runs only from a trusted source:
+manually via **Actions → Vercel provider terminal smoke → Run workflow** on
+the default branch (choose `both`, `existing`, or `missing`), or on a pull
+request through the caller's exact-SHA `psmoke:` label gate, which requires
+the repository owner to apply the label. The workflow itself has no
+pull-request trigger, rejects non-default-branch or fork dispatches, and
+requires approval from the protected `vercel-provider-smoke` GitHub
+environment; the caller's actor==owner condition means a user-owned
+repository can only self-authorize, and a single-owner environment review is
+effectively self-review (the event guard remains the boundary).
 
 Configure these repository secrets exactly:
 

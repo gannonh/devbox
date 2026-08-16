@@ -18,14 +18,16 @@ reviewed before the pin is replaced.
 ## Issue #5: real provider terminal smoke
 
 Run **Actions → Vercel provider terminal smoke → Run workflow** manually from
-the default branch. Select `both` for the normal gate, or select
-`existing`/`missing` while diagnosing one deterministic source path. This
-workflow is separate from the image candidate workflow and has no
-`pull_request` trigger. Its job guard rejects fork/non-default-branch
-dispatches, grants only `contents: read`, serializes runs, and uses the
-`vercel-provider-smoke` GitHub environment. Configure required reviewers on
-that environment before enabling the credentialed secrets when a human
-approval boundary is desired; the workflow's event guard remains mandatory.
+the default branch as the repository owner. Select `both` for the normal gate,
+or select `existing`/`missing` while diagnosing one deterministic source
+path. This workflow is separate from the image candidate workflow and has no
+`pull_request` trigger of its own; pre-merge runs arrive through the caller's
+exact-SHA `psmoke:` label gate (below). Its job guard rejects fork or
+non-default-branch dispatches and unlabeled PR calls, grants only
+`contents: read`, serializes runs, and uses the `vercel-provider-smoke` GitHub
+environment. Configure required reviewers on that environment before enabling
+the credentialed secrets when a human approval boundary is desired; the
+workflow's event guard remains mandatory.
 The job timeout is 35 minutes; `both` has two sequential 12-minute path
 budgets, two 10-second
 branch-probe budgets, two 2-minute cleanup budgets, and a 30-second
@@ -41,15 +43,24 @@ head SHA immediately before applying it:
 ```bash
 head_sha="$(gh pr view <number> --json headRefOid --jq .headRefOid)"
 [[ "${head_sha}" =~ ^[a-f0-9]{40}$ ]] || { echo 'head SHA is not a full lowercase SHA' >&2; exit 1; }
-gh label create "provider-smoke:${head_sha}" --color B60205 --description 'Authorize Issue #5 provider smoke for this exact SHA' --force
-gh pr edit <number> --add-label "provider-smoke:${head_sha}"
+gh label create "psmoke:${head_sha}" --color B60205 --description 'Authorize Issue #5 provider smoke for this exact SHA' --force
+gh pr edit <number> --add-label "psmoke:${head_sha}"
 ```
 
 The caller starts the reusable workflow only for the repository owner's
 `labeled` event, a same-repository PR head, and the exact label
-`provider-smoke:<40-character-head-SHA>`. The called workflow repeats those
+`psmoke:<40-character-head-SHA>`. The called workflow repeats those
 checks, validates the SHA, and checks out that exact commit. A fork PR never
 qualifies.
+
+The caller's `github.actor == github.repository_owner` condition means the
+repository owner must apply the label: in a user-owned repository only the
+owner can authorize a PR smoke, and in an organization-owned repository only
+the owner (not any other member) can. The `vercel-provider-smoke` GitHub
+environment may additionally require reviewers, but when the only required
+reviewer is the owner themselves (the usual user-owned-repository case),
+GitHub permits self-review; treat environment approval as a human boundary,
+never as a replacement for the event guard.
 
 A later `synchronize` event changes the head and cannot reuse the old
 authorization: the stale label may remain visible, but no credentialed job is
@@ -77,8 +88,10 @@ The script builds the checked-in production adapters and validates
 `VERCEL_IMAGE_PIN` before reading the cloud configuration. This checkout now
 contains the reviewed Issue #4 image promotion, so a local run reaches secret
 configuration validation and fails only when the required configuration is
-missing. That is not provider-smoke evidence: real provider smoke still awaits
-a trusted default-branch credentialed workflow dispatch.
+missing. That is not provider-smoke evidence: real provider smoke runs only
+from a trusted source — the exact-SHA `psmoke:` label gate on the caller's
+`labeled` PR event, or a repository-owner manual dispatch from the default
+branch.
 
 With the promoted pin, the gate validates that the fixture is private, the
 API `full_name` and default branch match, and the requested branch has the

@@ -25,6 +25,19 @@ function environment(overrides: Record<string, string | undefined> = {}): Record
   };
 }
 
+// The nine secret-backed fixture/credential inputs shared by the caller and
+// the reusable smoke workflow, derived from the single in-code contract.
+const PROVIDER_SMOKE_SECRETS = REQUIRED_VERCEL_PROVIDER_SMOKE_ENV.filter((name) => name !== 'SMOKE_REPORT');
+
+// Parse a workflow YAML structurally (js-yaml is a transitive dep via
+// vitest/eslint; dynamic import keeps it out of package.json dependencies),
+// matching the existing release-workflow contract test pattern.
+async function loadWorkflow(path: string): Promise<Record<string, unknown>> {
+  const yaml = await import('js-yaml');
+  const content = await readFile(path, 'utf8');
+  return yaml.load(content) as Record<string, unknown>;
+}
+
 describe('Vercel provider smoke configuration', () => {
   it('budgets both sequential smoke paths plus per-path cleanup inside the outer deadline', () => {
     expect(calculateVercelProviderSmokeBudget('both', 100, 20, 5, 10)).toEqual({
@@ -128,17 +141,7 @@ describe('Vercel provider smoke configuration', () => {
     expect(workflow).toContain('workflow_call:');
     expect(workflow).toMatch(/source_sha:[\s\S]*?required: true[\s\S]*?type: string/);
     expect(workflow).toMatch(/path:[\s\S]*?required: true[\s\S]*?type: string/);
-    for (const secret of [
-      'VERCEL_TOKEN',
-      'VERCEL_TEAM_ID',
-      'VERCEL_PROJECT_ID',
-      'GITHUB_FIXTURE_TOKEN',
-      'GITHUB_FIXTURE_REPOSITORY',
-      'GITHUB_FIXTURE_BRANCH',
-      'GITHUB_FIXTURE_DEFAULT_BRANCH',
-      'GITHUB_FIXTURE_EXPECTED_FILE',
-      'GITHUB_FIXTURE_EXPECTED_CONTENT',
-    ]) {
+    for (const secret of PROVIDER_SMOKE_SECRETS) {
       expect(workflow).toMatch(new RegExp(`${secret}:[\\s\\S]*?required: true`));
     }
   });
@@ -154,11 +157,88 @@ describe('Vercel provider smoke configuration', () => {
     expect(workflow).toContain("github.event.action");
     expect(workflow).toContain("github.actor");
     expect(workflow).toContain("github.event.pull_request.head.repo.full_name");
-    expect(workflow).toContain('provider-smoke:${SOURCE_SHA}');
+    expect(workflow).toContain('psmoke:${SOURCE_SHA}');
     expect(workflow).toContain('github.event.pull_request.head.sha');
     expect(workflow).toContain('GITHUB_REF_NAME');
     expect(workflow).toContain('github.event.repository.default_branch');
     expect(workflow).not.toContain('pull_request_target');
+  });
+
+  it('authorizes smoke with a GitHub-label-safe exact lowercase SHA label', async () => {
+    const sha = 'a'.repeat(40);
+    const label = `psmoke:${sha}`;
+    // GitHub label names are limited to 50 characters; psmoke: + 40 hex is 47.
+    expect(label.length).toBeLessThanOrEqual(50);
+    expect(label).toMatch(/^psmoke:[a-f0-9]{40}$/);
+    expect(sha).toMatch(/^[a-f0-9]{40}$/);
+    // The caller formats the label from the exact PR head SHA and the callee
+    // repeats the comparison against the guard-validated full lowercase SHA.
+    const ci = await loadWorkflow('.github/workflows/ci.yml');
+    const callerJob = (ci.jobs as Record<string, Record<string, unknown>>)['vercel-provider-smoke'];
+    expect(String(callerJob.if)).toContain("format('psmoke:{0}', github.event.pull_request.head.sha)");
+    const callee = await loadWorkflow('.github/workflows/vercel-provider-smoke.yml');
+    const job = (callee.jobs as Record<string, { steps: Array<Record<string, unknown>> }>)['provider-smoke'];
+    const guardRun = String(job.steps.find((s) => s.id === 'guard')?.run ?? '');
+    expect(guardRun).toContain('[[ "${SOURCE_SHA}" =~ ^[a-f0-9]{40}$ ]]');
+    expect(guardRun).toContain('test "${EXPECTED_HEAD_SHA}" = "${SOURCE_SHA}"');
+    expect(guardRun).toContain('test "${EXPECTED_LABEL_NAME}" = "psmoke:${SOURCE_SHA}"');
+  });
+
+  it('structurally maps the caller gate inputs to explicit read-only secrets', async () => {
+    const ci = await loadWorkflow('.github/workflows/ci.yml');
+    const on = ci.on as Record<string, { types?: string[] }>;
+    expect(on.pull_request?.types).toContain('labeled');
+    const jobs = ci.jobs as Record<string, Record<string, unknown>>;
+    const caller = jobs['vercel-provider-smoke'];
+    expect(caller).toBeDefined();
+    expect(String(caller.if)).toContain("format('psmoke:{0}', github.event.pull_request.head.sha)");
+    expect(caller.uses).toBe('./.github/workflows/vercel-provider-smoke.yml');
+    expect((caller.permissions as Record<string, string>).contents).toBe('read');
+    const withInputs = caller.with as Record<string, string>;
+    expect(withInputs.source_sha).toBe('${{ github.event.pull_request.head.sha }}');
+    expect(withInputs.path).toBe('both');
+    const secrets = caller.secrets as Record<string, string>;
+    for (const name of PROVIDER_SMOKE_SECRETS) {
+      expect(secrets[name]).toBe('${{ secrets.' + name + ' }}');
+    }
+    expect(Object.keys(secrets).sort()).toEqual([...PROVIDER_SMOKE_SECRETS].sort());
+    expect(caller.secrets).not.toBe('inherit');
+  });
+
+  it('structurally parses the called workflow inputs, secrets, and evidence env contract', async () => {
+    const workflow = await loadWorkflow('.github/workflows/vercel-provider-smoke.yml');
+    const on = workflow.on as Record<string, Record<string, unknown>>;
+    const call = on.workflow_call as Record<string, Record<string, unknown>>;
+    const inputs = call.inputs as Record<string, Record<string, unknown>>;
+    expect(inputs.source_sha).toMatchObject({ required: true, type: 'string' });
+    expect(inputs.path).toMatchObject({ required: true, type: 'string' });
+    const secrets = call.secrets as Record<string, Record<string, unknown>>;
+    for (const name of PROVIDER_SMOKE_SECRETS) {
+      expect(secrets[name]).toMatchObject({ required: true });
+    }
+    expect(Object.keys(secrets).sort()).toEqual([...PROVIDER_SMOKE_SECRETS].sort());
+    const dispatch = on.workflow_dispatch as Record<string, Record<string, unknown>>;
+    const dispatchPath = dispatch.inputs as Record<string, Record<string, unknown>>;
+    expect((dispatchPath.path as Record<string, unknown>).type).toBe('choice');
+    expect(dispatchPath.path.options).toEqual(['both', 'existing', 'missing']);
+    const job = (workflow.jobs as Record<string, Record<string, unknown>>)['provider-smoke'];
+    expect(job['runs-on']).toBe('ubuntu-latest');
+    expect((job.environment as Record<string, string>).name).toBe('vercel-provider-smoke');
+    expect((job.permissions as Record<string, string>).contents).toBe('read');
+    // runner.temp is unavailable at job level; the evidence directory is
+    // established from $RUNNER_TEMP via GITHUB_ENV after checkout.
+    expect(JSON.stringify(job.env)).not.toContain('runner.temp');
+    const steps = job.steps as Array<Record<string, unknown>>;
+    expect((steps[0] as Record<string, unknown>).id).toBe('guard');
+    expect(JSON.stringify((steps[0] as Record<string, unknown>).env)).not.toContain('${{ secrets.');
+    const smokeStep = steps.find((s) => s.name === 'Run real provider smoke') as Record<string, unknown>;
+    const smokeEnv = smokeStep.env as Record<string, string>;
+    for (const name of PROVIDER_SMOKE_SECRETS) {
+      expect(smokeEnv[name]).toBe('${{ secrets.' + name + ' }}');
+    }
+    expect(smokeEnv.SMOKE_REPORT).toBe('${{ env.ARTIFACT_DIR }}/provider-smoke.json');
+    const upload = steps.find((s) => s.name === 'Upload redacted provider smoke evidence') as Record<string, unknown>;
+    expect((upload.with as Record<string, string>).path).toBe('${{ env.ARTIFACT_DIR }}');
   });
 
   it('checks out, records, and uploads the exact authorized source identity', async () => {

@@ -63,7 +63,6 @@ jobs:
     permissions:
       contents: read
     env:
-      ARTIFACT_DIR: ${{ runner.temp }}/vercel-provider-smoke-evidence
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       SMOKE_PATH: ${{ inputs.path }}
       SMOKE_TIMEOUT_MS: '720000'
@@ -131,8 +130,8 @@ jobs:
                 echo 'provider smoke source SHA does not match the current PR head' >&2
                 exit 1
               }
-              test "${EXPECTED_LABEL_NAME}" = "provider-smoke:${SOURCE_SHA}" || {
-                echo 'provider smoke requires the exact provider-smoke:<full-head-sha> label' >&2
+              test "${EXPECTED_LABEL_NAME}" = "psmoke:${SOURCE_SHA}" || {
+                echo 'provider smoke requires the exact psmoke:<full-head-sha> label' >&2
                 exit 1
               }
               ;;
@@ -161,14 +160,16 @@ jobs:
       - name: Prepare evidence directory
         run: |
           set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/vercel-provider-smoke-evidence"
+          echo "ARTIFACT_DIR=${artifact_dir}" >> "${GITHUB_ENV}"
           checked_out_sha="$(git rev-parse HEAD)"
           [[ "${checked_out_sha}" == "${SOURCE_SHA}" ]] || {
             echo "checkout does not match authorized source SHA: ${checked_out_sha} != ${SOURCE_SHA}" >&2
             exit 1
           }
-          mkdir -p "${ARTIFACT_DIR}"
+          mkdir -p "${artifact_dir}"
           printf '{"schemaVersion":1,"workflow":"vercel-provider-terminal-smoke","sourceSha":"%s","path":"%s","redacted":false}\n' \
-            "${checked_out_sha}" "${SMOKE_PATH}" > "${ARTIFACT_DIR}/invocation.json"
+            "${checked_out_sha}" "${SMOKE_PATH}" > "${artifact_dir}/invocation.json"
 
       - name: Build production provider adapters
         run: npm run build
