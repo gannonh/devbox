@@ -3,6 +3,7 @@ import type { VercelInteractiveSandbox } from './terminal.js';
 const DEFAULT_TIMEOUT_INTERVAL_MS = 60_000;
 const DEFAULT_TIMEOUT_EXTENSION_MS = 5 * 60_000;
 const DEFAULT_TIMEOUT_BUFFER_MS = 10_000;
+const MIN_TIMEOUT_DELAY_MS = 1_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 
 export interface VercelTerminalTimeoutScheduler {
@@ -81,7 +82,7 @@ function timeoutDelay(
   if (expiresAt === undefined || !Number.isFinite(expiresAt)) {
     return DEFAULT_TIMEOUT_INTERVAL_MS;
   }
-  return Math.min(Math.max(0, expiresAt - Date.now() - bufferMs), MAX_TIMER_DELAY_MS);
+  return Math.min(Math.max(MIN_TIMEOUT_DELAY_MS, expiresAt - Date.now() - bufferMs), MAX_TIMER_DELAY_MS);
 }
 
 function isPositiveFinite(value: number): boolean {

@@ -233,7 +233,6 @@ async function attachTerminal(input: {
       socket.removeListener('close', onClose);
       streams.stdout.removeListener('error', onStdoutError);
       streams.stdout.removeListener('drain', onDrain);
-      socket.removeListener('drain', onSocketDrain);
       streams.stdin.removeListener('data', onStdin);
       streams.stdin.removeListener('end', onEof);
       streams.stdin.removeListener('close', onInputClose);
@@ -317,29 +316,34 @@ async function attachTerminal(input: {
         finish(pendingTerminalResult ?? { status: 'detached', reason: 'error' });
       }, backpressureTimeoutMs);
     };
+    const writeOutput = (chunk: Buffer): boolean => {
+      try {
+        if (streams.stdout.write(chunk)) return true;
+        blockedOutputBytes = chunk.length;
+        outputBackpressured = true;
+        pauseSocket(socket);
+        socketFlowPaused = true;
+        streams.stdout.once('drain', onDrain);
+        armOutputDrainTimeout();
+        return false;
+      } catch (error) {
+        onStdoutError(error);
+        return false;
+      }
+    };
     const flushOutput = () => {
       if (settled || outputBackpressured) return;
       while (outputQueue.length > 0 && !settled) {
         const chunk = outputQueue.shift();
-        if (!chunk) continue;
-        try {
-          if (!streams.stdout.write(chunk)) {
-            blockedOutputBytes = chunk.length;
-            outputBackpressured = true;
-            pauseSocket(socket);
-            socketFlowPaused = true;
-            streams.stdout.once('drain', onDrain);
-            armOutputDrainTimeout();
-            return;
-          }
-        } catch (error) {
-          onStdoutError(error);
-          return;
-        }
+        if (!chunk || !writeOutput(chunk)) return;
       }
       maybeFinishPendingResult();
     };
     const enqueueOutput = (chunk: Buffer) => {
+      if (chunk.length > maxPendingOutputBytes && !hasPendingOutput()) {
+        writeOutput(chunk);
+        return;
+      }
       if (outputQueue.byteLength + blockedOutputBytes + chunk.length > maxPendingOutputBytes
         || !outputQueue.enqueue(chunk)) {
         reportError(new Error('Terminal output backpressure limit exceeded'));
@@ -375,28 +379,26 @@ async function attachTerminal(input: {
         requestTerminal({ status: 'detached', reason: 'error' });
         return;
       }
-      if (buffer.length > maxPendingOutputBytes) {
-        reportError(new Error('Terminal output backpressure limit exceeded'));
-        requestTerminal({ status: 'detached', reason: 'error' });
-        return;
-      }
-      if (isBinary) {
-        enqueueOutput(buffer);
-        return;
-      }
-      try {
-        const message = JSON.parse(buffer.toString('utf8')) as {
-          type?: unknown;
-          code?: unknown;
-        };
-        if (message.type === 'exit' && typeof message.code === 'number') {
-          requestExit(message.code);
+      if (!isBinary) {
+        if (buffer.length > MAX_CONTROL_FRAME_BYTES) {
+          reportError(new Error('Terminal control frame limit exceeded'));
+          requestTerminal({ status: 'detached', reason: 'error' });
           return;
         }
-        enqueueOutput(buffer);
-      } catch {
-        enqueueOutput(buffer);
+        try {
+          const message = JSON.parse(buffer.toString('utf8')) as {
+            type?: unknown;
+            code?: unknown;
+          };
+          if (message.type === 'exit' && typeof message.code === 'number') {
+            requestExit(message.code);
+            return;
+          }
+        } catch {
+          // Malformed text remains terminal output below.
+        }
       }
+      enqueueOutput(buffer);
     };
     const onSocketError = (error: unknown) => {
       reportError(error);
@@ -404,7 +406,6 @@ async function attachTerminal(input: {
     };
     const sendQueue = new BoundedBufferQueue(maxPendingInputBytes);
     let sendInFlight = false;
-    let waitingForSocketDrain = false;
     let pendingInputResult: VercelTerminalResult | undefined;
     const pauseInput = () => {
       if (inputFlowPaused || settled) return;
@@ -432,7 +433,6 @@ async function attachTerminal(input: {
       sendInFlight = false;
       if (inputSendTimer !== undefined) clearTimeout(inputSendTimer);
       inputSendTimer = undefined;
-      waitingForSocketDrain = false;
       if (error) {
         reportError(error);
         requestTerminal({ status: 'detached', reason: 'error' });
@@ -449,7 +449,7 @@ async function attachTerminal(input: {
       }
     };
     const flushSendQueue = () => {
-      if (settled || sendInFlight || waitingForSocketDrain || sendQueue.length === 0) return;
+      if (settled || sendInFlight || sendQueue.length === 0) return;
       const chunk = sendQueue.peek();
       if (!chunk) return;
       sendInFlight = true;
@@ -466,24 +466,10 @@ async function attachTerminal(input: {
         }
       }, backpressureTimeoutMs);
       try {
-        if (socket.send.length >= 2) {
-          socket.send(chunk, completeInputSend);
-          return;
-        }
-        const accepted = socket.send(chunk);
-        if (accepted === false) {
-          waitingForSocketDrain = true;
-          socket.once('drain', onSocketDrain);
-          return;
-        }
-        completeInputSend();
+        socket.send(chunk, completeInputSend);
       } catch (error) {
         completeInputSend(error instanceof Error ? error : new Error(String(error)));
       }
-    };
-    const onSocketDrain = () => {
-      if (settled) return;
-      completeInputSend();
     };
     const sendInput = (chunk: Buffer) => {
       if (socket.readyState !== OPEN || settled || chunk.length === 0) return;
@@ -529,16 +515,12 @@ async function attachTerminal(input: {
         return;
       }
       try {
-        if (socket.send.length >= 2) {
-          socket.send(frame, (error) => {
-            if (error) {
-              reportError(error);
-              requestTerminal({ status: 'detached', reason: 'error' });
-            }
-          });
-        } else {
-          socket.send(frame);
-        }
+        socket.send(frame, (error) => {
+          if (error) {
+            reportError(error);
+            requestTerminal({ status: 'detached', reason: 'error' });
+          }
+        });
       } catch (error) {
         reportError(error);
         requestTerminal({ status: 'detached', reason: 'error' });

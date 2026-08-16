@@ -256,6 +256,68 @@ describe('Vercel terminal adapter', () => {
     expect(terminalStreams.input.listeners('close')).toContain(existingClose);
   });
 
+  it('handles exit control text before the pending output byte limit', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: streams(),
+      signalSource: new EventEmitter(),
+      maxPendingOutputBytes: 16,
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+
+    const exitFrame = JSON.stringify({ type: 'exit', code: 23 });
+    expect(Buffer.byteLength(exitFrame)).toBeGreaterThan(16);
+    sockets[0].emitMessage(exitFrame, false);
+
+    await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 23 });
+  });
+
+  it('writes one oversized binary PTY frame directly when output is not pending', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams();
+    const output: Buffer[] = [];
+    terminalStreams.stdout.write = ((chunk: string | Uint8Array) => {
+      output.push(Buffer.from(chunk));
+      return true;
+    }) as typeof terminalStreams.stdout.write;
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+
+    const largeOutput = Buffer.alloc(100 * 1024, 65);
+    sockets[0].emitMessage(largeOutput, true);
+
+    expect(output).toHaveLength(1);
+    expect(output[0]).toEqual(largeOutput);
+    expect(sockets[0].pauseCount).toBe(0);
+    sockets[0].emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false);
+    await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
+  });
+
   it('pipes binary PTY output to stdout and binary stdin to the WebSocket', async () => {
     const sockets: FakeWebSocket[] = [];
     const terminal = createVercelTerminalAdapter({
@@ -462,6 +524,34 @@ describe('Vercel terminal adapter', () => {
 
     await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'error' });
     expect(Buffer.concat(errors).toString()).toMatch(/connection failed/);
+  });
+
+  it('uses the control-frame guard for oversized text messages', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const errors: Buffer[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams();
+    terminalStreams.error.on('data', (chunk) => errors.push(Buffer.from(chunk)));
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+
+    sockets[0].emitMessage('x'.repeat(64 * 1024 + 1), false);
+
+    await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'error' });
+    expect(Buffer.concat(errors).toString()).toMatch(/control frame limit/);
   });
 
   it('routes stdin errors through redacted cleanup without an uncaught EventEmitter error', async () => {
@@ -927,6 +1017,45 @@ describe('Vercel terminal adapter', () => {
     expect(sockets[0].sent).toHaveLength(1);
     expect(Buffer.concat(errors).toString()).toMatch(/positive integers/);
     expect(terminalStreams.input.isRaw).toBe(false);
+  });
+
+  it('clamps expired static timeout metadata to a safe nonzero delay', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const timers: Array<{ callback: () => void; delay: number; cancelled: boolean }> = [];
+    const scheduler = {
+      setTimeout: (callback: () => void, delay: number) => {
+        const timer = { callback, delay, cancelled: false };
+        timers.push(timer);
+        return timer;
+      },
+      clearTimeout: (timer: { cancelled: boolean }) => {
+        timer.cancelled = true;
+      },
+    };
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const resultPromise = terminal.attach({
+      createdAt: new Date(Date.now() - 10_000),
+      timeout: 100,
+      extendTimeout: vi.fn(async () => {}),
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: streams(),
+      signalSource: new EventEmitter(),
+      timeoutExtension: { scheduler },
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(timers).toHaveLength(1));
+
+    expect(timers[0].delay).toBe(1_000);
+    sockets[0].emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false);
+    await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
   });
 
   it('extends sandbox timeout on a cancellable schedule and stops extending after teardown', async () => {
