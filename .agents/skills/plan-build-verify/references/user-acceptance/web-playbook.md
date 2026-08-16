@@ -12,40 +12,46 @@ If the needed skill or CLI is missing, install it with `npx agents install <skil
 
 ## Evidence priority
 
-1. Video of the feature flow, when practical, especially for UI changes involving interaction, layout, transitions, state changes, or error handling.
-2. Screenshots at start, key interaction, and final result.
-3. Accessibility, DOM, or body-text snapshots that confirm the state.
-4. Console, network, or app logs when they explain behavior.
-5. Negative evidence for bugfixes: saved searches showing the old error, flag, or stale wording is absent from logs and active source/docs.
+1. Passing E2E test through the browser-visible public interface.
+2. Required starting and final screenshots, plus key-interaction screenshots when a criterion needs intermediate proof.
+3. Video of the feature flow when practical, especially for interaction, transitions, timing, state changes, or error handling.
+4. Accessibility, DOM, or body-text snapshots that confirm the state.
+5. Console, network, or app logs when they explain behavior.
+6. Negative evidence for bugfixes: saved searches showing the old error, flag, or stale wording is absent from logs and active source/docs.
 
-If video is skipped, record the reason in `evidence.md`. If a preferred screenshot tool fails, use the next fallback and save a note in `logs/`.
+If a preferred screenshot tool fails, use one fallback and save a note in `logs/`; if it also fails, mark the slice blocked. For video, use `agent-browser record start/stop` or existing Playwright video. After the preferred recorder and one bounded retry or fallback fail, add the standardized `Video: Skipped` note and continue.
 
 ## Web app workflow
 
 1. Start the app with the repo's documented dev command.
 2. Open the app in a real browser.
 3. Navigate to the feature through the normal user path.
-4. Capture a starting screenshot.
-5. Perform the user actions: click, fill, select, scroll, upload, download, or navigate.
-6. Capture video when practical, then screenshots through the meaningful checkpoints.
-7. Confirm the final visible state with a fresh snapshot or screenshot.
-8. Save logs or generated files that prove the result.
+4. Run the checked-in browser E2E test and capture it with command kind `e2e`.
+5. Capture a starting screenshot.
+6. Start video when practical.
+7. Perform the user actions: click, fill, select, scroll, upload, download, or navigate.
+8. Capture the required final screenshot and any key checkpoint needed by an acceptance criterion.
+9. Stop and save video, or record the standardized skip note after the bounded attempt.
+10. Save logs or generated files that prove the result.
 
 Example shape:
 
 ```bash
 npm run dev 2>&1 | tee uat-evidence/web-<timestamp>/logs/dev-server.log
+node scripts/user-acceptance/run-capture-command.mjs --evidence <dir> --kind e2e --name feature-e2e -- npm run test:e2e
 agent-browser open http://localhost:3000
 agent-browser snapshot -i > uat-evidence/web-<timestamp>/logs/start-snapshot.txt
 agent-browser screenshot uat-evidence/web-<timestamp>/screenshots/01-start.png
+agent-browser record start uat-evidence/web-<timestamp>/recordings/feature-flow.webm
 # interact with the feature using current element refs
 agent-browser screenshot uat-evidence/web-<timestamp>/screenshots/02-result.png
+agent-browser record stop
 agent-browser snapshot -i > uat-evidence/web-<timestamp>/logs/result-snapshot.txt
 ```
 
 ## Adversarial evidence review
 
-After collecting artifacts, ask an adversarial review subagent to compare the evidence against the spec, acceptance criteria, requirements, PR description, or ticket when subagents are available. The review must return `Pass` or `Fail` for each criterion and cite exact artifact paths or log lines. Treat missing video, missing screenshots, inaccessible files, or ambiguous proof as a failed criterion until corrected or explicitly documented as blocked.
+After collecting artifacts, ask an adversarial review subagent to compare the evidence against the spec, acceptance criteria, requirements, PR description, or ticket when subagents are available. The review must return `Pass` or `Fail` for each criterion and cite exact artifact paths or log lines. Treat a missing/failed E2E test, missing screenshots, inaccessible required files, or ambiguous proof as a failed or blocked criterion. Missing video alone is acceptable only with the standardized skip note, unless the criterion explicitly requires temporal proof.
 
 If subagents are unavailable, perform the same check inline and label it `Inline adversarial review`.
 

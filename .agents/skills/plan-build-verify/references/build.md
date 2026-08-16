@@ -9,7 +9,9 @@ Build is the second phase in Plan → Build → Verify. It starts from a GitHub 
 - Spec issue number or URL. For an epic, the specific sub-issue to build.
 - `status:approved` label on that issue, or explicit user override.
 - `## Acceptance criteria` section with observable pass/fail outcomes.
-- `## Build handoff` section with scope, non-goals, ordered phases, verification commands, and blocking open questions.
+- `## Build handoff` section with scope, non-goals, ordered slices, verification commands, and blocking open questions.
+- A `## Demonstration` section naming the consumer, action/input, observable result, and evidence. An approved technical-enablement exception instead names its blocker, minimum scope, contract/integration evidence, and immediate user-facing slice unlocked.
+- A `## Verification` section naming the required public-boundary E2E seam/command, or the contract test for approved technical enablement, plus screenshot checkpoints for visual targets.
 
 ## Required bundled workflow
 
@@ -29,7 +31,7 @@ Before editing files:
 2. Read the issue completely:
 
 ```bash
-gh issue view <N> --json number,title,body,labels,state,url,comments,blockedBy
+gh issue view <N> --json number,title,body,labels,state,url,comments,blockedBy,blocking
 gh sub-issue list <N>    # if the issue is an epic
 ```
 
@@ -39,18 +41,19 @@ gh sub-issue list <N>    # if the issue is an epic
 
 ```bash
 for c in $(gh sub-issue list <N> --json number | jq -r '.[].number'); do
-  gh issue view "$c" --json number,title,labels,state,blockedBy
+  gh issue view "$c" --json number,title,labels,state,blockedBy,blocking
 done
 ```
 
 If several are ready, ask which to build or confirm the order. State the choice before proceeding.
 
 6. Confirm the issue contains `## Acceptance criteria` with concrete checkbox criteria. If missing or ambiguous, add `needs:acceptance-criteria`, stop, and return to Plan to fix the issue.
-7. Run the phase-entry hygiene check from `references/conventions.md` and report findings.
-8. Inspect repo instructions such as `AGENTS.md`, `CLAUDE.md`, and README command sections.
-9. Check worktree state with `git status --short --branch`.
-10. Confirm `Blocking open questions` is `None`, or confirm the user explicitly approved proceeding with listed questions.
-11. Create or check out the working branch:
+7. Confirm `## Demonstration` describes behavior that can be exercised after this issue alone. If it depends on unfinished sibling layers before anything is observable, stop and return to Plan to re-slice the work. A documented minimal technical-enablement exception may proceed only when it records the blocker, minimum scope, contract/integration evidence, and immediate user-facing slice it unlocks, and that slice directly depends on this issue.
+8. Run the phase-entry hygiene check from `references/conventions.md` and report findings.
+9. Inspect repo instructions such as `AGENTS.md`, `CLAUDE.md`, and README command sections.
+10. Check worktree state with `git status --short --branch`.
+11. Confirm `Blocking open questions` is `None`, or confirm the user explicitly approved proceeding with listed questions.
+12. Create or check out the working branch:
 
 ```bash
 gh issue develop <N> --name "<N>-<kebab-title>" --base <default-branch> --checkout
@@ -58,10 +61,10 @@ gh issue develop <N> --name "<N>-<kebab-title>" --base <default-branch> --checko
 
 Use plain `git switch -c <N>-<kebab-title>` if `gh issue develop` is unavailable or the repo blocks it. Do not start implementation on `main` or `master` without explicit user consent.
 
-11. Capture a base SHA with `git rev-parse HEAD`.
-12. Identify verification commands from the issue's `## Build handoff` and `## Verification` sections plus repo scripts.
-13. Confirm required tools are available: todo tracking and subagent dispatch if using the subagent path.
-14. Move the issue into the Build phase:
+13. Capture a base SHA with `git rev-parse HEAD`.
+14. Identify verification commands from the issue's `## Build handoff` and `## Verification` sections plus repo scripts.
+15. Confirm required tools are available: todo tracking and subagent dispatch if using the subagent path.
+16. Move the issue into the Build phase:
 
 ```bash
 gh issue edit <N> --add-label "phase:build"
@@ -72,7 +75,9 @@ Stop and ask if the issue is unapproved, the worktree has unrelated changes, the
 
 ### 2. Extract tasks and create todos
 
-Extract implementation tasks from the issue's `## Implementation phases` and `## Build handoff` sections. Preserve the full task text, context, files, acceptance criteria, and verification commands.
+Extract implementation tasks from the issue's `## Delivery slices` and `## Build handoff` sections. Preserve the full task text, context, files, acceptance criteria, demonstration path, required public-boundary E2E/contract test, screenshot checkpoints, and verification commands.
+
+Implementation tasks inside a slice may follow technical layers, but the selected issue must finish end to end. Do not stop after a storage, backend, protocol, or UI layer while claiming the slice is implemented.
 
 Create todo items for all tasks when a todo tool is available. Keep exactly one implementation task in progress at a time.
 
@@ -94,6 +99,7 @@ Give the subagent:
 - The relevant issue body sections, pasted into the prompt.
 - Task ID and full task text.
 - Acceptance criteria for the task.
+- Slice target: consumer, action/input, observable result, and demonstration/evidence. For approved technical enablement, provide its blocker, minimum scope, contract/integration evidence, and immediate user-facing slice unlocked.
 - Relevant code paths and repo context.
 - Approved scope and non-goals.
 - Base SHA for the task.
@@ -130,6 +136,7 @@ The reviewer must inspect actual code and compare it to:
 - The issue body (give the reviewer the issue number so it can run `gh issue view <N>`).
 - Task text.
 - Acceptance criteria.
+- Slice target: consumer, action/input, observable result, and demonstration/evidence, or the approved technical-enablement exception.
 - Non-goals.
 - Approved deviations recorded in issue comments.
 
@@ -146,6 +153,7 @@ Provide:
 - Base SHA before task.
 - Head SHA after implementation.
 - Test evidence.
+- Slice target: consumer, action/input, observable result, and demonstration/evidence, or the approved technical-enablement exception.
 - Approved deviations.
 
 If the reviewer finds Critical or Important issues, send them back to the implementer and re-run code quality review after fixes. Do not mark the task complete while review issues remain open.
@@ -174,8 +182,8 @@ For each task:
 
 1. Read the task text and acceptance criteria.
 2. Read and follow `references/tdd/workflow.md` before writing implementation code.
-3. Implement the smallest slice that satisfies the task.
-4. Run required verification commands.
+3. Implement the smallest end-to-end slice that satisfies the task and reaches the stated public interface. For approved technical enablement, implement only its minimum scope.
+4. Run required verification commands and the documented demonstration or enablement evidence.
 5. Perform a written spec compliance check against the task and non-goals.
 6. Perform a written code quality check using a compatible installed code-review skill or the compact rubric in `references/code-reviewer.md`.
 7. Fix issues and re-run checks until clean.
@@ -211,10 +219,11 @@ Do not silently implement a different spec.
 After all tasks pass their per-task gates:
 
 1. Capture final head SHA.
-2. Run the full verification command set from the issue.
-3. Dispatch or perform a final whole-branch review against the issue body.
-4. Fix final-review issues.
-5. Re-run final review until no blocking issues remain.
+2. Run the full verification command set from the issue, including the checked-in public-boundary E2E test for a user-facing slice or contract test for approved technical enablement.
+3. Exercise the issue's `## Demonstration` through the public interface. For an approved technical-enablement exception, run the documented contract/integration check proving the next slice can consume it.
+4. Dispatch or perform a final whole-branch review against the issue body.
+5. Fix final-review issues.
+6. Re-run final review until no blocking issues remain.
 
 ## Push the branch
 
@@ -241,7 +250,8 @@ Start the comment with `## Build completion report` and include:
 - Branch name, base SHA, and final head SHA.
 - Tasks completed.
 - Files changed.
-- Tests and verification commands run, with results.
+- Tests and verification commands run, with the required E2E/contract result called out explicitly.
+- Demonstration exercised and its observable result, or the approved technical-enablement evidence.
 - Review gates completed.
 - Approved deviations, with links to their comments.
 - Known follow-up issues, with links if they were opened.
@@ -302,7 +312,8 @@ Stop and ask when:
 - The branch is `main` or `master` and the user has not approved direct implementation there.
 - No dedicated TDD workflow is bundled or readable.
 - Acceptance criteria are missing, vague, or not testable.
-- Required verification commands are unknown.
+- The selected issue has no independently exercisable demonstration and no approved technical-enablement exception.
+- The public-boundary E2E/contract seam or required verification commands are unknown.
 - Reviewers find unresolved issues.
 - The spec is wrong or incomplete.
 

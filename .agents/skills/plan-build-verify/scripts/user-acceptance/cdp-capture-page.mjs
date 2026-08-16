@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 function arg(name, fallback = '') {
   const index = process.argv.indexOf(`--${name}`);
@@ -12,10 +12,11 @@ const cdp = arg('cdp', 'http://127.0.0.1:9222');
 const title = arg('title');
 const urlContains = arg('url-contains');
 const screenshotPath = arg('screenshot');
+const checkpoint = arg('checkpoint');
 const textPath = arg('text');
 
-if (!evidenceDir || !screenshotPath) {
-  console.error('Usage: cdp-capture-page.mjs --evidence <dir> --cdp http://127.0.0.1:9222 [--title <title>|--url-contains <text>] --screenshot <path> [--text <path>]');
+if (!evidenceDir || !screenshotPath || !['starting', 'key', 'final'].includes(checkpoint)) {
+  console.error('Usage: cdp-capture-page.mjs --evidence <dir> --cdp http://127.0.0.1:9222 [--title <title>|--url-contains <text>] --screenshot <relative-path> --checkpoint <starting|key|final> [--text <relative-path>]');
   process.exit(2);
 }
 
@@ -26,7 +27,14 @@ function writeManifest(dir, manifest) {
   writeFileSync(join(dir, 'evidence.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 function artifactPath(path) {
-  return path.startsWith(evidenceDir) ? path : join(evidenceDir, path);
+  if (isAbsolute(path)) throw new Error(`Artifact path must be relative to the evidence directory: ${path}`);
+  const root = resolve(evidenceDir);
+  const candidate = resolve(root, path);
+  const fromRoot = relative(root, candidate);
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new Error(`Artifact path escapes the evidence directory: ${path}`);
+  }
+  return candidate;
 }
 
 const list = await fetch(`${cdp.replace(/\/$/, '')}/json/list`).then((r) => r.json());
@@ -79,7 +87,7 @@ ws.close();
 
 if (existsSync(join(evidenceDir, 'evidence.json'))) {
   const manifest = readManifest(evidenceDir);
-  manifest.artifacts.push({ type: 'screenshot', path: resolvedScreenshotPath, description: `CDP screenshot for ${target.title}` });
+  manifest.artifacts.push({ type: 'screenshot', checkpoint, path: resolvedScreenshotPath, description: `CDP ${checkpoint} screenshot for ${target.title}` });
   if (resolvedTextPath) manifest.artifacts.push({ type: 'log', path: resolvedTextPath, description: `CDP text snapshot for ${target.title}` });
   writeManifest(evidenceDir, manifest);
 }

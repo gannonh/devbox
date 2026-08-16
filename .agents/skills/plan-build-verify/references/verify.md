@@ -58,16 +58,18 @@ Evidence artifacts land under `uat-evidence/<target>-<timestamp>/` as described 
 
 ## Step 3: Write durable acceptance tests
 
-Evidence proves the criteria pass **now**. Tests keep them passing. Before opening the PR, encode every acceptance criterion that can be automated as a checked-in test.
+Evidence proves the criteria pass **now**. Tests keep them passing. Before opening the PR, confirm Build checked in at least one end-to-end test per user-facing slice through its real public interface; if it did not, return to Build and add the missing test before continuing.
 
-- Add end-to-end or integration tests that assert the criterion's observable outcome, not the implementation detail that currently satisfies it.
-- Name each test so the criterion it covers is obvious, and reference the issue number in the test file or describe block.
+- The required test exercises UI, CLI, API, SDK, or operator behavior and asserts the slice's observable result. A repository may call it a system or integration test; it counts only when it crosses the public boundary rather than testing internal units.
+- Record the passing evidence run with `run-capture-command.mjs --kind e2e`. An approved technical-enablement exception uses a contract/integration test recorded with `--kind contract`.
+- Add further automated coverage for every acceptance criterion that can be automated.
+- Name each test so the slice or criterion it covers is obvious, and reference the issue number in the test file or describe block.
 - Follow the repo's existing test layout and runner. Read `references/tdd/tests.md` for the standard on test quality.
 - Run the full suite locally and make it pass before the PR exists. Opening a PR with a known-red suite wastes a CI cycle.
 
-A criterion that cannot be automated (visual design, hardware interaction, third-party sandbox) stays evidence-only. Record it in the matrix with method `Manual` and say why automation was not possible. Do not write a hollow test that asserts nothing just to fill the row.
+A visual, hardware, or third-party criterion may still need manual evidence in addition to the required slice-level E2E test. Record it in the matrix with method `Manual` and say why that criterion cannot be automated. Do not write a hollow test that asserts nothing just to fill the row.
 
-These tests are part of the branch and are pushed with it. They are what makes CI in Step 7 a real gate rather than a formality.
+If no viable E2E path can run after one focused setup or repair attempt, mark the slice `Blocked` and stop at the evidence report. Do not spin on harness setup or replace the test with screenshots. These tests are part of the branch and are pushed with it; they make CI in Step 7 a real gate rather than a formality.
 
 ## Step 4: Adversarial evidence review
 
@@ -241,6 +243,7 @@ Present:
 - The acceptance-criteria matrix with totals.
 - PR link, final head SHA, and CI state.
 - The review ledger: what was fixed, what was declined and why.
+- Required evidence status: E2E/contract result, screenshot paths for visual targets, and video path or standardized skip reason.
 - Anything left manual or unverifiable.
 
 Wait for explicit acceptance. Do not self-accept, and do not merge. Merging is the user's decision even when everything is green.

@@ -17,6 +17,15 @@ Task tool (general-purpose):
 
     [FULL TEXT of task from approved spec. Paste it here. Do not make the subagent read the whole spec to discover the task.]
 
+    ## Slice target
+
+    Consumer: [human, operator, or API/SDK client]
+    Action or input: [what they do]
+    Observable result: [what becomes visible or usable]
+    Demonstration/evidence: [how to exercise or inspect it]
+
+    For an approved technical-enablement exception, replace the normal target with the documented blocker, minimum scope, contract/integration evidence, and immediate user-facing slice unlocked.
+
     ## Acceptance criteria
 
     [Task-specific acceptance criteria]
@@ -94,6 +103,7 @@ Task tool (general-purpose):
     - Did I follow `references/tdd/workflow.md`?
     - Did tests verify behavior, not implementation details?
     - Did verification commands pass?
+    - Does this work advance the stated consumer/action → observable-result slice target, or stay within the approved technical-enablement exception?
     - Are names clear and consistent with project language?
     - Did I avoid speculative features?
 

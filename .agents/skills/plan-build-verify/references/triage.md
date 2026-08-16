@@ -50,6 +50,8 @@ Check every issue in scope against these rules.
 - Missing `## Acceptance criteria` heading.
 - Acceptance criteria present but not checkbox-formatted, empty, or written with vague language ("works", "fast", "robust", "easy") and no observable threshold.
 - Missing `## Build handoff` on a `status:approved` issue.
+- A standalone spec or sub-spec missing `## Demonstration`, or whose demonstration depends on unfinished sibling issues before any behavior is observable.
+- A normal demonstration that shows only an internal artifact, migration, unit test, schema, or component. It must name a human, operator, or API/SDK consumer and exercise a public interface; otherwise require the technical-enablement exception.
 - `Blocking open questions` that is not `None` on a `status:approved` issue.
 - Placeholder text: `TBD`, `TODO`, `<...>`, unfilled template sections.
 
@@ -67,6 +69,8 @@ Check every issue in scope against these rules.
 - `kind:sub-spec` with no parent.
 - A sub-issue whose acceptance criteria do not roll up to any parent criterion.
 - A parent whose acceptance criteria are not covered by any child.
+- Children cut primarily by architecture layer or component—such as storage, backend, protocol, frontend, and tests—when none delivers a consumer/action → observable result through a public interface.
+- A technical-enablement child with no documented necessity, minimum scope, contract evidence, or named immediate user-facing slice.
 - Sub-issues nested more than one level deep.
 - A parent at `status:verified` with unverified children.
 
@@ -79,10 +83,12 @@ Read the graph with `gh issue view <N> --json number,title,state,labels,blockedB
 - A dependency cycle. This is a decomposition error, not a label defect.
 - A child whose `## Context` states "Depends on #N" with no matching `blockedBy` edge, so the block is invisible to the UI and to Build.
 - An issue blocked by something in a repo the user cannot access.
+- A technical-enablement child whose named user-facing slice does not directly depend on it, does not come next in delivery order, or is separated from it by another technical-only child.
 
 **Scope integrity**
 
-- A spec whose acceptance criteria span more than one independently buildable phase. Flag `needs:decomposition`.
+- A spec whose acceptance criteria span more than one independently deliverable user outcome. Flag `needs:decomposition`.
+- A waterfall epic whose children expose only internal technical artifacts rather than public-interface behavior for a human, operator, or API/SDK consumer. Flag `needs:decomposition` and return it to Plan for re-slicing.
 - Duplicate or overlapping specs. Check with `gh search issues --repo <owner>/<repo> "<keywords>"`.
 - An issue that is a bug report or chore rather than a spec, carrying `kind:spec`.
 
@@ -119,6 +125,7 @@ Stale (needs a decision)
 
 Scope
   #149 and #152 overlap on export handling             → merge, or split the boundary?
+  #156 children are storage → API → UI layers           → re-slice by demonstrable user outcome
 ```
 
 ## Step 4: Apply corrections
@@ -174,15 +181,17 @@ An issue is **ready** when:
 
 - It is `status:approved`.
 - It has usable acceptance criteria.
+- It has an independently exercisable `## Demonstration` through a human, operator, or API/SDK public interface, or a justified minimal technical-enablement exception directly blocking the next user-facing slice.
 - It is not `status:blocked`, and `gh issue view <N> --json blockedBy` returns no open blockers.
 - Any dependency stated in prose in the body is also satisfied, whether or not it was recorded as an edge.
 - No open PR already implements it.
 
 Rank ready issues by:
 
-1. Unblocking value: how many other issues depend on it.
-2. Milestone or explicit user priority.
-3. Age, oldest first, among equals.
+1. Earliest demonstrable value: prefer the next user-facing slice. Put a technical-enablement issue immediately ahead of it only when the documented exception and direct dependency are valid.
+2. Unblocking value: how many other issues depend on it.
+3. Milestone or explicit user priority.
+4. Age, oldest first, among equals.
 
 Present the top few with the reason each is ranked where it is. Say plainly when two can run concurrently and when they would collide, based on the code paths each would touch, not just the issue text.
 

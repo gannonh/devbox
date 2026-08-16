@@ -27,11 +27,12 @@ function writeManifest(dir, manifest) {
 
 const evidenceDir = arg('evidence');
 const name = arg('name', command[0] ?? 'command');
+const kind = arg('kind');
 const cwd = arg('cwd', process.cwd());
 const allowFail = has('allow-fail');
 const timeoutMs = Number(arg('timeout-ms', '0'));
-if (!evidenceDir || command.length === 0) {
-  console.error('Usage: run-capture-command.mjs --evidence <dir> --name <name> [--cwd <cwd>] [--allow-fail] [--timeout-ms <ms>] -- <command> [args...]');
+if (!evidenceDir || command.length === 0 || !['e2e', 'contract', 'supporting'].includes(kind)) {
+  console.error('Usage: run-capture-command.mjs --evidence <dir> --kind <e2e|contract|supporting> --name <name> [--cwd <cwd>] [--allow-fail] [--timeout-ms <ms>] -- <command> [args...]');
   process.exit(2);
 }
 
@@ -71,7 +72,9 @@ writeFileSync(exitPath, `${exitCode}\n`);
 
 const manifest = readManifest(evidenceDir);
 manifest.commands.push({
-  command: command.join(' '),
+  kind,
+  command: command.map((part) => JSON.stringify(part)).join(' '),
+  argv: command,
   name,
   cwd,
   exit_code: exitCode,

@@ -18,14 +18,49 @@ if (!existsSync(manifestPath)) {
 }
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 const reportPath = join(evidenceDir, 'evidence.md');
+const requiredKind = manifest.mode === 'technical-enablement' ? 'contract' : 'e2e';
+const requiredCommand = manifest.commands?.find((command) => command.kind === requiredKind && command.exit_code === 0);
+const screenshots = manifest.artifacts?.filter((artifact) => artifact.type === 'screenshot') ?? [];
+const videos = manifest.artifacts?.filter((artifact) => artifact.type === 'video') ?? [];
+const videoSkipPattern = /^Video:\s*Skipped\s*[—-]\s*.+;\s*attempted:\s*.+;\s*suggested tooling:\s*.+$/i;
+const videoSkip = manifest.notes?.find((note) => videoSkipPattern.test(note));
+const hasStartingScreenshot = screenshots.some((artifact) => artifact.checkpoint === 'starting');
+const hasFinalScreenshot = screenshots.some((artifact) => artifact.checkpoint === 'final');
+let screenshotStatus = 'Not applicable';
+if (manifest.visual === true) {
+  screenshotStatus = hasStartingScreenshot && hasFinalScreenshot
+    ? `Pass - ${screenshots.map((artifact) => `\`${artifact.path}\``).join(', ')}`
+    : 'Blocked - starting and final screenshot artifacts are required';
+}
+let videoStatus = 'Not applicable';
+if (manifest.visual === true) {
+  if (videos.length > 0) videoStatus = `Captured - ${videos.map((artifact) => `\`${artifact.path}\``).join(', ')}`;
+  else if (videoSkip) videoStatus = videoSkip;
+  else videoStatus = 'Blocked - standardized video skip note missing';
+}
 const lines = [];
 lines.push(`# UAT Evidence: ${manifest.scope}`);
 lines.push('');
 lines.push(`UAT Scope: ${manifest.scope}`);
 lines.push(`Target: ${manifest.target}`);
+lines.push(`Evidence mode: ${manifest.mode}`);
 lines.push(`Timestamp: ${manifest.timestamp}`);
 lines.push(`Git commit: ${manifest.git_commit}`);
 lines.push('');
+lines.push('## Required Evidence Status');
+lines.push(`- ${requiredKind === 'e2e' ? 'E2E' : 'Contract'}: ${requiredCommand ? `Pass - \`${requiredCommand.output_path}\`` : 'Blocked - no passing captured command'}`);
+lines.push(`- Screenshots: ${screenshotStatus}`);
+lines.push(`- Video: ${videoStatus}`);
+lines.push('');
+if (manifest.mode === 'technical-enablement') {
+  lines.push('## Approved Technical Enablement');
+  lines.push(`- Approval: ${manifest.technical_enablement?.approval_ref ?? 'Missing'}`);
+  lines.push(`- Blocker: ${manifest.technical_enablement?.blocker ?? 'Missing'}`);
+  lines.push(`- Minimum scope: ${manifest.technical_enablement?.minimum_scope ?? 'Missing'}`);
+  lines.push(`- Unlocked slice: ${manifest.technical_enablement?.unlocked_slice ?? 'Missing'}`);
+  lines.push(`- Dependency: ${manifest.technical_enablement?.dependency_ref ?? 'Missing'}`);
+  lines.push('');
+}
 lines.push('## Slice-by-slice result');
 if (manifest.slices?.length) {
   for (const slice of manifest.slices) {

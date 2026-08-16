@@ -204,11 +204,11 @@ Spot-check two or three issues by eye. The script does not reformat spec bodies,
 
 ## Step 8: Decompose
 
-The script does not create sub-issues. After migration, review the migrated issues for specs with more than one independently buildable phase:
+The script does not create sub-issues. After migration, review the migrated issues for specs with more than one independently deliverable user outcome:
 
 1. Add `kind:epic` to the parent.
-2. Create a sub-issue per phase with `gh issue create --body-file` followed by `gh sub-issue add <N> <CHILD>`, following the decomposition rules in `references/conventions.md`. Do not use `gh sub-issue create`; it has no `--body-file`.
-3. Move each phase's acceptance criteria from the parent into the child that owns it, leaving outcome-level criteria on the parent.
+2. Create a sub-issue per demonstrable vertical slice with `gh issue create --body-file` followed by `gh sub-issue add <N> <CHILD>`, following the decomposition rules in `references/conventions.md`. Do not use `gh sub-issue create`; it has no `--body-file`.
+3. Move each slice's acceptance criteria from the parent into the child that owns it, leaving outcome-level criteria on the parent. Add a `## Demonstration` that works without unfinished sibling issues.
 4. Record real ordering constraints between the new children with `gh issue edit <CHILD> --add-blocked-by <BLOCKER>`. Migrated specs often state these in prose; convert them into edges.
 
 Run Triage (`references/triage.md`) afterward to check hierarchy integrity and produce the ready-to-work ordering.

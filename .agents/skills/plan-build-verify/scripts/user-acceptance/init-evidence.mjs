@@ -14,9 +14,16 @@ function stamp() {
   return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}-${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
 }
 
+const targets = ['web', 'electron', 'native', 'cli', 'tui', 'api', 'sdk', 'mixed'];
+const visualTargets = ['web', 'electron', 'native', 'tui', 'mixed'];
 const target = arg('target');
-if (!target) {
-  console.error('Usage: init-evidence.mjs --target <web|electron|cli|tui|api|sdk|mixed> --scope <scope> [--dir <path>]');
+const mode = arg('mode');
+const visualArg = arg('visual');
+let visual = null;
+if (visualArg === 'true') visual = true;
+if (visualArg === 'false') visual = false;
+if (!targets.includes(target) || !['user-facing', 'technical-enablement'].includes(mode) || visual === null || (visualTargets.includes(target) && !visual)) {
+  console.error('Usage: init-evidence.mjs --target <web|electron|native|cli|tui|api|sdk|mixed> --mode <user-facing|technical-enablement> --visual <true|false> --scope <scope> [--dir <path>]');
   process.exit(2);
 }
 
@@ -40,6 +47,9 @@ try {
 const manifest = {
   scope,
   target,
+  mode,
+  visual,
+  technical_enablement: null,
   timestamp: new Date().toISOString(),
   git_commit: gitCommit,
   gitignored,

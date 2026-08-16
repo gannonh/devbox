@@ -17,6 +17,7 @@ Task tool (general-purpose):
   BASE_SHA: [Commit before task]
   HEAD_SHA: [Current commit]
   TEST_EVIDENCE: [Commands run and results]
+  SLICE_TARGET: [Consumer, action/input, observable result, and demonstration/evidence, or approved technical-enablement exception]
   APPROVED_DEVIATIONS: [Approved deviations or "None"]
 ```
 
@@ -27,6 +28,7 @@ In addition to the selected reviewer instructions, ask the reviewer to check:
 - Is the implementation following the file structure from the approved spec?
 - Did this task create new files that are already large, or significantly grow existing files? Focus on what this change contributed.
 - Did tests verify behavior through public interfaces where practical?
+- Does a normal task produce the supplied slice target's exact consumer/action → observable result through its public interface and evidence path? If it is approved technical enablement, is it minimal and does its evidence prove the contract needed by the named next slice?
 - Are any deviations from the plan approved and documented?
 
 Code reviewer returns: Strengths, Issues grouped by Critical, Important, and Minor, Recommendations, and Assessment.

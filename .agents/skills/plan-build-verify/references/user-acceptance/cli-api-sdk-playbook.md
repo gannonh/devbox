@@ -4,6 +4,8 @@ Use the changed interface directly and save outputs a human can inspect or rerun
 
 ## Evidence priority
 
+Every target first needs a passing public-boundary E2E/system test captured with command kind `e2e`.
+
 CLI:
 
 1. Terminal transcript with exact command and exit code.
@@ -13,9 +15,9 @@ CLI:
 
 TUI:
 
-1. Video or GIF of the terminal flow.
-2. Screenshots of key screens.
-3. Transcript, config, and output files where available.
+1. Required starting and final screenshots, plus key screens when a criterion needs intermediate proof.
+2. Transcript, config, and output files where available.
+3. Video or GIF of the terminal flow when practical.
 
 API:
 
@@ -26,7 +28,7 @@ API:
 
 SDK:
 
-1. Minimal runnable example.
+1. Minimal runnable example against the built package.
 2. Command output.
 3. Generated files or returned objects.
 4. Logs when they clarify behavior.
@@ -34,19 +36,20 @@ SDK:
 ## CLI workflow
 
 1. Build or install the CLI as the repo documents.
-2. Run the command that exercises the changed behavior.
-3. Save stdout, stderr, and exit code.
-4. Save any generated files under `outputs/`.
-5. Run one trust-check command that confirms the output.
-6. For bugfixes, save a negative check that the old error or stale output is absent.
+2. Run the checked-in CLI E2E/system test and capture it with command kind `e2e`.
+3. Run the command that exercises the changed behavior.
+4. Save stdout, stderr, and exit code.
+5. Save any generated files under `outputs/`.
+6. Run one trust-check command that confirms the output.
+7. For bugfixes, save a negative check that the old error or stale output is absent.
 
 Prefer the bundled runner when practical because it records logs and exit codes in the manifest:
 
 ```bash
-node scripts/user-acceptance/init-evidence.mjs --target cli --scope "tasker JSON export"
-node scripts/user-acceptance/run-capture-command.mjs --evidence <dir> --name export-json -- \
+node scripts/user-acceptance/init-evidence.mjs --target cli --mode user-facing --visual false --scope "tasker JSON export"
+node scripts/user-acceptance/run-capture-command.mjs --evidence <dir> --kind supporting --name export-json -- \
   tasker export --format json --output <dir>/outputs/tasks.json
-node scripts/user-acceptance/run-capture-command.mjs --evidence <dir> --name validate-json -- \
+node scripts/user-acceptance/run-capture-command.mjs --evidence <dir> --kind supporting --name validate-json -- \
   jq . <dir>/outputs/tasks.json
 ```
 
@@ -64,22 +67,24 @@ jq . uat-evidence/cli-<timestamp>/outputs/result.json > uat-evidence/cli-<timest
 
 ## TUI workflow
 
-1. Start the TUI with a deterministic fixture or normal local state.
-2. Exercise the changed keyboard or mouse flow.
-3. Capture the final state and any written files.
-4. Record exact keystrokes in `evidence.md` so the user can replay them.
+1. Run the checked-in TUI E2E/system test and capture it with command kind `e2e`.
+2. Start the TUI with a deterministic fixture or normal local state.
+3. Exercise the changed keyboard or mouse flow.
+4. Capture required starting/final screenshots, any criterion-specific key states, and written files.
+5. Record exact keystrokes in `evidence.md` so the user can replay them.
 
-Use `script`, VHS, or `/computer-use` skill (if available) depending on what the app supports. Prefer video/GIF when the visual layout is part of the acceptance criteria.
+Use `script` for transcripts, VHS for deterministic screenshots/GIF/MP4/WebM, or an installed computer-use CLI for a real terminal window. Video is ideal but optional: after one bounded recording fallback, skip and flag it rather than spinning.
 
 ## API workflow
 
 1. Start the service locally or identify the target environment.
-2. Save request payloads under `responses/` or `payloads/`.
-3. Execute the request with `curl`, repo scripts, or the documented client.
-4. Save response body and status code.
-5. Run a follow-up GET/list/read when persistence or side effects matter.
-6. Save relevant logs.
-7. Record blocked credentials or unavailable services as blocked slices rather than passing them from tests alone.
+2. Run the checked-in public-API E2E/system test and capture it with command kind `e2e`.
+3. Save request payloads under `responses/` or `payloads/`.
+4. Execute the request with `curl`, repo scripts, or the documented client.
+5. Save response body and status code.
+6. Run a follow-up GET/list/read when persistence or side effects matter.
+7. Save relevant logs.
+8. Record blocked credentials or unavailable services as blocked slices rather than passing them from tests alone.
 
 Example shape:
 
@@ -97,12 +102,13 @@ curl -sS -X POST http://localhost:8080/api/items \
 
 ## SDK workflow
 
-1. Create a minimal example file in a temporary or evidence directory.
-2. Import the local SDK build or package path.
-3. Call the changed API with representative inputs.
-4. Print structured output.
-5. Save command output and any generated files.
-6. Keep the example small and runnable so the human can copy it into their environment.
+1. Run the checked-in SDK E2E/system test against the built package and capture it with command kind `e2e`.
+2. Create a minimal example file in a temporary or evidence directory.
+3. Import the local SDK build or package path.
+4. Call the changed API with representative inputs.
+5. Print structured output.
+6. Save command output and any generated files.
+7. Keep the example small and runnable so the human can copy it into their environment.
 
 Example shape:
 

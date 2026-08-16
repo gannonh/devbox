@@ -17,14 +17,15 @@ You MUST create a task for each of these items and complete them in order:
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Define acceptance criteria** — agree on observable pass/fail outcomes before writing the spec
-6. **Present design** — in sections scaled to their complexity, get user approval after each section
-7. **Publish spec issue** — compose the body in a temp file, `gh issue create`, delete the temp file
-8. **Decompose into sub-issues** — when the spec has more than one independently buildable phase
-9. **Adversarial spec review** — dispatch a separate sub-agent that did not write the spec to review the published issue
-10. **Validate reviewer feedback** — revise the issue when feedback is valid and actionable, or provide a reasoned rebuttal when it is not
-11. **User reviews the issue** — ask the user to read the issue before proceeding
-12. **Mark spec approved** — once the user explicitly approves, swap `status:draft` for `status:approved` and update the `## Status` section
-13. **Transition to Build phase** — ask the user if they would like to advance to Build (`./build.md`)
+6. **Shape delivery slices** — identify the smallest end-to-end user-visible outcomes and how each can be demonstrated independently
+7. **Present design** — in sections scaled to their complexity, get user approval after each section
+8. **Publish spec issue** — compose the body in a temp file, `gh issue create`, delete the temp file
+9. **Decompose into sub-issues** — only when the spec contains multiple independently deliverable vertical slices
+10. **Adversarial spec review** — dispatch a separate sub-agent that did not write the spec to review the published issue
+11. **Validate reviewer feedback** — revise the issue when feedback is valid and actionable, or provide a reasoned rebuttal when it is not
+12. **User reviews the issue** — ask the user to read the issue before proceeding
+13. **Mark spec approved** — once the user explicitly approves, swap `status:draft` for `status:approved` and update the `## Status` section
+14. **Transition to Build phase** — ask the user if they would like to advance to Build (`./build.md`)
 
 **The terminal state is advancing to Build phase.** Do NOT invoke any other implementation skill. The ONLY workflow you invoke after Plan is Build.
 
@@ -46,8 +47,9 @@ gh search issues --repo <owner>/<repo> "<keywords>" --state all
 **Understanding the idea:**
 
 - Check out the current project state first (files, docs, recent commits, open PRs, related issues)
-- Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
-- If the project is too large for a single spec, help the user decompose it. In this skill decomposition produces an epic issue with sub-issues, not separate unrelated specs. See "Decomposition" below.
+- Before asking detailed questions, assess scope: if the request describes multiple independent user outcomes (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
+- Before decomposing, identify the earliest thin end-to-end path a user, operator, or API/SDK consumer could exercise. Prefer that walking skeleton as the first slice unless it would be unsafe or technically infeasible.
+- If the project is too large for a single spec, help the user decompose it into independently demonstrable outcomes. In this skill decomposition produces an epic issue with vertical-slice sub-issues, not separate unrelated specs or architecture-layer work packages. See "Decomposition" below.
 - For appropriately-scoped projects, ask questions one at a time to refine the idea
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Only one question per message. If a topic needs more exploration, break it into multiple questions
@@ -56,17 +58,20 @@ gh search issues --repo <owner>/<repo> "<keywords>" --state all
 
 **Exploring approaches:**
 
-- Propose 2-3 different approaches with trade-offs
-- Present options conversationally with your recommendation and reasoning
-- Lead with your recommended option and explain why
+- Propose 2-3 different approaches with trade-offs.
+- Compare how quickly each approach produces a real user-observable increment. Prefer the approach that enables early feedback without compromising safety or long-term architecture.
+- Present options conversationally with your recommendation and reasoning.
+- Lead with your recommended option and explain why.
 
 **Presenting the design:**
 
 - Once you believe you understand what you're building, present the design
 - Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced
 - Ask after each section whether it looks right so far
-- Cover: architecture, components, acceptance criteria, data flow, error handling, testing
-- Present acceptance criteria as their own design section and ask the user to approve or revise them before publishing the issue
+- Cover: architecture, components, acceptance criteria, data flow, error handling, testing, delivery slices, and how each slice will be demonstrated.
+- Present acceptance criteria as their own design section and ask the user to approve or revise them before publishing the issue.
+- Present delivery slices as user outcomes in delivery order. For each one, state what becomes usable, which layers it crosses, and how the user can see or exercise it before later slices exist.
+- Define the evidence path for each slice before publishing: the public-boundary E2E seam/command, required starting and final screenshots for visual targets, and the preferred video recorder when temporal proof would help. Video tooling may remain best-effort; the spec must not make optional recording a hidden blocker.
 - Be ready to go back and clarify if something doesn't make sense
 
 **Design for isolation and clarity:**
@@ -75,6 +80,7 @@ gh search issues --repo <owner>/<repo> "<keywords>" --state all
 - For each unit, you should be able to answer: what does it do, how do you use it, and what does it depend on?
 - Can someone understand what a unit does without reading its internals? Can you change the internals without breaking consumers? If not, the boundaries need work.
 - Smaller, well-bounded units are also easier for you to work with. You reason better about code you can hold in context at once, and your edits are more reliable when files are focused. When a file grows large, that's often a signal that it's doing too much.
+- Do not confuse code boundaries with delivery boundaries. Modules may separate storage, backend, protocol, and UI, but a roadmap slice should cross those modules when that is what makes a behavior usable and demonstrable.
 
 **Working in existing codebases:**
 
@@ -111,17 +117,27 @@ Never paste a multi-line spec body into `--body`. Always use `--body-file`.
 
 ## Decomposition
 
-Decompose when the spec has more than one independently buildable and verifiable phase, when phases have different acceptance criteria, or when the user asks.
+Decompose when the spec contains more than one independently deliverable and verifiable user outcome, or when the user asks.
 
-Structure: **parent holds the outcome, children hold the phases.**
+Structure: **parent holds the outcome; children each deliver a vertical slice.**
+
+Use the vertical-slice test before creating children:
+
+- Can a user, operator, or API/SDK consumer exercise meaningful new behavior after this child alone is verified?
+- Does the child include the minimum storage, domain, backend, protocol, UI/docs, and tests needed for that behavior?
+- Can it be demonstrated without saying “the feature will work after later children land”?
+
+If the answer is no, first try to re-cut the work around a thinner user journey. Avoid waterfall decomposition such as `schema → backend → protocol → frontend → tests`. Prefer slices such as `complete the basic workflow end to end → handle failure and recovery → support multiple items and polish`.
+
+A technical-enablement child is acceptable only when a thin end-to-end slice would be unsafe or infeasible. Keep it minimal, document why it cannot be folded into the first vertical slice, and name the immediate user-facing slice it unlocks. That slice must directly depend on the enabler and come next in delivery order. Do not chain technical-enablement children or build all foundational layers before exposing behavior.
 
 1. Add `kind:epic` to the parent and keep goal, context, constraints, architecture, risks, and top-level acceptance criteria in its body.
-2. Replace the parent's `## Implementation phases` section with a short list naming each phase and its sub-issue number once created.
-3. For each phase, compose a child body with its own `## Status`, `## Goal`, `## Context` (linking the parent), `## Acceptance criteria`, and `## Build handoff`, then:
+2. Replace the parent's `## Delivery slices` section with a short list naming each user-observable slice and its sub-issue number once created.
+3. For each slice, compose a child body with its own `## Status`, `## Goal`, `## Context` (linking the parent), `## Acceptance criteria`, `## Delivery slices`, `## Demonstration`, and `## Build handoff`, then:
 
 ```bash
 CHILD_URL=$(gh issue create \
-  --title "Phase 1: <name>" \
+  --title "<user-observable outcome>" \
   --body-file "$BODY" \
   --label "kind:sub-spec,status:draft")
 CHILD="${CHILD_URL##*/}"
@@ -132,13 +148,13 @@ gh sub-issue add <PARENT> "$CHILD"
 
 `gh sub-issue create` has no `--body-file` flag, so it cannot carry a multi-line spec body. Always use the two-step form above. See "Sub-issues" in `references/conventions.md`.
 
-4. Order children by dependency. Record every real ordering constraint as a native dependency, not only as prose:
+4. Order slices by learning and dependency: deliver the earliest useful behavior first, then deepen it. Record every real technical ordering constraint as a native dependency, not only as prose:
 
 ```bash
 gh issue edit <CHILD_2> --add-blocked-by <CHILD_1>
 ```
 
-Also state it in the child's `## Context` ("Depends on #143") so a reader of the body alone still sees it. Link only genuine blocks, not thematic ordering. See "Dependencies" in `references/conventions.md`.
+Also state it in the child's `## Context` ("Depends on #143") so a reader of the body alone still sees it. Link only genuine blocks, not thematic ordering. A technical-enablement child must be the direct blocker of the immediate user-facing slice named in its exception. See "Dependencies" in `references/conventions.md`.
 
 5. Verify the hierarchy and the dependency graph:
 
@@ -183,6 +199,7 @@ Use `references/spec-reviewer-prompt.md` for the reviewer brief. Ask the reviewe
 5. **Ambiguity check:** Could any requirement be interpreted two different ways?
 6. **Feasibility and verification:** Are there repo, dependency, testing, sequencing, or risk assumptions that need evidence?
 7. **Sub-issue coherence:** If decomposed, do the children cover the parent's acceptance criteria completely, with no gaps and no overlap?
+8. **Vertical-slice check:** Does each child name a human, operator, or API/SDK consumer and deliver a consumer/action → observable result through a public interface and evidence path, or has the epic been split into waterfall architecture/component phases? Internal artifacts or tests alone do not make a normal child demonstrable. If a technical-enablement child exists, is its exception justified, minimal, the direct blocker of the named user-facing slice, and immediately followed by it?
 
 The main agent validates the reviewer's feedback. Revise the issue body when feedback is valid and actionable:
 
@@ -223,7 +240,7 @@ gh issue edit <N> \
 ## Build phase
 
 - Ask the user if they would like to advance to the Build phase (`references/build.md`).
-- For an epic, name the first sub-issue Build should start with.
+- For an epic, name the first approved, unblocked user-facing slice Build should start with.
 - Do NOT invoke any other skill.
 
 ## Key Principles
@@ -234,5 +251,7 @@ gh issue edit <N> \
 - **YAGNI ruthlessly** — Remove unnecessary features from all designs
 - **Explore alternatives** — Always propose 2-3 approaches before settling
 - **Incremental validation** — Present design, get approval before moving on
+- **Vertical delivery** — Prefer thin, demonstrable user outcomes over architecture-layer epics
+- **Early feedback** — Make the first slice a usable walking skeleton when feasible
 - **The issue is the spec** — No spec content stays in the working tree
 - **Be flexible** — Go back and clarify when something doesn't make sense

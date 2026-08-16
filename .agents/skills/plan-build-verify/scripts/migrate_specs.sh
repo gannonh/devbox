@@ -488,7 +488,7 @@ gh issue list --label kind:spec --state open            # all active specs
 gh issue list --label status:approved --state open      # approved, ready to build
 gh issue list --label status:implemented --state open   # built, awaiting verification
 gh issue view <N>                                       # read a spec
-gh sub-issue list <N>                                   # read an epic's phases
+gh sub-issue list <N>                                   # read an epic's slices
 ```
 
 ## Status model

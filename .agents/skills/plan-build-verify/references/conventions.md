@@ -95,7 +95,7 @@ rm -f "$BODY"
 
 ## Spec issue body template
 
-Use this shape for `kind:spec` and `kind:sub-spec` issues. Scale each section to the work; omit sections that do not apply. `## Status` and `## Acceptance criteria` are mandatory and must use these exact headings.
+Use this shape for `kind:spec` and `kind:sub-spec` issues. Scale each section to the work; omit sections that do not apply. `## Status`, `## Acceptance criteria`, and `## Delivery slices` are mandatory and must use these exact headings. `## Demonstration` is also mandatory for every standalone spec or sub-spec that Build can execute; an epic parent delegates demonstrations to its children.
 
 ```markdown
 ## Status
@@ -123,14 +123,23 @@ Draft
 
 <component relationships, boundaries, data flow, Mermaid diagram when relationships matter>
 
-## Implementation phases
+## Delivery slices
 
-1. <phase>: approach, likely files, acceptance tie-in
-2. <phase>: approach, likely files, acceptance tie-in
+1. <user-observable outcome>: end-to-end behavior, likely layers/files, acceptance tie-in, and demo
+2. <next user-observable outcome>: end-to-end behavior, likely layers/files, acceptance tie-in, and demo
+
+## Demonstration
+
+- Consumer: <human, operator, or API/SDK client>
+- Action or input: <what they do>
+- Observable result: <what becomes visible or usable>
+- Evidence: <how to exercise, inspect, or capture it>
+
+<For an unavoidable technical-enablement exception, instead record the blocker, minimum scope, contract/integration evidence, and immediate user-facing slice unlocked.>
 
 ## Verification
 
-<unit, integration, manual, UAT, and command-level checks>
+<required public-boundary E2E command; additional unit/integration checks; required screenshot checkpoints for visual targets; preferred video recorder or expected environment limitation; manual UAT steps>
 
 ## Risks and mitigations
 
@@ -140,7 +149,7 @@ Draft
 
 - Approved scope: <...>
 - Non-goals: <...>
-- Ordered phases: <...>
+- Ordered slices: <...>
 - Required verification commands: <...>
 - Fixtures or credentials needed: <...>
 - Blocking open questions: None
@@ -149,6 +158,9 @@ Draft
 Notes:
 
 - Write acceptance criteria as GitHub task-list checkboxes (`- [ ]`). Verify checks them off as each one passes, which makes the issue show live acceptance progress in the list view.
+- `## Delivery slices` is mandatory for all specs; an epic parent lists its children, while a sub-spec usually contains one slice. It describes increments of demonstrable behavior, not storage/backend/frontend/testing work packages. A slice crosses whichever technical layers it needs to produce an observable outcome.
+- `## Demonstration` is mandatory for standalone specs and sub-specs. It must name the consumer, action/input, observable result, and evidence that works without waiting for later siblings. A technical-enablement exception records its blocker, minimum scope, contract/integration evidence, and immediate user-facing slice unlocked instead.
+- Every user-facing slice plans a passing public-boundary E2E test. Visual slices also plan required starting/final screenshots. Video is ideal when temporal behavior matters, but its tooling is best-effort: use the documented bounded attempt and skip-and-flag contract instead of making Verify spin.
 - The `## Status` section mirrors the `status:*` label. Both must agree. Update them in the same turn.
 - Do not use YAML frontmatter in issue bodies. GitHub renders it as a table or as literal text. Status lives in the `## Status` section and the label.
 
@@ -169,15 +181,19 @@ Close the issue only when it reaches `status:verified`, or when the user decides
 
 ## Sub-issues
 
-Decompose when a spec has more than one independently buildable and verifiable phase, when phases have different acceptance criteria, or when the user asks.
+Decompose when a spec contains more than one independently deliverable and verifiable user outcome, or when the user asks.
 
-**Structure: parent holds the outcome, children hold the phases.**
+**Structure: parent holds the outcome; children each deliver a vertical slice.**
+
+A vertical slice is the thinnest end-to-end behavior that a human, operator, or API/SDK consumer can see, use, or evaluate. It may cross storage, domain logic, backend, protocol, UI, documentation, and tests. Those layers are implementation tasks inside the slice, not sibling roadmap issues.
 
 - The parent issue keeps goal, context, constraints, architecture, risks, and top-level acceptance criteria. Label it `kind:spec,kind:epic`.
-- Each implementation phase becomes a sub-issue with its own scoped `## Acceptance criteria` and `## Build handoff`. Label each `kind:sub-spec` plus its own `status:*`.
+- Derive children from user journeys and acceptance outcomes. Each child gets its own scoped `## Acceptance criteria`, mandatory `## Demonstration`, and `## Build handoff`. Label each `kind:sub-spec` plus its own `status:*`.
+- Make the first child a walking skeleton when feasible: a narrow real path through the system that users can exercise and that later slices deepen.
+- Do not create separate schema/storage, backend, protocol, frontend, test, or polish children when a useful end-to-end slice can include the minimum needed from each.
+- A technical-enablement child is an exception. Use one only when safety or feasibility prevents a thin end-to-end slice; keep it minimal, document why, and identify the immediate user-facing child it unlocks. That child must directly depend on the enabler and come next in delivery order. Do not chain technical-enablement children.
 - Children link back to the parent in their `## Context` section.
-- Build runs per sub-issue. Verify runs per sub-issue, then rolls up.
-- The parent reaches `status:verified` only when every child is `status:verified` and the parent's own top-level acceptance criteria pass.
+- Build and Verify run per sub-issue, so each completed child must leave the product in a coherent, demonstrable state. The parent reaches `status:verified` only when every child is `status:verified` and the parent's own top-level acceptance criteria pass.
 
 **Create children in two steps: `gh issue create`, then `gh sub-issue add`.**
 
@@ -185,7 +201,7 @@ Decompose when a spec has more than one independently buildable and verifiable p
 
 ```bash
 CHILD_URL=$(gh issue create \
-  --title "Phase 1: <name>" \
+  --title "<user-observable outcome>" \
   --body-file "$BODY" \
   --label "kind:sub-spec,status:approved")
 CHILD="${CHILD_URL##*/}"          # gh issue create prints the URL, not JSON
@@ -219,21 +235,23 @@ Flags take comma-separated issue numbers or URLs, and work across repos by URL.
 
 Use a dependency when:
 
-- A phase consumes a schema, interface, migration, or endpoint that an earlier phase creates.
+- A slice consumes a schema, interface, migration, or endpoint that an earlier slice creates.
 - Two issues touch the same surface and would conflict if built in parallel.
 - An issue is waiting on an external decision tracked in another issue.
 
 Do not use one when:
 
 - The relationship is merely thematic, or the order is only a preference. Over-linking turns the graph into noise and hides real blocks.
-- The relationship is parent/child. That is `gh sub-issue add`, not a dependency. An epic is not "blocked by" its own phases.
+- The relationship is parent/child. That is `gh sub-issue add`, not a dependency. An epic is not "blocked by" its own slices.
 
 Rules:
 
+- A schema, interface, migration, endpoint, or component dependency does not by itself justify a standalone architecture child when the minimum work can live inside the first demonstrable slice. Record true blockers, but do not turn a preferred layer order into roadmap phases.
+- An approved technical-enablement child must be the direct `blockedBy` dependency of the immediate user-facing slice named in its exception. A chain of technical-only children is a decomposition defect.
 - Dependencies are advisory in GitHub; nothing prevents building a blocked issue. Treat an open blocker as a stop condition anyway, and say so rather than silently proceeding.
 - Keep them current. A `blockedBy` pointing at a `status:verified` or closed issue is stale and is a triage defect.
 - Prefer `--add-blocked-by` on the dependent issue over `--add-blocking` on the blocker. Both create the same edge, but consistently writing it from the dependent side keeps the intent readable.
-- A dependency cycle is a decomposition error. Return to Plan and re-cut the phases.
+- A dependency cycle is a decomposition error. Return to Plan and re-cut the slices.
 
 ## Branches and pull requests
 
@@ -314,7 +332,7 @@ gh issue list --label kind:spec --state open            # all active specs
 gh issue list --label status:approved --state open      # approved, ready to build
 gh issue list --label status:implemented --state open   # built, awaiting verification
 gh issue view <N>                                       # read a spec
-gh sub-issue list <N>                                   # read an epic's phases
+gh sub-issue list <N>                                   # read an epic's slices
 ```
 
 ## Status model
@@ -346,7 +364,7 @@ Add this to `AGENTS.md` during migration:
 Specs for this repository are GitHub Issues, not files. `docs/specs/` holds only an index pointer and an archive of pre-migration specs.
 
 - Read the roadmap with `gh issue list --label kind:spec --state open`.
-- Read a spec with `gh issue view <N>`; read an epic's phases with `gh sub-issue list <N>`.
+- Read a spec with `gh issue view <N>`; read an epic's slices with `gh sub-issue list <N>`.
 - Do not create spec files under `docs/specs/`. Use the `plan-build-verify` skill, which publishes specs as issues.
 - Never build an issue that is not labeled `status:approved` without explicit maintainer approval.
 - Post build reports and acceptance evidence as comments on the spec issue.
@@ -366,7 +384,9 @@ Report when:
 - The issue has no `status:*` label, or more than one.
 - The `## Status` section disagrees with the `status:*` label.
 - `## Acceptance criteria` is missing, empty, or contains vague language.
-- An epic has no sub-issues, or a sub-issue has no parent.
+- A standalone spec or sub-spec has no independently exercisable `## Demonstration` through a human, operator, or API/SDK public interface, unless it documents a justified minimal technical-enablement exception and the immediate user-facing slice it unlocks.
+- An epic has no sub-issues, a sub-issue has no parent, or the children are architecture-layer work packages rather than demonstrable vertical slices.
+- A technical-enablement child does not directly block the immediate user-facing slice named in its exception, or another technical-only child intervenes.
 - The issue is closed but not `status:verified`.
 - The issue duplicates another open spec issue.
 

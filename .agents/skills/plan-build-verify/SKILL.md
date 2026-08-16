@@ -1,6 +1,6 @@
 ---
 name: plan-build-verify
-description: Use this skill for multi-step, spec-driven, or acceptance-gated implementation work in a GitHub repository where specs live as GitHub Issues. Routes work through Plan, Build, and Verify phases, manages the roadmap through issue labels and sub-issues, and triages and grooms the backlog. Also handles migration from file-based specs to GitHub Issues.
+description: Use this skill for multi-step, spec-driven, or acceptance-gated implementation work in a GitHub repository where specs live as GitHub Issues. Routes work through Plan, Build, and Verify phases, favors demonstrable user-facing vertical slices over waterfall epics, manages the roadmap through issue labels and sub-issues, and triages and grooms the backlog. Also handles migration from file-based specs to GitHub Issues.
 ---
 
 # Plan Build Verify
@@ -15,7 +15,7 @@ Before any mode, read `references/conventions.md` completely. It defines the rep
 
 | Phase   | Input                                                     | Output                                                                                                              | Status label transition                   |
 | ------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| Plan    | Idea, vague request, or new build request                  | Context exploration → alignment dialogue → approach approval → spec issue with mandatory `## Acceptance criteria` | none → `status:draft` → `status:approved` |
+| Plan    | Idea, vague request, or new build request                  | Context exploration → alignment dialogue → approach approval → vertically sliced spec issue with mandatory `## Acceptance criteria` | none → `status:draft` → `status:approved` |
 | Build   | Approved spec issue number, or explicit user override      | Implemented tasks, commits, review results, pushed branch, Build completion report comment                           | `status:approved` → `status:implemented`  |
 | Verify  | Implemented spec issue plus completed work or Build report | Acceptance evidence, durable acceptance tests, pull request, green CI, resolved review threads, signoff recommendation | `status:implemented` → `status:verified`  |
 | Triage  | Repo issue backlog                                         | Grooming report and applied label, decomposition, and closure actions                                               | corrective, per issue                     |
@@ -90,7 +90,11 @@ Run the preflight in `references/conventions.md` before the first `gh` write of 
 - Use a todo list when the work has multiple steps.
 - In Plan, ask focused alignment questions one at a time before drafting the issue. If no factual clarification is needed, ask the user to confirm your framing, assumptions, and acceptance criteria.
 - In Plan, propose 2-3 approaches when more than one viable direction exists. If one is clearly best, state the recommendation and wait for approval or redirection.
-- Prefer small, verifiable phases over broad unverified changes.
+- Prefer the smallest end-to-end slice a user can see, use, or evaluate over broad unverified changes. “User” includes a human, operator, or API/SDK consumer.
+- Decompose epics by demonstrable behavior, not by architecture layer, component, or team. Do not make storage, backend, protocol, frontend, and testing separate roadmap phases when one thin vertical slice can cross them.
+- Use a technical-enablement child only when no safe end-to-end slice is feasible without it. Keep it minimal, explain why it cannot be folded into the first slice, and name the user-facing slice it immediately unlocks.
+- Require a passing public-boundary E2E test for every user-facing slice and required starting/final screenshots for visual targets.
+- Treat video as ideal temporal evidence, not an unbounded gate: make one bounded attempt, then skip and flag the environment/tooling gap when recording remains unavailable.
 - Keep scope tied to the selected issue and its acceptance criteria.
 - A spec issue is incomplete unless it has an exact `## Acceptance criteria` section with observable pass/fail criteria that Build can implement and Verify can test.
 - The issue is the spec. Local Markdown exists only as a temporary body file and is removed after the `gh` write succeeds.

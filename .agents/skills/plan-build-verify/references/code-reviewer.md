@@ -9,6 +9,7 @@ Use this compact rubric only when no compatible installed code-review skill is a
 - Task text, requirements, and acceptance criteria.
 - Base SHA and head SHA.
 - Test and verification evidence.
+- Slice target: consumer, action/input, observable result, and demonstration/evidence, or the approved technical-enablement exception.
 - Approved deviations, or `None`.
 
 ## Required inspection
@@ -27,9 +28,10 @@ Check the changed files and related call sites when needed to understand behavio
 1. **Plan alignment**: implementation matches the approved task, acceptance criteria, non-goals, and approved deviations.
 2. **Correctness**: behavior handles expected paths, edge cases, errors, and state transitions.
 3. **Test quality**: tests verify user-visible or public-interface behavior and would fail for the wrong implementation.
-4. **Maintainability**: changed units have clear responsibilities, names match project language, and complexity stays proportional to the task.
-5. **Safety**: no data loss, credential leakage, insecure defaults, destructive migrations, or hidden operational risk.
-6. **Integration**: changes fit existing project patterns, scripts, APIs, schemas, docs, and configuration.
+4. **Vertical delivery**: a normal slice produces the supplied consumer/action → observable result through its public interface and evidence path. Technical-only work matches an approved minimal enablement exception and proves the contract needed by the named next slice.
+5. **Maintainability**: changed units have clear responsibilities, names match project language, and complexity stays proportional to the task.
+6. **Safety**: no data loss, credential leakage, insecure defaults, destructive migrations, or hidden operational risk.
+7. **Integration**: changes fit existing project patterns, scripts, APIs, schemas, docs, and configuration.
 
 ## Severity calibration
 
