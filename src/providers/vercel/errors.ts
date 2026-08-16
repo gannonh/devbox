@@ -3,6 +3,7 @@ import { VercelSdkError } from './client.js';
 import {
   VercelCleanupError,
   VercelCreationCompensationError,
+  VercelRecoveryCleanupError,
   VercelIdentityConflictError,
   VercelResourceNotFoundError,
   VercelRouteNotFoundError,
@@ -95,6 +96,12 @@ export function mapVercelError(
     return new VercelProviderError(
       'cleanup',
       `Vercel Sandbox creation failed and cleanup is incomplete; retry ${removeRecoveryCommand(context)}.${residualDetail}${metadataDetail}`,
+    );
+  }
+  if (error instanceof VercelRecoveryCleanupError) {
+    return new VercelProviderError(
+      'cleanup',
+      `${redactSecrets(error.message, context.secrets ?? [])} Retry ${removeRecoveryCommand(context)}.`,
     );
   }
   if (error instanceof VercelCleanupError || lifecycleCode === 'cleanup_incomplete' || lifecycleCode === 'stop_incomplete') {

@@ -2,12 +2,11 @@ import type { VercelCredentials } from './auth.js';
 import type { SandboxListRecord, VercelSandboxClient } from './client.js';
 import { VercelLifecycleError } from './lifecycle.js';
 import { createVercelBranchTag, createVercelRepositoryTag } from './identity.js';
-import type { VercelBranchMetadataStore, VercelMetadataIdentity } from './metadata.js';
+import type { VercelMetadataIdentity } from './metadata.js';
 import type { GitHubSourceRemote } from './source.js';
 
 export interface RecoveredBranchSandbox {
   identity: VercelMetadataIdentity;
-  sandboxId: string;
   snapshotIds?: string[];
 }
 
@@ -34,7 +33,6 @@ export async function recoverMissingBranchSandbox(
   if (!record) return undefined;
   const tags = record.tags!;
   return {
-    sandboxId: record.name,
     ...(typeof record.currentSnapshotId === 'string' && record.currentSnapshotId.trim()
       ? { snapshotIds: [record.currentSnapshotId] }
       : {}),
@@ -52,22 +50,6 @@ export async function recoverMissingBranchSandbox(
       },
     },
   };
-}
-
-export async function seedRecoveryMetadata(
-  branchStore: VercelBranchMetadataStore,
-  identity: VercelMetadataIdentity,
-  sandboxId: string,
-  snapshotIds?: string[],
-): Promise<void> {
-  await branchStore.withLock(async () => {
-    if (await branchStore.read()) return;
-    await branchStore.write({
-      identity,
-      sandboxId,
-      ...(snapshotIds === undefined ? {} : { snapshotIds }),
-    });
-  });
 }
 
 function isRecoveryCandidate(

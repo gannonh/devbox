@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   createVercelBranchMetadataStore,
   createVercelMetadataStore,
+  type VercelBranchMetadataStore,
 } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import {
@@ -524,6 +525,258 @@ describe('Vercel lifecycle', () => {
       identity: { tags: { identity: scopedIdentity.tags.identity } },
       residual: { reason: expect.any(String) },
     });
+  });
+
+  it('removes an authoritative recovered sandbox when branch metadata persistence is unavailable', async () => {
+    const recoveredIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+    });
+    const handle = {
+      ...sandbox(),
+      name: recoveredIdentity.name,
+      status: 'stopped' as const,
+      tags: { ...recoveredIdentity.tags },
+    };
+    const branchMetadataStore = {
+      path: '/unavailable/branch.json',
+      lockPath: '/unavailable/branch.lock',
+      repoKey: source.remote.canonical,
+      branch: source.requestedBranch,
+      read: vi.fn(async () => { throw new Error('metadata read unavailable'); }),
+      write: vi.fn(async () => { throw new Error('metadata write unavailable'); }),
+      remove: vi.fn(async () => { throw new Error('metadata remove unavailable'); }),
+      acquireLock: vi.fn(),
+      withLock: vi.fn(async () => { throw new Error('metadata lock unavailable'); }),
+    } as unknown as VercelBranchMetadataStore;
+    const client = {
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(async () => ({
+        snapshotId: 'recovered-snapshot',
+        status: 'created' as const,
+        delete: async () => {},
+      })),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      credentials,
+      source,
+      branchMetadataStore,
+      recovery: {
+        identity: {
+          name: recoveredIdentity.name,
+          repository: recoveredIdentity.canonicalRepository,
+          branch: recoveredIdentity.branch,
+          packageVersion: recoveredIdentity.packageVersion,
+          tags: { ...recoveredIdentity.tags },
+        },
+        snapshotIds: ['recovered-snapshot'],
+      },
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    await expect(lifecycle.remove()).resolves.toMatchObject({ verified: true });
+    expect(client.deleteSandbox).toHaveBeenCalledOnce();
+    expect(branchMetadataStore.read).not.toHaveBeenCalled();
+    expect(branchMetadataStore.write).not.toHaveBeenCalled();
+    expect(branchMetadataStore.withLock).not.toHaveBeenCalled();
+  });
+
+  it('fails recovered cleanup closed when the fetched sandbox tags are tampered', async () => {
+    const recoveredIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+    });
+    const handle = {
+      ...sandbox(),
+      name: recoveredIdentity.name,
+      status: 'stopped' as const,
+      tags: { ...recoveredIdentity.tags, identity: 'tampered' },
+    };
+    const deleted = vi.fn();
+    const branchMetadataStore = {
+      path: '/recovery/branch.json',
+      lockPath: '/recovery/branch.lock',
+      repoKey: source.remote.canonical,
+      branch: source.requestedBranch,
+      read: vi.fn(async () => null),
+      write: vi.fn(async () => {}),
+      remove: vi.fn(async () => {}),
+      acquireLock: vi.fn(),
+      withLock: vi.fn(async () => { throw new Error('metadata lock unavailable'); }),
+    } as unknown as VercelBranchMetadataStore;
+    const client = {
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: deleted,
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      credentials,
+      source,
+      branchMetadataStore,
+      recovery: {
+        identity: {
+          name: recoveredIdentity.name,
+          repository: recoveredIdentity.canonicalRepository,
+          branch: recoveredIdentity.branch,
+          packageVersion: recoveredIdentity.packageVersion,
+          tags: { ...recoveredIdentity.tags },
+        },
+      },
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    await expect(lifecycle.remove()).rejects.toMatchObject({
+      code: 'cleanup_incomplete',
+      result: { verified: false },
+    });
+    expect(deleted).not.toHaveBeenCalled();
+  });
+
+  it('keeps concurrent recovered removals idempotent without acquiring metadata locks', async () => {
+    const recoveredIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+    });
+    let deleted = false;
+    const handle = {
+      ...sandbox(),
+      name: recoveredIdentity.name,
+      status: 'stopped' as const,
+      tags: { ...recoveredIdentity.tags },
+    };
+    const branchMetadataStore = {
+      path: '/unavailable/branch.json',
+      lockPath: '/unavailable/branch.lock',
+      repoKey: source.remote.canonical,
+      branch: source.requestedBranch,
+      read: vi.fn(async () => { throw new Error('metadata read unavailable'); }),
+      write: vi.fn(async () => {}),
+      remove: vi.fn(async () => {}),
+      acquireLock: vi.fn(),
+      withLock: vi.fn(async () => { throw new Error('metadata lock unavailable'); }),
+    } as unknown as VercelBranchMetadataStore;
+    const client = {
+      get: vi.fn(async () => {
+        if (deleted) throw Object.assign(new Error('not found'), { notFound: true });
+        return handle;
+      }),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => { deleted = true; }),
+    } as unknown as VercelSandboxClient;
+    const lifecycleOptions = {
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      credentials,
+      source,
+      branchMetadataStore,
+      recovery: {
+        identity: {
+          name: recoveredIdentity.name,
+          repository: recoveredIdentity.canonicalRepository,
+          branch: recoveredIdentity.branch,
+          packageVersion: recoveredIdentity.packageVersion,
+          tags: { ...recoveredIdentity.tags },
+        },
+      },
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    } as const;
+
+    const [first, second] = await Promise.all([
+      createVercelLifecycle(lifecycleOptions).remove(),
+      createVercelLifecycle(lifecycleOptions).remove(),
+    ]);
+
+    expect(first.verified).toBe(true);
+    expect(second.verified).toBe(true);
+    expect(client.deleteSandbox).toHaveBeenCalled();
+    expect(branchMetadataStore.withLock).not.toHaveBeenCalled();
+  });
+
+  it('retains redacted residual guidance when recovered cleanup persistence fails', async () => {
+    const token = 'recovered-metadata-secret';
+    const recoveredIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+    });
+    const handle = {
+      ...sandbox(),
+      name: recoveredIdentity.name,
+      status: 'stopped' as const,
+      tags: { ...recoveredIdentity.tags },
+    };
+    const branchMetadataStore = {
+      path: '/unavailable/branch.json',
+      lockPath: '/unavailable/branch.lock',
+      repoKey: source.remote.canonical,
+      branch: source.requestedBranch,
+      read: vi.fn(async () => { throw new Error('metadata read unavailable'); }),
+      write: vi.fn(async () => { throw new Error(`metadata write failed with ${token}`); }),
+      remove: vi.fn(async () => {}),
+      acquireLock: vi.fn(),
+      withLock: vi.fn(async () => { throw new Error('metadata lock unavailable'); }),
+    } as unknown as VercelBranchMetadataStore;
+    const client = {
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => { throw new Error(`sandbox delete failed with ${token}`); }),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      credentials: { ...credentials, token },
+      source,
+      branchMetadataStore,
+      recovery: {
+        identity: {
+          name: recoveredIdentity.name,
+          repository: recoveredIdentity.canonicalRepository,
+          branch: recoveredIdentity.branch,
+          packageVersion: recoveredIdentity.packageVersion,
+          tags: { ...recoveredIdentity.tags },
+        },
+      },
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    const caught = await lifecycle.remove().catch((error: unknown) => error);
+    expect(caught).toMatchObject({
+      code: 'cleanup_incomplete',
+      result: {
+        verified: false,
+        residualSandboxIds: [handle.name],
+      },
+    });
+    expect((caught as Error).message).toContain(handle.name);
+    expect((caught as Error).message).toContain('metadata');
+    expect((caught as Error).message).not.toContain(token);
+    expect(branchMetadataStore.write).toHaveBeenCalledOnce();
+    expect(branchMetadataStore.write).toHaveBeenCalledWith(expect.objectContaining({
+      identity: expect.objectContaining({ name: handle.name }),
+      sandboxId: handle.name,
+      residual: expect.objectContaining({
+        sandboxIds: [handle.name],
+        reason: expect.any(String),
+      }),
+    }));
+    expect(branchMetadataStore.withLock).not.toHaveBeenCalled();
   });
 
   it('resumes an existing named sandbox without rerunning branch setup', async () => {

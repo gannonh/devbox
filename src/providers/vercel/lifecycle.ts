@@ -99,6 +99,20 @@ export class VercelCleanupError extends VercelLifecycleError {
   }
 }
 
+export class VercelRecoveryCleanupError extends VercelCleanupError {
+  readonly recoveryMetadataFailure?: string;
+
+  constructor(
+    result: VercelCleanupResult,
+    message: string,
+    recoveryMetadataFailure?: string,
+  ) {
+    super(result, message);
+    this.name = 'VercelRecoveryCleanupError';
+    if (recoveryMetadataFailure !== undefined) this.recoveryMetadataFailure = recoveryMetadataFailure;
+  }
+}
+
 export class VercelCreationCompensationError extends VercelCleanupError {
   readonly creationFailure: string;
   readonly recoveryMetadataFailure?: string;
@@ -141,12 +155,17 @@ export interface VercelLifecycleOptions {
   stateHome?: string;
   repoKey?: string;
   repository?: string;
-  /** Explicit live-resource identity used by authoritative lost-metadata recovery. */
-  identityOverride?: VercelMetadataIdentity;
+  /** Authoritative live-resource identity used when branch metadata is unavailable. */
+  recovery?: VercelRecoveryInput;
   client?: VercelSandboxClient;
   timeoutMs?: number;
   onNotice?: (notice: string) => void | Promise<void>;
   cleanup?: Pick<VercelCleanupOptions, 'timeoutMs' | 'maxAttempts' | 'backoffMs' | 'sleep'>;
+}
+
+export interface VercelRecoveryInput {
+  identity: VercelMetadataIdentity;
+  snapshotIds?: readonly string[];
 }
 
 export interface VercelStopReport {
@@ -382,14 +401,15 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
     },
     remove: async () => {
       const context = await getContext();
+      if (options.recovery) {
+        return removeRecoveredSandbox(context, options.recovery, options.cleanup);
+      }
       const metadataStore = requireMetadataStore(context);
       const configuration = requireConfiguration(context);
       return metadataStore.withLock(async () => {
         const metadata = await metadataStore.read();
-        if (metadata && !options.identityOverride) assertScopeAndIdentity(metadata, context);
-        const identity = options.identityOverride
-          ?? metadata?.identity
-          ?? toMetadataIdentity(requireIdentity(context));
+        if (metadata) assertScopeAndIdentity(metadata, context);
+        const identity = metadata?.identity ?? toMetadataIdentity(requireIdentity(context));
         const credentials = metadata
           ? credentialsForStoredScope(context.credentials, metadata)
           : context.credentials;
@@ -426,6 +446,64 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
       });
     },
   };
+}
+
+async function removeRecoveredSandbox(
+  context: PreparedContext,
+  recovery: VercelRecoveryInput,
+  cleanupOptions: VercelLifecycleOptions['cleanup'],
+): Promise<VercelCleanupResult> {
+  const result = await cleanupVercelSandbox({
+    name: recovery.identity.name,
+    credentials: context.credentials,
+    expectedTags: recovery.identity.tags,
+    ...(recovery.snapshotIds === undefined ? {} : { knownSnapshotIds: recovery.snapshotIds }),
+    adapter: createCleanupAdapter(context.client),
+    ...(cleanupOptions ?? {}),
+  });
+  if (result.verified) {
+    try {
+      await context.metadataStore?.remove();
+    } catch {
+      // Cloud cleanup is authoritative; local recovery state is best effort.
+    }
+    return result;
+  }
+
+  const secrets = lifecycleSecrets(context);
+  const residualSandboxIds = [...new Set(result.residualSandboxIds)];
+  const residualSnapshotIds = [...new Set(result.residualSnapshotIds)];
+  const cleanupDetails = result.errors.map((error) => redactLifecycleFailure(error, secrets));
+  let recoveryMetadataFailure: string | undefined;
+  try {
+    await writeBranchMetadata(context, {
+      identity: recovery.identity,
+      sandboxId: recovery.identity.name,
+      ...(result.snapshotIds.length === 0 ? {} : { snapshotIds: result.snapshotIds }),
+      residual: {
+        ...(residualSandboxIds.length === 0 ? {} : { sandboxIds: residualSandboxIds }),
+        ...(residualSnapshotIds.length === 0 ? {} : { snapshotIds: residualSnapshotIds }),
+        reason: [
+          'authoritative recovered cleanup did not verify',
+          ...(cleanupDetails.length === 0 ? [] : cleanupDetails),
+        ].join('; '),
+      },
+    });
+  } catch (error) {
+    recoveryMetadataFailure = redactLifecycleFailure(error, secrets);
+  }
+
+  const residualIds = [...residualSandboxIds, ...residualSnapshotIds];
+  const residualDetail = residualIds.length === 0 ? '' : ` Residual resource IDs: ${residualIds.join(', ')}.`;
+  const cleanupDetail = cleanupDetails.length === 0 ? '' : ` Cleanup details: ${cleanupDetails.join('; ')}.`;
+  const metadataDetail = recoveryMetadataFailure === undefined
+    ? ' Recovery metadata was retained for retry.'
+    : ` Recovery metadata persistence failed: ${recoveryMetadataFailure}.`;
+  throw new VercelRecoveryCleanupError(
+    result,
+    `Vercel recovered Sandbox cleanup is incomplete.${residualDetail}${metadataDetail}${cleanupDetail}`,
+    recoveryMetadataFailure,
+  );
 }
 
 async function writeBranchMetadata(
@@ -495,10 +573,7 @@ async function compensateCreatedSandbox(
   creationError: unknown,
   cleanupOptions: VercelLifecycleOptions['cleanup'],
 ): Promise<CreatedSandboxCompensation> {
-  const secrets = [
-    context.credentials.token,
-    context.source?.source.password,
-  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const secrets = lifecycleSecrets(context);
   const creationFailure = redactLifecycleFailure(creationError, secrets);
   const knownSnapshotIds = [
     ...new Set([
@@ -561,6 +636,13 @@ async function compensateCreatedSandbox(
     creationFailure,
     ...(recoveryMetadataFailure === undefined ? {} : { recoveryMetadataFailure }),
   };
+}
+
+function lifecycleSecrets(context: PreparedContext): string[] {
+  return [
+    context.credentials.token,
+    context.source?.source.password,
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
 function redactLifecycleFailure(error: unknown, secrets: readonly string[]): string {

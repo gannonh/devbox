@@ -28,6 +28,7 @@ import {
   createVercelLifecycle,
   type VercelLifecycle,
   type VercelLifecycleOptions,
+  type VercelRecoveryInput,
   type VercelStopReport,
 } from './lifecycle.js';
 import {
@@ -37,7 +38,6 @@ import {
   type VercelBranchMetadataStore,
   type VercelScopeMetadata,
   type VercelScopeMetadataStore,
-  type VercelMetadataIdentity,
 } from './metadata.js';
 import { mapVercelError } from './errors.js';
 import {
@@ -48,7 +48,7 @@ import {
   type GitHubSourcePlan,
   type GitHubSourceRemote,
 } from './source.js';
-import { recoverMissingBranchSandbox, seedRecoveryMetadata } from './recovery.js';
+import { recoverMissingBranchSandbox } from './recovery.js';
 import {
   createVercelTerminalAdapter,
   type VercelTerminalAdapter,
@@ -89,7 +89,7 @@ interface PreparedOperation {
   metadata: VercelBranchMetadata | null;
   credentials: VercelCredentials;
   source?: GitHubSourcePlan;
-  identityOverride?: VercelMetadataIdentity;
+  recovery?: VercelRecoveryInput;
   alreadyAbsent: boolean;
 }
 
@@ -177,6 +177,11 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
     remove: (request) => withProviderErrors(request, 'remove', async () => {
       const prepared = await prepareStored(request, 'remove', runner, options, makeLifecycle, injectedLifecycle, client);
       if (prepared.alreadyAbsent) {
+        try {
+          await prepared.branchStore?.remove();
+        } catch {
+          // No live resource remains; local recovery state is best effort.
+        }
         request.stderr.write(`Vercel sandbox for ${request.branch}: cleanup verified\n`);
         return { exitCode: 0 };
       }
@@ -184,7 +189,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       if (!result.verified) {
         throw new VercelLifecycleError('cleanup_incomplete', 'Vercel cleanup verification did not converge');
       }
-      request.stderr.write(`Vercel sandbox ${prepared.identityOverride?.name ?? sandboxName(prepared.metadata, request.branch)}: cleanup verified\n`);
+      request.stderr.write(`Vercel sandbox ${prepared.recovery?.identity.name ?? sandboxName(prepared.metadata, request.branch)}: cleanup verified\n`);
       return { exitCode: 0 };
     }),
     list: (request) => withProviderErrors(request, 'list', async () => {
@@ -266,7 +271,13 @@ async function prepareStored(
   }
   const branch = normalizeRequestedSourceBranch((request as ProviderBranchRequest).branch);
   const branchStore = createBranchStore(origin, branch, options);
-  const metadata = await branchStore.read();
+  let metadata: VercelBranchMetadata | null;
+  try {
+    metadata = await branchStore.read();
+  } catch (error) {
+    if (action !== 'remove') throw error;
+    metadata = null;
+  }
   const source = storedSource(origin, branch, metadata, action === 'remove', action === 'remove');
   if (!metadata && action !== 'remove') {
     throw new VercelLifecycleError(
@@ -274,15 +285,17 @@ async function prepareStored(
       `Vercel metadata record was not found for ${origin.canonical} branch ${branch}`,
     );
   }
-  let identityOverride: VercelMetadataIdentity | undefined;
+  let recovery: VercelRecoveryInput | undefined;
   let alreadyAbsent = false;
   if (action === 'remove' && !metadata) {
     const recovered = await recoverMissingBranchSandbox(client, origin, branch, credentials);
     if (!recovered) {
       alreadyAbsent = true;
     } else {
-      identityOverride = recovered.identity;
-      await seedRecoveryMetadata(branchStore, recovered.identity, recovered.sandboxId, recovered.snapshotIds);
+      recovery = {
+        identity: recovered.identity,
+        ...(recovered.snapshotIds === undefined ? {} : { snapshotIds: recovered.snapshotIds }),
+      };
     }
   }
   const lifecycle = createLifecycle(
@@ -297,7 +310,7 @@ async function prepareStored(
     metadata,
     false,
     origin.canonical,
-    identityOverride,
+    recovery,
   );
   return {
     lifecycle,
@@ -307,7 +320,7 @@ async function prepareStored(
     metadata,
     credentials,
     source,
-    identityOverride,
+    recovery,
     alreadyAbsent,
   };
 }
@@ -355,7 +368,7 @@ function createLifecycle(
   metadata: VercelBranchMetadata | null,
   listOnly = false,
   repository?: string,
-  identityOverride?: VercelMetadataIdentity,
+  recovery?: VercelRecoveryInput,
 ): VercelLifecycle {
   const repoKey = source?.remote.canonical ?? repository;
   if (!repoKey) throw new Error('Vercel lifecycle repository is required');
@@ -371,7 +384,7 @@ function createLifecycle(
     stateHome: options.stateHome,
     repoKey,
     repository: repoKey,
-    ...(identityOverride === undefined ? {} : { identityOverride }),
+    ...(recovery === undefined ? {} : { recovery }),
     ...(metadata?.configuration === undefined ? {} : { timeoutMs: metadata.configuration.timeoutMs }),
     ...(options.credentialOptions === undefined ? {} : { credentialOptions: options.credentialOptions }),
   });

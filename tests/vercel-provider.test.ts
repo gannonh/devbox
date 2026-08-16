@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
-import { access, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { dispatch } from '../src/cli.js';
 import { createVercelProvider } from '../src/providers/vercel/provider.js';
 import type { DevboxProvider, ProviderBranchRequest } from '../src/providers/types.js';
@@ -840,7 +840,7 @@ describe('Vercel provider', () => {
     expect(currentLifecycle.remove).not.toHaveBeenCalled();
   });
 
-  it('recovers a missing branch record before fail-closed remove and keeps partial residuals', async () => {
+  it('passes recovered identity and snapshots directly into removal without seeding metadata', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-remove-recovery-'));
     const remote = 'github.com/acme/repo';
     const env = { VERCEL_TOKEN: 'vercel-secret', VERCEL_TEAM_ID: 'team-1', VERCEL_PROJECT_ID: 'project-1' };
@@ -856,6 +856,7 @@ describe('Vercel provider', () => {
         name: recovered.name,
         status: 'running' as const,
         persistent: true,
+        currentSnapshotId: 'recovered-snapshot',
         tags: { ...recovered.tags },
       }]),
     } as unknown as VercelSandboxClient;
@@ -868,36 +869,29 @@ describe('Vercel provider', () => {
       url: vi.fn(),
       stop: vi.fn(),
       remove: vi.fn(async () => {
-        const store = options.branchMetadataStore!;
-        const metadata = await store.read();
-        expect(metadata?.identity?.branch).toBe(options.branch);
-        expect(metadata?.identity?.tags.identity).toBeTruthy();
-        seenIdentities.push(metadata!.identity!.tags.identity);
+        expect(options.recovery?.identity.name).toBe(recovered.name);
+        expect(options.recovery?.snapshotIds).toEqual(['recovered-snapshot']);
+        expect(options.branchMetadataStore).toBeDefined();
+        seenIdentities.push(options.recovery!.identity.tags.identity);
         if (partial) {
-          await store.write({
-            ...(metadata?.identity === undefined ? {} : { identity: metadata.identity }),
-            ...(metadata?.configuration === undefined ? {} : { configuration: metadata.configuration }),
-            residual: { sandboxIds: ['missing-sandbox'], reason: 'retry' },
-          });
           return {
             verified: false,
             sandboxDeleted: false,
             snapshotsCleaned: false,
             sandboxMissing: false,
-            snapshotIds: [],
-            residualSandboxIds: ['missing-sandbox'],
-            residualSnapshotIds: [],
+            snapshotIds: ['recovered-snapshot'],
+            residualSandboxIds: [recovered.name],
+            residualSnapshotIds: ['recovered-snapshot'],
             finalSessions: [],
             errors: ['sandbox remained'],
           };
         }
-        await store.remove();
         return {
           verified: true,
           sandboxDeleted: true,
           snapshotsCleaned: true,
           sandboxMissing: true,
-          snapshotIds: [],
+          snapshotIds: ['recovered-snapshot'],
           residualSandboxIds: [],
           residualSnapshotIds: [],
           finalSessions: [],
@@ -914,10 +908,7 @@ describe('Vercel provider', () => {
 
     await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).rejects.toMatchObject({ code: 'cleanup' });
     const branchStore = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/recover' });
-    await expect(branchStore.read()).resolves.toMatchObject({
-      identity: { branch: 'feature/recover' },
-      residual: { sandboxIds: ['missing-sandbox'] },
-    });
+    await expect(branchStore.read()).resolves.toBeNull();
     expect(seenIdentities).toHaveLength(1);
 
     partial = false;
@@ -926,6 +917,46 @@ describe('Vercel provider', () => {
     expect(seenIdentities).toHaveLength(2);
     expect(seenIdentities[0]).toBe(seenIdentities[1]);
     expect(shell.execQuiet).not.toHaveBeenCalled();
+  });
+
+  it('removes recovered cloud state when branch metadata read is unavailable', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-remove-read-failure-'));
+    const remote = 'github.com/acme/repo';
+    const branch = 'feature/recover';
+    const recovered = createVercelIdentity({
+      remote,
+      branch,
+      scope: { teamId: 'team-1', projectId: 'project-1' },
+    });
+    const branchStore = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch });
+    await mkdir(dirname(branchStore.path), { recursive: true });
+    for (let directory = dirname(branchStore.path); directory !== stateHome; directory = dirname(directory)) {
+      await chmod(directory, 0o700);
+    }
+    await mkdir(branchStore.path);
+    const handle = {
+      ...sandbox(),
+      name: recovered.name,
+      status: 'stopped' as const,
+      tags: { ...recovered.tags },
+    };
+    const client = {
+      listSandboxes: vi.fn(async () => [{
+        name: recovered.name,
+        status: 'stopped' as const,
+        persistent: true,
+        tags: { ...recovered.tags },
+      }]),
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+
+    await expect(provider.remove(request({ branch, tty: false }))).resolves.toEqual({ exitCode: 0 });
+    expect(client.get).toHaveBeenCalledWith(expect.objectContaining({ name: recovered.name }));
+    expect(client.deleteSandbox).toHaveBeenCalledOnce();
   });
 
   it('recovers and removes a lost old-version sandbox from authoritative branch tags', async () => {

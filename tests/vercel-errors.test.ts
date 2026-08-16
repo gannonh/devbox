@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { mapVercelError } from '../src/providers/vercel/errors.js';
-import { VercelCreationCompensationError } from '../src/providers/vercel/lifecycle.js';
+import {
+  VercelCreationCompensationError,
+  VercelRecoveryCleanupError,
+} from '../src/providers/vercel/lifecycle.js';
 
 describe('Vercel provider errors', () => {
   it('preserves creation-compensation recovery IDs without exposing secrets', () => {
@@ -27,6 +30,33 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).toContain('sandbox-1');
     expect(mapped.message).toContain('snapshot-1');
     expect(mapped.message).toContain('recovery metadata was not retained');
+    expect(mapped.message).toContain('--rm');
+    expect(mapped.message).not.toContain(token);
+  });
+
+  it('preserves redacted recovered cleanup residual guidance at the provider boundary', () => {
+    const token = 'recovery-metadata-secret';
+    const error = new VercelRecoveryCleanupError({
+      verified: false,
+      sandboxDeleted: false,
+      snapshotsCleaned: false,
+      sandboxMissing: false,
+      snapshotIds: ['snapshot-1'],
+      residualSandboxIds: ['sandbox-1'],
+      residualSnapshotIds: ['snapshot-1'],
+      finalSessions: [],
+      errors: ['sandbox delete failed'],
+    }, `Residual resource IDs: sandbox-1; recovery metadata persistence failed: ${token}`, token);
+
+    const mapped = mapVercelError(error, {
+      action: 'remove',
+      branch: 'feature/ui',
+      secrets: [token],
+    });
+
+    expect(mapped.code).toBe('cleanup');
+    expect(mapped.message).toContain('sandbox-1');
+    expect(mapped.message).toContain('recovery metadata persistence failed');
     expect(mapped.message).toContain('--rm');
     expect(mapped.message).not.toContain(token);
   });
