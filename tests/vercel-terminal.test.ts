@@ -353,6 +353,139 @@ describe('Vercel terminal adapter', () => {
     await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 7 });
   });
 
+  it('sends one oversized stdin chunk directly under a small queue limit', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams();
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      maxPendingInputBytes: 16,
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+    sockets[0].blockSends = true;
+    const largeInput = Buffer.alloc(100 * 1024, 65);
+
+    terminalStreams.input.emit('data', largeInput);
+
+    expect(sockets[0].sent).toHaveLength(2);
+    expect(sockets[0].sent[1]).toEqual(largeInput);
+    expect(terminalStreams.input.isPaused()).toBe(true);
+    let settled = false;
+    void resultPromise.then(() => {
+      settled = true;
+    });
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(settled).toBe(false);
+
+    sockets[0].releaseSend();
+    expect(terminalStreams.input.isPaused()).toBe(false);
+    sockets[0].emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false);
+    await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
+  });
+
+  it('bounds additional stdin chunks after a direct oversized send', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const errors: Buffer[] = [];
+    const token = 'input-limit-token';
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams(true);
+    terminalStreams.error.on('data', (chunk) => errors.push(Buffer.from(chunk)));
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      maxPendingInputBytes: 16,
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+    sockets[0].blockSends = true;
+    terminalStreams.input.emit('data', Buffer.alloc(100 * 1024, 65));
+    terminalStreams.input.emit('data', Buffer.alloc(8, 66));
+    terminalStreams.input.emit('data', Buffer.alloc(9, 67));
+
+    await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'error' });
+    expect(sockets[0].sent).toHaveLength(2);
+    expect(Buffer.concat(errors).toString()).toMatch(/input backpressure limit/);
+    expect(Buffer.concat(errors).toString()).not.toContain(token);
+  });
+
+  it('rejects input and output frames above the absolute direct-frame cap', async () => {
+    const inputSockets: FakeWebSocket[] = [];
+    const inputErrors: Buffer[] = [];
+    const inputToken = 'oversized-input-token';
+    const inputTerminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        inputSockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const inputStreams = streams();
+    inputStreams.error.on('data', (chunk) => inputErrors.push(Buffer.from(chunk)));
+    const inputResult = inputTerminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: inputToken }),
+    }, {
+      streams: inputStreams,
+      signalSource: new EventEmitter(),
+      maxPendingInputBytes: 16,
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(inputSockets[0]?.sent).toHaveLength(1));
+    inputStreams.input.emit('data', Buffer.alloc(16 * 1024 * 1024 + 1, 65));
+
+    await expect(inputResult).resolves.toEqual({ status: 'detached', reason: 'error' });
+    expect(inputSockets[0].sent).toHaveLength(1);
+    expect(Buffer.concat(inputErrors).toString()).toMatch(/input direct frame limit/);
+    expect(Buffer.concat(inputErrors).toString()).not.toContain(inputToken);
+
+    const outputSockets: FakeWebSocket[] = [];
+    const outputErrors: Buffer[] = [];
+    const outputToken = 'oversized-output-token';
+    const outputTerminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        outputSockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const outputStreams = streams();
+    outputStreams.error.on('data', (chunk) => outputErrors.push(Buffer.from(chunk)));
+    const outputResult = outputTerminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: outputToken }),
+    }, {
+      streams: outputStreams,
+      signalSource: new EventEmitter(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(outputSockets[0]?.sent).toHaveLength(1));
+    outputSockets[0].emitMessage(Buffer.alloc(16 * 1024 * 1024 + 1, 65), true);
+
+    await expect(outputResult).resolves.toEqual({ status: 'detached', reason: 'error' });
+    expect(Buffer.concat(outputErrors).toString()).toMatch(/output direct frame limit/);
+    expect(Buffer.concat(outputErrors).toString()).not.toContain(outputToken);
+  });
+
   it('forwards Ctrl-C, consumes Ctrl-], and restores raw mode on detach', async () => {
     const sockets: FakeWebSocket[] = [];
     const signalSource = new EventEmitter();

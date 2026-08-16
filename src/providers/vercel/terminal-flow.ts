@@ -3,7 +3,7 @@ export const DEFAULT_MAX_PENDING_OUTPUT_BYTES = 64 * 1024;
 export const DEFAULT_BACKPRESSURE_TIMEOUT_MS = 30_000;
 export const MAX_CONTROL_FRAME_BYTES = 64 * 1024;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
-const MAX_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024;
+export const MAX_BUFFER_LIMIT_BYTES = 16 * 1024 * 1024;
 
 export interface RestorableReadable {
   readonly readableFlowing?: boolean | null;

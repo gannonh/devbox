@@ -10,6 +10,7 @@ import {
   DEFAULT_BACKPRESSURE_TIMEOUT_MS,
   DEFAULT_MAX_PENDING_INPUT_BYTES,
   DEFAULT_MAX_PENDING_OUTPUT_BYTES,
+  MAX_BUFFER_LIMIT_BYTES,
   MAX_CONTROL_FRAME_BYTES,
   pauseSocket,
   restoreReadableState,
@@ -340,6 +341,11 @@ async function attachTerminal(input: {
       maybeFinishPendingResult();
     };
     const enqueueOutput = (chunk: Buffer) => {
+      if (chunk.length > MAX_BUFFER_LIMIT_BYTES) {
+        reportError(new Error('Terminal output direct frame limit exceeded'));
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
       if (chunk.length > maxPendingOutputBytes && !hasPendingOutput()) {
         writeOutput(chunk);
         return;
@@ -406,6 +412,7 @@ async function attachTerminal(input: {
     };
     const sendQueue = new BoundedBufferQueue(maxPendingInputBytes);
     let sendInFlight = false;
+    let inFlightQueued = false;
     let pendingInputResult: VercelTerminalResult | undefined;
     const pauseInput = () => {
       if (inputFlowPaused || settled) return;
@@ -429,7 +436,8 @@ async function attachTerminal(input: {
     };
     const completeInputSend = (error?: Error) => {
       if (settled) return;
-      sendQueue.shift();
+      if (inFlightQueued) sendQueue.shift();
+      inFlightQueued = false;
       sendInFlight = false;
       if (inputSendTimer !== undefined) clearTimeout(inputSendTimer);
       inputSendTimer = undefined;
@@ -448,14 +456,13 @@ async function attachTerminal(input: {
         }
       }
     };
-    const flushSendQueue = () => {
-      if (settled || sendInFlight || sendQueue.length === 0) return;
-      const chunk = sendQueue.peek();
-      if (!chunk) return;
+    const beginInputSend = (chunk: Buffer, queued: boolean) => {
       sendInFlight = true;
+      inFlightQueued = queued;
       pauseInput();
       if (settled) {
         sendInFlight = false;
+        inFlightQueued = false;
         return;
       }
       inputSendTimer = setTimeout(() => {
@@ -471,8 +478,23 @@ async function attachTerminal(input: {
         completeInputSend(error instanceof Error ? error : new Error(String(error)));
       }
     };
+    const flushSendQueue = () => {
+      if (settled || sendInFlight || sendQueue.length === 0) return;
+      const chunk = sendQueue.peek();
+      if (!chunk) return;
+      beginInputSend(chunk, true);
+    };
     const sendInput = (chunk: Buffer) => {
       if (socket.readyState !== OPEN || settled || chunk.length === 0) return;
+      if (chunk.length > MAX_BUFFER_LIMIT_BYTES) {
+        reportError(new Error('Terminal input direct frame limit exceeded'));
+        requestTerminal({ status: 'detached', reason: 'error' });
+        return;
+      }
+      if (chunk.length > maxPendingInputBytes && !sendInFlight && sendQueue.length === 0) {
+        beginInputSend(chunk, false);
+        return;
+      }
       if (!sendQueue.enqueue(chunk)) {
         reportError(new Error('Terminal input backpressure limit exceeded'));
         requestTerminal({ status: 'detached', reason: 'error' });
