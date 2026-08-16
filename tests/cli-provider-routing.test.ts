@@ -133,6 +133,18 @@ describe('CLI provider routing', () => {
     expect(local.getDisplayCredentials).toHaveBeenCalledWith(expect.objectContaining({ branch: 'feature' }));
   });
 
+  it('reports Vercel display credentials as explicitly unsupported', async () => {
+    const io = streams();
+    const code = await dispatch(['--provider', 'vercel', 'feature', '--password'], io, {
+      repoRoot: '/repo',
+      registry: { local: provider('local'), vercel: provider('vercel') },
+      tty: false,
+    });
+
+    expect(code).toBe(2);
+    expect(io.output().stderr).toContain('unsupported');
+  });
+
   it('returns a concise nonzero result for unsupported local credentials', async () => {
     const local = provider('local');
     const io = streams();

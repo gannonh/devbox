@@ -75,9 +75,18 @@ export interface VercelInteractiveSandbox {
   extendTimeout?: (durationMs: number, options?: { signal?: AbortSignal }) => Promise<void>;
 }
 
+export interface VercelTerminalFailure {
+  readonly cause: Error;
+  readonly message: string;
+}
+
 export type VercelTerminalResult =
   | { status: 'exited'; code: number }
-  | { status: 'detached'; reason: 'close' | 'error' | 'abort' | 'escape' | 'eof' | 'signal' };
+  | {
+    status: 'detached';
+    reason: 'close' | 'error' | 'abort' | 'escape' | 'eof' | 'signal';
+    error?: VercelTerminalFailure;
+  };
 
 export interface VercelTerminalOptions {
   cwd?: string;
@@ -93,6 +102,8 @@ export interface VercelTerminalOptions {
   connectionTimeoutMs?: number;
   connectionTimeoutScheduler?: VercelTerminalTimeoutScheduler;
   timeoutExtension?: VercelTerminalTimeoutOptions | false;
+  /** Return true to suppress the adapter's direct stderr rendering. */
+  onError?: (failure: VercelTerminalFailure) => boolean;
   maxPendingInputBytes?: number;
   maxPendingOutputBytes?: number;
   backpressureTimeoutMs?: number;
@@ -142,13 +153,22 @@ async function attachTerminal(input: {
   signalSource: EventEmitter;
 }): Promise<VercelTerminalResult> {
   const { sandbox, options, createWebSocket, streams, signalSource } = input;
+  const reportFailure = (error: unknown, secrets: readonly string[] = []): VercelTerminalFailure => {
+    const failure = createTerminalFailure(error, secrets);
+    if (options.onError?.(failure) !== true) writeError(streams.stderr, failure.message);
+    return failure;
+  };
+  const failureResult = (failure: VercelTerminalFailure): VercelTerminalResult => ({
+    status: 'detached',
+    reason: 'error',
+    ...(options.onError === undefined ? {} : { error: failure }),
+  });
   let interactive: Awaited<ReturnType<VercelInteractiveSandbox['openInteractive']>>;
   try {
     interactive = await sandbox.openInteractive({ signal: options.signal });
   } catch (error) {
     if (options.signal?.aborted) return { status: 'detached', reason: 'abort' };
-    writeError(streams.stderr, error);
-    return { status: 'detached', reason: 'error' };
+    return failureResult(reportFailure(error));
   }
   if (options.signal?.aborted) return { status: 'detached', reason: 'abort' };
 
@@ -159,8 +179,7 @@ async function attachTerminal(input: {
       'connection timeout',
     );
   } catch (error) {
-    writeError(streams.stderr, error, [interactive.token]);
-    return { status: 'detached', reason: 'error' };
+    return failureResult(reportFailure(error, [interactive.token]));
   }
   const connectionTimeoutScheduler = options.connectionTimeoutScheduler ?? {
     setTimeout: (callback: () => void, delay: number) => setTimeout(callback, delay),
@@ -206,8 +225,7 @@ async function attachTerminal(input: {
     removeEarlyMessageListener();
     closeSocket(socket);
     if (options.signal?.aborted) return { status: 'detached', reason: 'abort' };
-    writeError(streams.stderr, error, [interactive.token]);
-    return { status: 'detached', reason: 'error' };
+    return failureResult(reportFailure(error, [interactive.token]));
   }
   if (options.signal?.aborted) {
     removeEarlyMessageListener();
@@ -215,8 +233,7 @@ async function attachTerminal(input: {
     return { status: 'detached', reason: 'abort' };
   }
   if (!socket) {
-    writeError(streams.stderr, new Error('WebSocket client was not created'));
-    return { status: 'detached', reason: 'error' };
+    return failureResult(reportFailure(new Error('WebSocket client was not created')));
   }
 
   const getSize = options.getSize ?? (() => ({
@@ -238,10 +255,10 @@ async function attachTerminal(input: {
       rows: size.rows,
     });
   } catch (error) {
-    writeError(streams.stderr, error, [interactive.token]);
+    const failure = reportFailure(error, [interactive.token]);
     removeEarlyMessageListener();
     closeSocket(socket);
-    return { status: 'detached', reason: 'error' };
+    return failureResult(failure);
   }
 
   let maxPendingInputBytes: number;
@@ -260,17 +277,17 @@ async function attachTerminal(input: {
       options.backpressureTimeoutMs ?? DEFAULT_BACKPRESSURE_TIMEOUT_MS,
     );
   } catch (error) {
-    writeError(streams.stderr, error, [interactive.token]);
+    const failure = reportFailure(error, [interactive.token]);
     removeEarlyMessageListener();
     closeSocket(socket);
-    return { status: 'detached', reason: 'error' };
+    return failureResult(failure);
   }
   const detachSignals = options.detachSignals ?? DEFAULT_DETACH_SIGNALS;
   if (Buffer.byteLength(startFrame) > MAX_CONTROL_FRAME_BYTES) {
-    writeError(streams.stderr, new Error('Terminal start frame exceeds control frame limit'), [interactive.token]);
+    const failure = reportFailure(new Error('Terminal start frame exceeds control frame limit'), [interactive.token]);
     removeEarlyMessageListener();
     closeSocket(socket);
-    return { status: 'detached', reason: 'error' };
+    return failureResult(failure);
   }
 
   return await new Promise<VercelTerminalResult>((resolve) => {
@@ -282,7 +299,11 @@ async function attachTerminal(input: {
     let socketFlowPaused = false;
     let inputFlowPaused = false;
     const sessionController = new AbortController();
-    const reportError = (error: unknown) => writeError(streams.stderr, error, [interactive.token]);
+    let lastFailure: VercelTerminalFailure | undefined;
+    const reportError = (error: unknown): VercelTerminalFailure => {
+      lastFailure = reportFailure(error, [interactive.token]);
+      return lastFailure;
+    };
     const stdinIsTTY = options.tty ?? Boolean(streams.stdin.isTTY);
     const wasRaw = streams.stdin.isRaw;
     const wasFlowing = streams.stdin.readableFlowing;
@@ -333,7 +354,11 @@ async function attachTerminal(input: {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(result);
+      if (options.onError !== undefined && result.status === 'detached' && result.reason === 'error' && !result.error && lastFailure) {
+        resolve({ ...result, error: lastFailure });
+      } else {
+        resolve(result);
+      }
     };
     const outputQueue = new BoundedBufferQueue(maxPendingOutputBytes);
     let blockedOutputBytes = 0;
@@ -738,6 +763,16 @@ function validateSize(size: VercelTerminalSize): void {
   if (!Number.isInteger(size.cols) || size.cols <= 0 || !Number.isInteger(size.rows) || size.rows <= 0) {
     throw new Error('Terminal dimensions must be positive integers');
   }
+}
+
+function createTerminalFailure(
+  error: unknown,
+  secrets: readonly string[] = [],
+): VercelTerminalFailure {
+  const message = redactSecrets(error, secrets);
+  const cause = new Error(message);
+  if (error instanceof Error) cause.name = error.name;
+  return { cause, message };
 }
 
 function writeError(

@@ -47,6 +47,33 @@ export interface VercelMetadata extends VercelMetadataInput {
   repoKeyHash: string;
 }
 
+export interface VercelScopeMetadataInput {
+  teamId: string;
+  projectId: string;
+}
+
+export interface VercelScopeMetadata extends VercelScopeMetadataInput {
+  schemaVersion: 2;
+  metadataKind: 'scope';
+  provider: string;
+  repoKeyHash: string;
+}
+
+export interface VercelBranchMetadataInput {
+  identity?: VercelMetadataIdentity;
+  sandboxId?: string;
+  snapshotIds?: string[];
+  residual?: VercelResidualMetadata;
+  configuration?: VercelCreateConfiguration;
+}
+
+export interface VercelBranchMetadata extends VercelBranchMetadataInput {
+  schemaVersion: 2;
+  metadataKind: 'branch';
+  provider: string;
+  repoKeyHash: string;
+}
+
 const INPUT_FIELDS = [
   'teamId',
   'projectId',
@@ -127,6 +154,112 @@ export function serializeMetadata(
 ): string {
   const input = validateMetadataInput(value);
   return JSON.stringify({ schemaVersion: 1, provider, repoKeyHash, ...input }) + '\n';
+}
+
+const SCOPE_INPUT_FIELDS = ['teamId', 'projectId'] as const;
+const SCOPE_STORED_FIELDS = ['schemaVersion', 'metadataKind', 'provider', 'repoKeyHash', ...SCOPE_INPUT_FIELDS] as const;
+const BRANCH_INPUT_FIELDS = ['identity', 'sandboxId', 'snapshotIds', 'residual', 'configuration'] as const;
+const BRANCH_STORED_FIELDS = ['schemaVersion', 'metadataKind', 'provider', 'repoKeyHash', ...BRANCH_INPUT_FIELDS] as const;
+
+export function validateScopeMetadataInput(value: unknown): VercelScopeMetadataInput {
+  const input = expectRecord(value, 'Vercel scope metadata input');
+  assertExactKeys(input, SCOPE_INPUT_FIELDS, SCOPE_INPUT_FIELDS, 'Vercel scope metadata input');
+  return {
+    teamId: requireString(input.teamId, 'teamId'),
+    projectId: requireString(input.projectId, 'projectId'),
+  };
+}
+
+export function parseStoredScopeMetadata(
+  value: unknown,
+  expectedProvider: string,
+  expectedRepoKeyHash: string,
+): VercelScopeMetadata {
+  const stored = expectRecord(value, 'Vercel scope metadata');
+  assertExactKeys(stored, SCOPE_STORED_FIELDS, SCOPE_STORED_FIELDS, 'Vercel scope metadata');
+  assertMetadataHeader(stored, expectedProvider, expectedRepoKeyHash, 'scope');
+  return {
+    schemaVersion: 2,
+    metadataKind: 'scope',
+    provider: expectedProvider,
+    repoKeyHash: expectedRepoKeyHash,
+    ...validateScopeMetadataInput({ teamId: stored.teamId, projectId: stored.projectId }),
+  };
+}
+
+export function serializeScopeMetadata(
+  value: unknown,
+  provider: string,
+  repoKeyHash: string,
+): string {
+  const input = validateScopeMetadataInput(value);
+  return JSON.stringify({
+    schemaVersion: 2,
+    metadataKind: 'scope',
+    provider,
+    repoKeyHash,
+    ...input,
+  }) + '\n';
+}
+
+export function validateBranchMetadataInput(value: unknown): VercelBranchMetadataInput {
+  const input = expectRecord(value, 'Vercel branch metadata input');
+  assertExactKeys(input, BRANCH_INPUT_FIELDS, [], 'Vercel branch metadata input');
+  return {
+    ...(input.identity === undefined ? {} : { identity: parseIdentity(input.identity) }),
+    ...(input.sandboxId === undefined ? {} : { sandboxId: requireString(input.sandboxId, 'sandboxId') }),
+    ...(input.snapshotIds === undefined ? {} : { snapshotIds: parseStringArray(input.snapshotIds, 'snapshotIds') }),
+    ...(input.residual === undefined ? {} : { residual: parseResidual(input.residual) }),
+    ...(input.configuration === undefined ? {} : { configuration: parseConfiguration(input.configuration) }),
+  };
+}
+
+export function parseStoredBranchMetadata(
+  value: unknown,
+  expectedProvider: string,
+  expectedRepoKeyHash: string,
+): VercelBranchMetadata {
+  const stored = expectRecord(value, 'Vercel branch metadata');
+  assertExactKeys(stored, BRANCH_STORED_FIELDS, BRANCH_STORED_FIELDS.slice(0, 4), 'Vercel branch metadata');
+  assertMetadataHeader(stored, expectedProvider, expectedRepoKeyHash, 'branch');
+  return {
+    schemaVersion: 2,
+    metadataKind: 'branch',
+    provider: expectedProvider,
+    repoKeyHash: expectedRepoKeyHash,
+    ...validateBranchMetadataInput(Object.fromEntries(
+      BRANCH_INPUT_FIELDS
+        .filter((field) => stored[field] !== undefined)
+        .map((field) => [field, stored[field]]),
+    )),
+  };
+}
+
+export function serializeBranchMetadata(
+  value: unknown,
+  provider: string,
+  repoKeyHash: string,
+): string {
+  const input = validateBranchMetadataInput(value);
+  return JSON.stringify({
+    schemaVersion: 2,
+    metadataKind: 'branch',
+    provider,
+    repoKeyHash,
+    ...input,
+  }) + '\n';
+}
+
+function assertMetadataHeader(
+  stored: Record<string, unknown>,
+  expectedProvider: string,
+  expectedRepoKeyHash: string,
+  expectedKind: 'scope' | 'branch',
+): void {
+  if (stored.schemaVersion !== 2) throw new Error('Vercel metadata schemaVersion must be 2');
+  if (stored.metadataKind !== expectedKind) throw new Error(`Vercel metadata kind mismatch: expected ${expectedKind}`);
+  if (stored.provider !== expectedProvider) throw new Error(`Vercel metadata provider mismatch: expected ${expectedProvider}`);
+  if (stored.repoKeyHash !== expectedRepoKeyHash) throw new Error('Vercel metadata repo key mismatch');
 }
 
 function parseIdentity(value: unknown): VercelMetadataIdentity {

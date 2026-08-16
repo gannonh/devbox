@@ -42,11 +42,16 @@ export type {
   VercelProviderErrorCode,
 } from './vercel/errors.js';
 export {
+  createVercelBranchMetadataStore,
   createVercelMetadataStore,
+  createVercelScopeMetadataStore,
 } from './vercel/metadata.js';
 export type {
   MetadataLock,
   MetadataLockOptions,
+  VercelBranchMetadata,
+  VercelBranchMetadataInput,
+  VercelBranchMetadataStore,
   VercelCreateConfiguration,
   VercelIdentityTags,
   VercelMetadata,
@@ -55,6 +60,9 @@ export type {
   VercelMetadataStore,
   VercelMetadataStoreOptions,
   VercelResidualMetadata,
+  VercelScopeMetadata,
+  VercelScopeMetadataInput,
+  VercelScopeMetadataStore,
 } from './vercel/metadata.js';
 export {
   createVercelIdentity,
@@ -149,6 +157,7 @@ export type {
   VercelInteractiveSandbox,
   VercelTerminalAdapter,
   VercelTerminalAdapterDependencies,
+  VercelTerminalFailure,
   VercelTerminalInput,
   VercelTerminalOptions,
   VercelTerminalOutput,

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { access, readFile, stat } from 'node:fs/promises';
 import { normalizeGitHubRemote } from '../src/providers/vercel/identity.js';
 import {
   normalizeGitHubSourceRemote,
@@ -87,6 +88,61 @@ describe('Vercel GitHub source selection', () => {
     expect(runner.exec).not.toHaveBeenCalled();
   });
 
+  it('authenticates private default and branch probes through a token-free askpass helper', async () => {
+    const token = 'private-github-token';
+    const events: string[] = [];
+    const observed: Array<{ args: string[]; env: Record<string, string | undefined>; helper: string }> = [];
+    let helperContent = '';
+    let helperMode = 0;
+    const shellRunner = {
+      ...noOpShell,
+      exec: vi.fn(async (command: string, args: string[], options?: { env?: Record<string, string | undefined> }) => {
+        if (args[0] === 'remote') return 'https://github.com/acme/private.git';
+        if (command === 'gh') {
+          events.push('token');
+          return token;
+        }
+        if (args[0] === 'ls-remote') {
+          events.push(args.includes('--symref') ? 'default' : 'branch');
+          const helper = options?.env?.GIT_ASKPASS;
+          expect(helper).toBeTruthy();
+          helperContent = await readFile(helper!, 'utf8');
+          helperMode = (await stat(helper!)).mode & 0o777;
+          observed.push({ args, env: options?.env ?? {}, helper: helper! });
+          return args.includes('--symref') ? 'ref: refs/heads/main\tHEAD\n' : '';
+        }
+        throw new Error(`unexpected command ${command} ${args.join(' ')}`);
+      }),
+      execQuiet: vi.fn(async (_command: string, args: string[], options?: { env?: Record<string, string | undefined> }) => {
+        events.push('branch');
+        const helper = options?.env?.GIT_ASKPASS;
+        expect(helper).toBeTruthy();
+        observed.push({ args, env: options?.env ?? {}, helper: helper! });
+        return { stdout: 'def\trefs/heads/feature/ui\n', code: 0 };
+      }),
+    };
+
+    const result = await resolveGitHubSource({
+      repoRoot: '/repo',
+      branch: 'feature/ui',
+      env: {},
+      shellRunner,
+    });
+
+    expect(result.source.password).toBe(token);
+    expect(events).toEqual(['token', 'default', 'branch']);
+    expect(observed).toHaveLength(2);
+    expect(observed.every(({ args }) => !args.includes(token) && !args.join(' ').includes(token))).toBe(true);
+    expect(observed.every(({ env }) => env.GIT_PASSWORD === token
+      && env.GIT_TERMINAL_PROMPT === '0'
+      && env.GIT_ASKPASS
+      && env.GH_TOKEN === undefined
+      && env.GITHUB_TOKEN === undefined)).toBe(true);
+    expect(helperContent).not.toContain(token);
+    expect(helperMode).toBe(0o700);
+    await expect(access(observed[0].helper)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('resolves origin and remote branch state without putting a token in argv', async () => {
     const token = 'gh-secret-token';
     const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
@@ -130,7 +186,7 @@ describe('Vercel GitHub source selection', () => {
     expect(calls.every(({ args }) => !args.includes(token))).toBe(true);
     expect(calls.every(({ cwd }) => cwd === '/repo')).toBe(true);
     expect(calls.find(({ command, args }) => command === 'git' && args[0] === 'ls-remote' && args.includes('--heads'))?.args)
-      .toEqual(['ls-remote', '--heads', 'origin', '--', 'refs/heads/feature/ui']);
+      .toEqual(['ls-remote', '--heads', 'https://github.com/acme/repo.git', '--', 'refs/heads/feature/ui']);
   });
 
   it('accepts case-insensitive HTTPS and SSH schemes', () => {

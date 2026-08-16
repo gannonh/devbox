@@ -185,6 +185,41 @@ describe('Vercel terminal adapter', () => {
     expect(terminalStreams.input.isRaw).toBe(false);
   });
 
+  it('returns a redacted structured failure and suppresses duplicate stderr when handled', async () => {
+    const token = 'terminal-structured-secret';
+    const sockets: FakeWebSocket[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams(true);
+    const failures: unknown[] = [];
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+      onError: (failure) => {
+        failures.push(failure);
+        return true;
+      },
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+    sockets[0].emit('error', new Error(`transport failed ${token}`));
+
+    const result = await resultPromise;
+    expect(result).toMatchObject({ status: 'detached', reason: 'error', error: { message: expect.any(String) } });
+    expect(failures).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(JSON.stringify(failures)).not.toContain(token);
+    expect(Buffer.concat(terminalStreams.error ? [terminalStreams.error.read() ?? Buffer.alloc(0)] : []).toString()).toBe('');
+  });
+
   it('aborts cleanly when cancellation happens before the WebSocket opens', async () => {
     const sockets: FakeWebSocket[] = [];
     const controller = new AbortController();

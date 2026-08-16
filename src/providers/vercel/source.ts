@@ -1,3 +1,6 @@
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { URL } from 'node:url';
 import { normalizeGitHubRemote, normalizeBranch, type GitHubRemoteIdentity } from './identity.js';
 import { shell, type ShellRunner } from '../../lib/shell.js';
@@ -178,29 +181,38 @@ export async function resolveGitHubSource(
     throw redactedError(error, knownSecrets);
   }
 
+  const token = await resolveGitHubToken({
+    repoRoot: options.repoRoot,
+    env: options.env,
+    shellRunner: runner,
+  });
+  const probeSecrets = [...new Set([...knownSecrets, token])];
   let defaultOutput: string;
-  try {
-    defaultOutput = await runner.exec('git', ['ls-remote', '--symref', 'origin', 'HEAD'], {
-      cwd: options.repoRoot,
-      silentStderr: true,
-    });
-  } catch (error) {
-    throw redactedError(new Error(`Unable to resolve the GitHub default branch: ${errorMessage(error)}`), knownSecrets);
-  }
-  const defaultBranch = parseRemoteDefaultBranch(defaultOutput);
-
   let branchResult: { stdout: string; code: number };
   try {
-    branchResult = await runner.execQuiet(
-      'git',
-      ['ls-remote', '--heads', 'origin', '--', `refs/heads/${requestedBranch}`],
-      { cwd: options.repoRoot, silentStderr: true },
-    );
+    ({ defaultOutput, branchResult } = await withGitAskPass(token, options.env, async (env) => {
+      const probeOptions = { cwd: options.repoRoot, silentStderr: true, env };
+      const defaultOutput = await runner.exec(
+        'git',
+        ['ls-remote', '--symref', remote.url, 'HEAD'],
+        probeOptions,
+      );
+      const branchResult = await runner.execQuiet(
+        'git',
+        ['ls-remote', '--heads', remote.url, '--', `refs/heads/${requestedBranch}`],
+        probeOptions,
+      );
+      return { defaultOutput, branchResult };
+    }));
   } catch (error) {
-    throw redactedError(new Error(`Unable to check the requested GitHub branch: ${errorMessage(error)}`), knownSecrets);
+    throw redactedError(new Error(`Unable to resolve GitHub source branches: ${errorMessage(error)}`), probeSecrets);
   }
+  const defaultBranch = parseRemoteDefaultBranch(defaultOutput);
   if (branchResult.code !== 0) {
-    throw new Error(`Unable to check the requested GitHub branch (git exited with code ${branchResult.code})`);
+    throw redactedError(
+      new Error(`Unable to check the requested GitHub branch (git exited with code ${branchResult.code})`),
+      probeSecrets,
+    );
   }
   const requestedBranchExists = remoteBranchOutputContains(branchResult.stdout, requestedBranch);
   const selection = selectGitHubRevision({
@@ -208,12 +220,6 @@ export async function resolveGitHubSource(
     defaultBranch,
     requestedBranchExists,
   });
-  const token = await resolveGitHubToken({
-    repoRoot: options.repoRoot,
-    env: options.env,
-    shellRunner: runner,
-  });
-
   return {
     remote,
     defaultBranch: selection.defaultBranch,
@@ -245,6 +251,42 @@ export function remoteBranchOutputContains(output: string, branch: string): bool
     const fields = line.trim().split(/\s+/);
     return fields.length >= 2 && fields[1] === `refs/heads/${normalized}`;
   });
+}
+
+const GIT_ASKPASS_SCRIPT = [
+  '#!/bin/sh',
+  'case "$1" in',
+  '  *[Uu]sername*) printf \'%s\\n\' "${GIT_USERNAME:-x-access-token}" ;;',
+  '  *) printf \'%s\\n\' "${GIT_PASSWORD:-}" ;;',
+  'esac',
+  '',
+].join('\n');
+
+async function withGitAskPass<T>(
+  token: string,
+  env: Record<string, string | undefined> | undefined,
+  operation: (probeEnv: Record<string, string | undefined>) => Promise<T>,
+): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), 'devbox-git-askpass-'));
+  const helper = join(directory, 'askpass.sh');
+  try {
+    await chmod(directory, 0o700);
+    await writeFile(helper, GIT_ASKPASS_SCRIPT, { mode: 0o700 });
+    await chmod(helper, 0o700);
+    const probeEnv: Record<string, string | undefined> = {
+      ...process.env,
+      ...(env ?? {}),
+      GIT_ASKPASS: helper,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_USERNAME: 'x-access-token',
+      GIT_PASSWORD: token,
+    };
+    delete probeEnv.GH_TOKEN;
+    delete probeEnv.GITHUB_TOKEN;
+    return await operation(probeEnv);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 function configuredTokenSecrets(env: Record<string, string | undefined> | undefined): string[] {

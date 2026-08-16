@@ -95,7 +95,8 @@ EXAMPLES
 VERCEL CORE
   Uses the authenticated GitHub origin; local dirty files and unpushed commits
   are not copied. First use confirms the displayed team/project in a TTY.
-  Ctrl-C is sent to the remote process. Ctrl-] detaches without stopping it.
+  Without a complete Vercel credential triad, device auth prints the verification
+  URL and user code. Ctrl-C is sent to the remote process. Ctrl-] detaches without stopping it.
   --url prints current provider routes and --open opens the first route.
   --password is explicitly unsupported in this core phase.`;
 

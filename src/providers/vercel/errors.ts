@@ -29,6 +29,7 @@ export type VercelProviderErrorCode =
 
 export interface VercelErrorContext {
   action?: string;
+  operation?: 'source' | 'terminal' | 'api';
   branch?: string;
   secrets?: readonly string[];
 }
@@ -49,7 +50,13 @@ export function mapVercelError(
   error: unknown,
   context: VercelErrorContext = {},
 ): VercelProviderError {
-  if (error instanceof VercelProviderError) return error;
+  if (error instanceof VercelProviderError) {
+    return new VercelProviderError(
+      error.code,
+      redactSecrets(error.message, context.secrets ?? []),
+      error.exitCode,
+    );
+  }
 
   const status = statusOf(error);
   const lifecycleCode = codeOf(error);
@@ -67,7 +74,7 @@ export function mapVercelError(
   if (error instanceof VercelCleanupError || lifecycleCode === 'cleanup_incomplete' || lifecycleCode === 'stop_incomplete') {
     return new VercelProviderError(
       'cleanup',
-      `Vercel cleanup is incomplete; retry ${command} --rm and inspect the retained recovery metadata.`,
+      `Vercel cleanup is incomplete; retry ${removeRecoveryCommand(context)} and inspect the retained recovery metadata.`,
     );
   }
   if (error instanceof VercelResourceNotFoundError || lifecycleCode === 'resource_not_found') {
@@ -79,20 +86,20 @@ export function mapVercelError(
   if (lifecycleCode === 'stale') {
     return new VercelProviderError(
       'stale',
-      `The stored Vercel sandbox is stale; retry ${command} --rm, then create it again.`,
+      `The stored Vercel sandbox is stale; retry ${removeRecoveryCommand(context)}, then create it again.`,
     );
   }
   if (error instanceof VercelIdentityConflictError || lifecycleCode === 'identity_conflict') {
     return new VercelProviderError(
       'identity',
-      `The Vercel sandbox identity conflicts with this repository or branch; remove the stale box with ${command} --rm and retry.`,
+      `The Vercel sandbox identity conflicts with this repository or branch; remove the stale box with ${removeRecoveryCommand(context)} and retry.`,
       2,
     );
   }
   if (error instanceof VercelScopeConflictError || lifecycleCode === 'scope_conflict' || message.includes('scope conflict') || message.includes('stored vercel team/project')) {
     return new VercelProviderError(
       'scope',
-      `The stored Vercel team/project scope conflicts with this request; use the stored scope or remove its box with ${command} --rm.`,
+      `The stored Vercel team/project scope conflicts with this request; use the stored scope or remove its box with ${removeRecoveryCommand(context)}.`,
       2,
     );
   }
@@ -117,6 +124,20 @@ export function mapVercelError(
       2,
     );
   }
+  if (lifecycleCode === 'branch_setup_failed' || isPrivateRepoError(message)) {
+    return new VercelProviderError(
+      'private_repo',
+      `GitHub source access failed; ensure the origin is a GitHub remote and GH_TOKEN, GITHUB_TOKEN, or "gh auth token" can read the private repository, then retry ${recoveryCommand(context)}.`,
+      2,
+    );
+  }
+  if (isSourceError(message)) {
+    return new VercelProviderError(
+      'source',
+      `GitHub source resolution failed; use a canonical GitHub origin and verify the default/requested branch, then retry ${recoveryCommand(context)}.`,
+      2,
+    );
+  }
   if (status === 401 || status === 403 || /\b(?:401|403)\b|unauthori[sz]ed|forbidden/.test(message)) {
     return new VercelProviderError(
       'auth',
@@ -132,13 +153,13 @@ export function mapVercelError(
   if (status === 410 || /\b410\b|stale|gone/.test(message)) {
     return new VercelProviderError(
       'stale',
-      `The Vercel sandbox resource is stale; retry ${command} --rm, then create it again.`,
+      `The Vercel sandbox resource is stale; retry ${removeRecoveryCommand(context)}, then create it again.`
     );
   }
   if (status === 409 || /\b409\b|identity conflict|already exists/.test(message)) {
     return new VercelProviderError(
       'identity',
-      `The Vercel sandbox identity conflicts with an existing resource; remove the stale box with ${command} --rm and retry.`,
+      `The Vercel sandbox identity conflicts with an existing resource; remove the stale box with ${removeRecoveryCommand(context)} and retry.`,
       2,
     );
   }
@@ -165,17 +186,10 @@ export function mapVercelError(
       `The Vercel operation timed out; check network/authentication and retry ${command}.`,
     );
   }
-  if (lifecycleCode === 'branch_setup_failed' || isPrivateRepoError(message)) {
-    return new VercelProviderError(
-      'private_repo',
-      `GitHub source access failed; ensure the origin is a GitHub remote and GH_TOKEN, GITHUB_TOKEN, or "gh auth token" can read the private repository, then retry ${command}.`,
-      2,
-    );
-  }
-  if (lifecycleCode === 'metadata_incomplete' || isSourceError(message)) {
+  if (lifecycleCode === 'metadata_incomplete') {
     return new VercelProviderError(
       'source',
-      `GitHub source resolution failed; use a canonical GitHub origin and verify the requested branch, then retry ${command}.`,
+      `GitHub source metadata is incomplete; recreate the branch sandbox with ${recoveryCommand({ ...context, action: 'up' })}.`,
       2,
     );
   }
@@ -210,8 +224,25 @@ function safeDetail(error: unknown, secrets: readonly string[]): string {
 }
 
 function recoveryCommand(context: VercelErrorContext): string {
-  if (!context.branch) return 'devbox --provider vercel <branch>';
-  return `devbox --provider vercel ${context.branch}`;
+  const action = context.action;
+  if (action === 'list') return 'devbox --provider vercel --list';
+  const branch = context.branch ?? '<branch>';
+  const base = `devbox --provider vercel ${branch}`;
+  switch (action) {
+    case 'attach': return `${base} --attach`;
+    case 'stop': return `${base} --stop`;
+    case 'remove': return `${base} --rm`;
+    case 'url': return `${base} --url`;
+    case 'password': return `${base} --password`;
+    case 'up': return base;
+    default: return base;
+  }
+}
+
+function removeRecoveryCommand(context: VercelErrorContext): string {
+  if (context.action === 'list') return 'devbox --provider vercel --list';
+  const branch = context.branch ?? '<branch>';
+  return `devbox --provider vercel ${branch} --rm`;
 }
 
 function isConfirmationError(message: string): boolean {
@@ -227,11 +258,21 @@ function isPartialCredentialError(message: string): boolean {
 }
 
 function isPrivateRepoError(message: string): boolean {
-  return message.includes('private') || message.includes('unable to resolve github credentials') || message.includes('clone');
+  return message.includes('private')
+    || message.includes('unable to resolve github credentials')
+    || message.includes('clone')
+    || message.includes('git authentication')
+    || message.includes('repository access');
 }
 
 function isSourceError(message: string): boolean {
-  return message.includes('github origin') || message.includes('github branch') || message.includes('git source');
+  return message.includes('github origin')
+    || message.includes('github branch')
+    || message.includes('github source')
+    || message.includes('default branch')
+    || message.includes('ls-remote')
+    || message.includes('requested github branch')
+    || message.includes('git source');
 }
 
 function isImageReadinessError(message: string): boolean {

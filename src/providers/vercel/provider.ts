@@ -31,9 +31,12 @@ import {
   type VercelStopReport,
 } from './lifecycle.js';
 import {
-  createVercelMetadataStore,
-  type VercelMetadata,
-  type VercelMetadataStore,
+  createVercelBranchMetadataStore,
+  createVercelScopeMetadataStore,
+  type VercelBranchMetadata,
+  type VercelBranchMetadataStore,
+  type VercelScopeMetadata,
+  type VercelScopeMetadataStore,
 } from './metadata.js';
 import { mapVercelError } from './errors.js';
 import {
@@ -43,9 +46,11 @@ import {
   type GitHubSourcePlan,
   type GitHubSourceRemote,
 } from './source.js';
+import { createVercelIdentity } from './identity.js';
 import {
   createVercelTerminalAdapter,
   type VercelTerminalAdapter,
+  type VercelTerminalFailure,
   type VercelTerminalResult,
   type VercelTerminalStreams,
 } from './terminal.js';
@@ -76,9 +81,17 @@ export interface VercelProviderOptions {
 
 interface PreparedOperation {
   lifecycle: VercelLifecycle;
-  metadataStore: VercelMetadataStore;
-  metadata: VercelMetadata | null;
+  scopeStore: VercelScopeMetadataStore;
+  branchStore: VercelBranchMetadataStore;
+  scopeMetadata: VercelScopeMetadata | null;
+  metadata: VercelBranchMetadata | null;
   credentials: VercelCredentials;
+  source: GitHubSourcePlan;
+}
+
+interface PreparedUp {
+  scopeStore: VercelScopeMetadataStore;
+  branchStore: VercelBranchMetadataStore;
   source: GitHubSourcePlan;
 }
 
@@ -99,14 +112,42 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
   const provider: DevboxProvider = {
     name: 'vercel',
     up: (request) => withProviderErrors(request, 'up', async () => {
-      const prepared = await prepareUp(request, runner, options, makeLifecycle, injectedLifecycle);
-      const sandbox = await prepared.lifecycle.up();
-      return terminalResult(request, terminal, options.signalSource, sandbox);
+      const prepared = await prepareUp(request, runner, options);
+      return prepared.scopeStore.withLock(async () => {
+        const scopeMetadata = await prepared.scopeStore.read();
+        const branchMetadata = await prepared.branchStore.read();
+        const credentials = await resolveCredentials(
+          request,
+          options,
+          scopeMetadata ? { teamId: scopeMetadata.teamId, projectId: scopeMetadata.projectId } : undefined,
+        );
+        const scope = { teamId: credentials.teamId, projectId: credentials.projectId };
+        const renderedScope = renderScope(options.confirmation, scope);
+        request.stderr.write(`${renderedScope}\n`);
+        if (!scopeMetadata) {
+          request.stderr.write(`${prepared.source.warning}\n`);
+          await requireScopeConfirmation(scope, request, options.confirmation, renderedScope);
+        }
+        const lifecycle = createLifecycle(
+          request,
+          options,
+          runner,
+          makeLifecycle,
+          injectedLifecycle,
+          credentials,
+          prepared.source,
+          prepared.branchStore,
+          branchMetadata,
+        );
+        const sandbox = await lifecycle.up();
+        if (!scopeMetadata) await prepared.scopeStore.write(scope);
+        return terminalResult(request, terminal, options.signalSource, sandbox, 'up');
+      });
     }),
     attach: (request) => withProviderErrors(request, 'attach', async () => {
       const prepared = await prepareStored(request, 'attach', runner, options, makeLifecycle, injectedLifecycle);
       const sandbox = await prepared.lifecycle.attach();
-      return terminalResult(request, terminal, options.signalSource, sandbox);
+      return terminalResult(request, terminal, options.signalSource, sandbox, 'attach');
     }),
     stop: (request) => withProviderErrors(request, 'stop', async () => {
       const prepared = await prepareStored(request, 'stop', runner, options, makeLifecycle, injectedLifecycle);
@@ -152,45 +193,16 @@ async function prepareUp(
   request: ProviderBranchRequest,
   runner: ShellRunner,
   options: VercelProviderOptions,
-  makeLifecycle: VercelLifecycleFactory,
-  injectedLifecycle: VercelLifecycle | undefined,
-): Promise<PreparedOperation> {
+): Promise<PreparedUp> {
   const source = await resolveGitHubSource({
     repoRoot: request.repoRoot,
     branch: request.branch,
     env: request.env,
     shellRunner: runner,
   });
-  const metadataStore = createMetadataStore(source.remote, options);
-  const metadata = await metadataStore.read();
-  const credentials = await resolveCredentials(request, options, metadata?.teamId && metadata.projectId
-    ? { teamId: metadata.teamId, projectId: metadata.projectId }
-    : undefined);
-  const scope = { teamId: credentials.teamId, projectId: credentials.projectId };
-
-  const renderedScope = typeof options.confirmation === 'object' && options.confirmation?.render
-    ? options.confirmation.render(scope)
-    : renderVercelScope(scope);
-  request.stderr.write(`${renderedScope}\n`);
-  if (!metadata) {
-    request.stderr.write(`${source.warning}\n`);
-    await requireScopeConfirmation(scope, request, options.confirmation, renderedScope);
-  }
-
-  const lifecycle = injectedLifecycle ?? makeLifecycle({
-    repoRoot: request.repoRoot,
-    branch: request.branch,
-    env: request.env,
-    credentials,
-    source,
-    shellRunner: runner,
-    metadataStore,
-    stateHome: options.stateHome,
-    repoKey: source.remote.canonical,
-    ...(metadata?.configuration === undefined ? {} : { timeoutMs: metadata.configuration.timeoutMs }),
-    ...(options.credentialOptions === undefined ? {} : { credentialOptions: options.credentialOptions }),
-  });
-  return { lifecycle, metadataStore, metadata, credentials, source };
+  const scopeStore = createScopeStore(source.remote, options);
+  const branchStore = createBranchStore(source.remote, source.requestedBranch, options);
+  return { scopeStore, branchStore, source };
 }
 
 async function prepareStored(
@@ -206,42 +218,139 @@ async function prepareStored(
     env: request.env,
     shellRunner: runner,
   });
-  const metadataStore = createMetadataStore(origin, options);
-  const metadata = await metadataStore.read();
-  const branch = 'branch' in request ? request.branch : metadata?.identity?.branch ?? 'main';
-  const source = storedSource(origin, branch, metadata, action === 'list');
-  const storedScope = metadata && metadata.teamId && metadata.projectId
-    ? { teamId: metadata.teamId, projectId: metadata.projectId }
+  const scopeStore = createScopeStore(origin, options);
+  const scopeMetadata = await scopeStore.read();
+  const branch = 'branch' in request
+    ? normalizeRequestedSourceBranch(request.branch)
+    : 'main';
+  const branchStore = createBranchStore(origin, branch, options);
+  const metadata = action === 'list' ? null : await branchStore.read();
+  const allowMissing = action === 'list' || action === 'remove';
+  const source = storedSource(origin, branch, metadata, allowMissing, action === 'remove');
+  const storedScope = scopeMetadata
+    ? { teamId: scopeMetadata.teamId, projectId: scopeMetadata.projectId }
     : undefined;
   const credentials = await resolveCredentials(request, options, storedScope);
-  const lifecycle = injectedLifecycle ?? makeLifecycle({
-    repoRoot: request.repoRoot,
+  if (action !== 'list' && action !== 'remove' && !metadata) {
+    throw new VercelLifecycleError(
+      'resource_not_found',
+      `Vercel metadata record was not found for ${origin.canonical} branch ${branch}`,
+    );
+  }
+  if (action === 'remove' && !metadata) {
+    await seedRecoveryMetadata(branchStore, origin, branch, credentials);
+  }
+  const lifecycle = createLifecycle(
+    request,
+    options,
+    runner,
+    makeLifecycle,
+    injectedLifecycle,
+    credentials,
+    source,
+    branchStore,
+    metadata,
+    action === 'list',
+  );
+  return { lifecycle, scopeStore, branchStore, scopeMetadata, metadata, credentials, source };
+}
+
+function createScopeStore(
+  remote: GitHubSourceRemote,
+  options: VercelProviderOptions,
+): VercelScopeMetadataStore {
+  return createVercelScopeMetadataStore({
+    repoKey: remote.canonical,
+    ...(options.stateHome === undefined ? {} : { stateHome: options.stateHome }),
+  });
+}
+
+function createBranchStore(
+  remote: GitHubSourceRemote,
+  branch: string,
+  options: VercelProviderOptions,
+): VercelBranchMetadataStore {
+  return createVercelBranchMetadataStore({
+    repoKey: remote.canonical,
     branch,
+    ...(options.stateHome === undefined ? {} : { stateHome: options.stateHome }),
+  });
+}
+
+function renderScope(
+  confirmation: VercelProviderOptions['confirmation'],
+  scope: VercelScope,
+): string {
+  return typeof confirmation === 'object' && confirmation?.render
+    ? confirmation.render(scope)
+    : renderVercelScope(scope);
+}
+
+function createLifecycle(
+  request: ProviderBranchRequest | ProviderListRequest,
+  options: VercelProviderOptions,
+  runner: ShellRunner,
+  makeLifecycle: VercelLifecycleFactory,
+  injectedLifecycle: VercelLifecycle | undefined,
+  credentials: VercelCredentials,
+  source: GitHubSourcePlan,
+  branchStore: VercelBranchMetadataStore,
+  metadata: VercelBranchMetadata | null,
+  listOnly = false,
+): VercelLifecycle {
+  return injectedLifecycle ?? makeLifecycle({
+    repoRoot: request.repoRoot,
+    branch: source.requestedBranch,
     env: request.env,
     credentials,
     source,
     shellRunner: runner,
-    metadataStore,
+    branchMetadataStore: branchStore,
+    listOnly,
     stateHome: options.stateHome,
-    repoKey: origin.canonical,
+    repoKey: source.remote.canonical,
     ...(metadata?.configuration === undefined ? {} : { timeoutMs: metadata.configuration.timeoutMs }),
     ...(options.credentialOptions === undefined ? {} : { credentialOptions: options.credentialOptions }),
   });
-  return { lifecycle, metadataStore, metadata, credentials, source };
 }
 
-function createMetadataStore(remote: GitHubSourceRemote, options: VercelProviderOptions): VercelMetadataStore {
-  return createVercelMetadataStore({
-    repoKey: remote.canonical,
-    ...(options.stateHome === undefined ? {} : { stateHome: options.stateHome }),
+async function seedRecoveryMetadata(
+  branchStore: VercelBranchMetadataStore,
+  origin: GitHubSourceRemote,
+  branch: string,
+  credentials: VercelCredentials,
+): Promise<void> {
+  await branchStore.withLock(async () => {
+    if (await branchStore.read()) return;
+    const identity = createVercelIdentity({
+      remote: origin.canonical,
+      branch,
+      scope: { teamId: credentials.teamId, projectId: credentials.projectId },
+    });
+    await branchStore.write({
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: {
+          provider: identity.tags.provider,
+          repository: identity.tags.repository,
+          branch: identity.tags.branch,
+          version: identity.tags.version,
+          identity: identity.tags.identity,
+        },
+      },
+    });
   });
 }
 
 function storedSource(
   origin: GitHubSourceRemote,
   branch: string,
-  metadata: VercelMetadata | null,
+  metadata: VercelBranchMetadata | null,
   allowMissing: boolean,
+  allowIncomplete: boolean,
 ): GitHubSourcePlan {
   if (!metadata) {
     if (!allowMissing) {
@@ -250,9 +359,10 @@ function storedSource(
         `Vercel metadata record was not found for ${origin.canonical}`,
       );
     }
-    return sourceWithoutCredentials(origin, 'main', 'main', false);
+    const requestedBranch = normalizeRequestedSourceBranch(branch);
+    return sourceWithoutCredentials(origin, requestedBranch, requestedBranch, false);
   }
-  if (!metadata.identity || !metadata.configuration) {
+  if (!metadata.identity || (!metadata.configuration && !allowIncomplete)) {
     throw new VercelLifecycleError('metadata_incomplete', 'Vercel metadata does not contain stored source configuration');
   }
   const requestedBranch = normalizeRequestedSourceBranch(branch);
@@ -263,6 +373,9 @@ function storedSource(
     );
   }
   const configuration = metadata.configuration;
+  if (!configuration) {
+    return sourceWithoutCredentials(origin, requestedBranch, requestedBranch, false);
+  }
   if (configuration.requestedBranch !== metadata.identity.branch) {
     throw new VercelLifecycleError('metadata_incomplete', 'Vercel metadata branch configuration is inconsistent');
   }
@@ -310,13 +423,42 @@ async function resolveCredentials(
       env: request.env,
       scope: storedScope,
       ...(options.credentialOptions ?? {}),
+      onDeviceAuthorization: options.credentialOptions?.onDeviceAuthorization
+        ?? createDeviceAuthorizationHandler(request, options),
     });
   }
   return resolveVercelCredentials({
     repoRoot: request.repoRoot,
     env: request.env,
     ...(options.credentialOptions ?? {}),
+    onDeviceAuthorization: options.credentialOptions?.onDeviceAuthorization
+      ?? createDeviceAuthorizationHandler(request, options),
   });
+}
+
+function createDeviceAuthorizationHandler(
+  request: ProviderRequestContext,
+  options: VercelProviderOptions,
+): NonNullable<CredentialResolutionOptions['onDeviceAuthorization']> {
+  return async (authorization) => {
+    const completeUrl = typeof authorization.verification_uri_complete === 'string'
+      ? authorization.verification_uri_complete.trim()
+      : '';
+    const verificationUrl = typeof authorization.verification_uri === 'string'
+      ? authorization.verification_uri.trim()
+      : '';
+    const userCode = typeof authorization.user_code === 'string' ? authorization.user_code.trim() : '';
+    const displayUrl = completeUrl || verificationUrl;
+    if (!displayUrl || !userCode) {
+      throw new Error('Vercel device authorization returned incomplete verification details');
+    }
+    request.stderr.write(`Vercel device authorization URL: ${displayUrl}\n`);
+    if (verificationUrl && verificationUrl !== displayUrl) {
+      request.stderr.write(`Vercel device authorization base URL: ${verificationUrl}\n`);
+    }
+    request.stderr.write(`Vercel device authorization code: ${userCode}\n`);
+    if (options.opener) await options.opener(displayUrl);
+  };
 }
 
 async function requireScopeConfirmation(
@@ -351,6 +493,7 @@ async function terminalResult(
   terminal: VercelTerminalAdapter,
   signalSource: EventEmitter | undefined,
   sandbox: VercelSandboxHandle,
+  action: 'up' | 'attach',
 ): Promise<ProviderActionResult> {
   const cwd = sandbox.cwd?.trim() || '/vercel/sandbox';
   const streams: VercelTerminalStreams = {
@@ -358,10 +501,15 @@ async function terminalResult(
     stdout: request.stdout,
     stderr: request.stderr,
   };
+  const failures: VercelTerminalFailure[] = [];
   const terminalOptions = {
     cwd,
     tty: request.tty,
     streams,
+    onError: (failure: VercelTerminalFailure) => {
+      failures.push(failure);
+      return true;
+    },
     getSize: () => ({
       cols: request.stdout.columns ?? 80,
       rows: request.stdout.rows ?? 24,
@@ -369,6 +517,14 @@ async function terminalResult(
     ...(signalSource === undefined ? {} : { signalSource }),
   };
   const result = await terminal.attach(sandbox, terminalOptions);
+  if (result.status === 'detached' && result.reason === 'error') {
+    const failure = result.error ?? failures.at(-1);
+    throw mapVercelError(failure?.cause ?? new Error('Vercel terminal transport failed'), {
+      action,
+      branch: request.branch,
+      secrets: secretsFor(request.env),
+    });
+  }
   return mapTerminalResult(result);
 }
 
@@ -403,7 +559,7 @@ function renderList(
   }
 }
 
-function sandboxName(metadata: VercelMetadata | null, branch: string): string {
+function sandboxName(metadata: VercelBranchMetadata | null, branch: string): string {
   return metadata?.identity?.name ?? `for ${branch}`;
 }
 

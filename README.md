@@ -55,7 +55,9 @@ npx @gannonh/devbox --provider local --list          # filter list by provider
 
 # Vercel is core support and uses only the authenticated GitHub origin.
 # Dirty files and unpushed commits are not copied. First use displays the
-# Vercel team/project and requires explicit confirmation in a TTY.
+# Vercel team/project and requires explicit confirmation in a TTY. Without a
+# complete VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID triad, device auth
+# prints the verification URL and user code (and opens it when requested).
 npx @gannonh/devbox --provider vercel <branch>
 
 # In a Vercel terminal, Ctrl-C reaches the remote process and Ctrl-] detaches

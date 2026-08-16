@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
+import {
+  createVercelBranchMetadataStore,
+  createVercelMetadataStore,
+} from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import {
   createVercelLifecycle,
@@ -63,6 +66,63 @@ function sandbox(): VercelSandboxHandle {
 }
 
 describe('Vercel lifecycle', () => {
+  it('uses scope-aware branch metadata and refuses mismatched delete tags', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-branch-'));
+    const branchMetadataStore = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: source.remote.canonical,
+      branch: source.requestedBranch,
+    });
+    const scopedIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      scope: { teamId: credentials.teamId, projectId: credentials.projectId },
+    });
+    await branchMetadataStore.write({
+      identity: {
+        name: scopedIdentity.name,
+        repository: scopedIdentity.canonicalRepository,
+        branch: scopedIdentity.branch,
+        packageVersion: scopedIdentity.packageVersion,
+        tags: {
+          provider: scopedIdentity.tags.provider,
+          repository: scopedIdentity.tags.repository,
+          branch: scopedIdentity.tags.branch,
+          version: scopedIdentity.tags.version,
+          identity: scopedIdentity.tags.identity,
+        },
+      },
+    });
+    const handle = sandbox();
+    Object.defineProperty(handle, 'name', { value: scopedIdentity.name });
+    Object.defineProperty(handle, 'tags', { value: { ...scopedIdentity.tags, identity: 'tampered' } });
+    const deleted = vi.fn();
+    const client = {
+      get: vi.fn(async () => handle),
+      deleteSandbox: deleted,
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      branchMetadataStore,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    await expect(lifecycle.remove()).rejects.toMatchObject({ code: 'cleanup_incomplete' });
+    expect(deleted).not.toHaveBeenCalled();
+    await expect(branchMetadataStore.read()).resolves.toMatchObject({
+      identity: { tags: { identity: scopedIdentity.tags.identity } },
+      residual: { reason: expect.any(String) },
+    });
+  });
+
   it('resumes an existing named sandbox without rerunning branch setup', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
     const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });

@@ -1,7 +1,13 @@
-export { createVercelMetadataStore } from './metadata-store.js';
+export {
+  createVercelBranchMetadataStore,
+  createVercelMetadataStore,
+  createVercelScopeMetadataStore,
+} from './metadata-store.js';
 export type {
+  VercelBranchMetadataStore,
   VercelMetadataStore,
   VercelMetadataStoreOptions,
+  VercelScopeMetadataStore,
 } from './metadata-store.js';
 export type {
   MetadataLock,
@@ -14,4 +20,8 @@ export type {
   VercelMetadataIdentity,
   VercelMetadataInput,
   VercelResidualMetadata,
+  VercelBranchMetadata,
+  VercelBranchMetadataInput,
+  VercelScopeMetadata,
+  VercelScopeMetadataInput,
 } from './metadata-schema.js';

@@ -1,11 +1,65 @@
 import { describe, expect, it, vi } from 'vitest';
-import { access, mkdir, mkdtemp, rename, rm, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
 import { chmod, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
+import {
+  createVercelBranchMetadataStore,
+  createVercelMetadataStore,
+  createVercelScopeMetadataStore,
+} from '../src/providers/vercel/metadata.js';
 
 describe('Vercel metadata', () => {
+  it('keeps repository scope and branch sandbox records in independent keyed stores', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-split-'));
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: 'github.com/acme/repo' });
+    const feature = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/a',
+    });
+    const release = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'release',
+    });
+
+    await scope.write({ teamId: 'team', projectId: 'project' });
+    await feature.write({ identity: {
+      name: 'feature-sandbox',
+      repository: 'github.com/acme/repo',
+      branch: 'feature/a',
+      packageVersion: '0.1.2',
+      tags: {
+        provider: 'vercel',
+        repository: 'repo-tag',
+        branch: 'feature-tag',
+        version: 'version-tag',
+        identity: 'feature-identity',
+      },
+    } });
+    await release.write({ identity: {
+      name: 'release-sandbox',
+      repository: 'github.com/acme/repo',
+      branch: 'release',
+      packageVersion: '0.1.2',
+      tags: {
+        provider: 'vercel',
+        repository: 'repo-tag',
+        branch: 'release-tag',
+        version: 'version-tag',
+        identity: 'release-identity',
+      },
+    } });
+
+    expect(feature.path).not.toBe(release.path);
+    await expect(scope.read()).resolves.toEqual(expect.objectContaining({ teamId: 'team', projectId: 'project' }));
+    await expect(feature.read()).resolves.toMatchObject({ identity: { branch: 'feature/a' } });
+    await expect(release.read()).resolves.toMatchObject({ identity: { branch: 'release' } });
+    expect(await readFile(feature.path, 'utf8')).not.toContain('teamId');
+    expect(await readFile(feature.path, 'utf8')).not.toContain('projectId');
+  });
+
   it('stores non-secret create configuration for idempotent validation', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({ stateHome, repoKey: 'repo' });

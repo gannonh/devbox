@@ -17,6 +17,7 @@ export interface VercelIdentityInput {
   remote: string;
   branch: string;
   packageVersion?: string;
+  scope?: { teamId: string; projectId: string };
 }
 
 export interface VercelSandboxIdentity {
@@ -102,7 +103,9 @@ export function createVercelIdentity(input: VercelIdentityInput): VercelSandboxI
   const packageVersion = input.packageVersion ?? packageVersionFromPackage();
   if (!packageVersion.trim()) throw new Error('Package version must not be empty');
 
-  const identitySource = [repository.canonical, branch, packageVersion].join('\0');
+  const identitySource = input.scope
+    ? [repository.canonical, branch, packageVersion, input.scope.teamId, input.scope.projectId].join('\0')
+    : [repository.canonical, branch, packageVersion].join('\0');
   const versionSlug = sanitizeVercelName(`v-${packageVersion}`);
   const humanName = [
     'devbox',

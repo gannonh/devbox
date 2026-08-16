@@ -1,12 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { dispatch } from '../src/cli.js';
 import { createVercelProvider } from '../src/providers/vercel/provider.js';
 import type { DevboxProvider, ProviderBranchRequest } from '../src/providers/types.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 import type { VercelLifecycle, VercelLifecycleOptions } from '../src/providers/vercel/lifecycle.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
-import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
+import {
+  createVercelBranchMetadataStore,
+  createVercelScopeMetadataStore,
+} from '../src/providers/vercel/metadata.js';
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import type { VercelSandboxHandle } from '../src/providers/vercel/client.js';
@@ -73,6 +79,233 @@ function lifecycle(): VercelLifecycle {
 }
 
 describe('Vercel provider', () => {
+  it('uses production device auth defaults to render and optionally open the verification URL', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-provider-device-auth-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'device-team',
+      projectId: 'device-project',
+    }));
+    const deviceRequest = {
+      device_code: 'device-secret-code',
+      user_code: 'SAFE-CODE',
+      interval: 0,
+      verification_uri: 'https://vercel.com/device',
+      verification_uri_complete: 'https://vercel.com/device?user_code=SAFE-CODE',
+      expiresAt: Date.now() + 60_000,
+    };
+    const OAuth = vi.fn().mockResolvedValue({
+      deviceAuthorizationRequest: vi.fn().mockResolvedValue(deviceRequest),
+    });
+    const pollForToken = vi.fn(() => (async function* () {})());
+    const getAuth = vi.fn().mockReturnValue({ token: 'device-vercel-token' });
+    const lifecycleInstance = lifecycle();
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async () => ({ status: 'exited' as const, code: 0 })),
+    };
+    const stderr = new PassThrough();
+    let output = '';
+    stderr.on('data', (chunk) => { output += chunk.toString(); });
+    const opener = vi.fn();
+    const provider = createVercelProvider({
+      runner: runner(),
+      lifecycle: (options) => {
+        expect(options.credentials).toEqual({
+          token: 'device-vercel-token',
+          teamId: 'device-team',
+          projectId: 'device-project',
+        });
+        return lifecycleInstance;
+      },
+      terminal,
+      opener,
+      confirmation: vi.fn(async () => true),
+      credentialOptions: { deviceAuthPrimitives: { OAuth, pollForToken, getAuth } },
+    });
+
+    await expect(provider.up(request({
+      repoRoot,
+      env: { GH_TOKEN: 'github-secret' },
+      stderr,
+    }))).resolves.toEqual({ exitCode: 0 });
+
+    expect(output).toContain(deviceRequest.verification_uri_complete);
+    expect(output).toContain(deviceRequest.user_code);
+    expect(output).not.toContain(deviceRequest.device_code);
+    expect(opener).toHaveBeenCalledWith(deviceRequest.verification_uri_complete);
+    expect(OAuth).toHaveBeenCalledOnce();
+    expect(pollForToken).toHaveBeenCalledOnce();
+    expect(getAuth).toHaveBeenCalledOnce();
+  });
+
+  it('keeps independent branch records while sharing one confirmed repository scope', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-branches-'));
+    const remote = 'github.com/acme/repo';
+    const env = {
+      GH_TOKEN: 'github-secret',
+      VERCEL_TOKEN: 'vercel-secret',
+      VERCEL_TEAM_ID: 'team-1',
+      VERCEL_PROJECT_ID: 'project-1',
+    };
+    const shell: ShellRunner = {
+      exec: vi.fn(async (_command, args) => {
+        if (args[0] === 'remote') return 'git@github.com:Acme/Repo.git';
+        if (args[0] === 'ls-remote' && args.includes('--symref')) return 'ref: refs/heads/main\tHEAD\n';
+        throw new Error(`unexpected exec: ${args.join(' ')}`);
+      }),
+      execQuiet: vi.fn(async (_command, args) => ({
+        stdout: `sha\t${args.at(-1)}\n`,
+        code: 0,
+      })),
+      spawnInherit: vi.fn(),
+    };
+    const lifecycleByBranch = new Map<string, VercelLifecycle>();
+    const factory = (options: VercelLifecycleOptions): VercelLifecycle => {
+      const identity = createVercelIdentity({
+        remote,
+        branch: options.branch,
+        scope: { teamId: env.VERCEL_TEAM_ID, projectId: env.VERCEL_PROJECT_ID },
+      });
+      const handle = sandbox();
+      Object.defineProperty(handle, 'name', { value: identity.name });
+      Object.defineProperty(handle, 'tags', { value: { ...identity.tags } });
+      const instance = {
+        up: vi.fn(async () => {
+          await options.branchMetadataStore!.write({
+            identity: {
+              name: identity.name,
+              repository: identity.canonicalRepository,
+              branch: identity.branch,
+              packageVersion: identity.packageVersion,
+              tags: {
+                provider: identity.tags.provider,
+                repository: identity.tags.repository,
+                branch: identity.tags.branch,
+                version: identity.tags.version,
+                identity: identity.tags.identity,
+              },
+            },
+            configuration: {
+              imageReference: VERCEL_IMAGE_PIN.reference,
+              sourceUrl: 'https://github.com/acme/repo.git',
+              sourceRevision: 'main',
+              requestedBranch: identity.branch,
+              needsBranchSetup: false,
+              persistent: true,
+              keepLastSnapshots: 1,
+              timeoutMs: 1_800_000,
+            },
+          });
+          return handle;
+        }),
+        get: vi.fn(),
+        attach: vi.fn(async () => handle),
+        list: vi.fn(async () => [...lifecycleByBranch.values()].map((entry) => {
+          const value = entry as unknown as { identity: typeof identity };
+          return {
+            name: value.identity.name,
+            status: 'running',
+            tags: { ...value.identity.tags },
+          };
+        })),
+        routes: vi.fn(async () => []),
+        url: vi.fn(),
+        stop: vi.fn(async () => ({ name: identity.name, sessions: [] })),
+        remove: vi.fn(async () => {
+          await options.branchMetadataStore!.remove();
+          return {
+            verified: true,
+            sandboxDeleted: true,
+            snapshotsCleaned: true,
+            sandboxMissing: false,
+            snapshotIds: [],
+            residualSandboxIds: [],
+            residualSnapshotIds: [],
+            finalSessions: [],
+            errors: [],
+          };
+        }),
+        identity,
+      } as unknown as VercelLifecycle & { identity: typeof identity };
+      lifecycleByBranch.set(options.branch, instance);
+      return instance;
+    };
+    const confirmation = vi.fn(async () => true);
+    const provider = createVercelProvider({
+      runner: shell,
+      stateHome,
+      lifecycle: factory,
+      confirmation,
+      terminal: { attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })) },
+    });
+
+    await provider.up(request({ branch: 'feature/a', env }));
+    await provider.up(request({ branch: 'feature/b', env }));
+    expect(confirmation).toHaveBeenCalledOnce();
+
+    const feature = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/a' });
+    const release = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/b' });
+    await expect(feature.read()).resolves.toMatchObject({ identity: { branch: 'feature/a' } });
+    await expect(release.read()).resolves.toMatchObject({ identity: { branch: 'feature/b' } });
+
+    await expect(provider.attach(request({ branch: 'feature/a', env }))).resolves.toEqual({ exitCode: 0 });
+    await expect(provider.attach(request({ branch: 'feature/b', env }))).resolves.toEqual({ exitCode: 0 });
+    await expect(provider.stop(request({ branch: 'feature/a', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
+    const malformedMain = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'main' });
+    await malformedMain.write({});
+    await writeFile(malformedMain.path, '{not-json');
+    const listStderr = new PassThrough();
+    let listOutput = '';
+    listStderr.on('data', (chunk) => { listOutput += chunk.toString(); });
+    await expect(provider.list(request({ env, stderr: listStderr }))).resolves.toEqual({ exitCode: 0 });
+    const featureIdentity = (lifecycleByBranch.get('feature/a') as unknown as { identity: ReturnType<typeof createVercelIdentity> }).identity;
+    const releaseIdentity = (lifecycleByBranch.get('feature/b') as unknown as { identity: ReturnType<typeof createVercelIdentity> }).identity;
+    expect(listOutput).toContain(`identity=${featureIdentity.tags.identity}`);
+    expect(listOutput).toContain(`identity=${releaseIdentity.tags.identity}`);
+    await expect(provider.remove(request({ branch: 'feature/a', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
+    await expect(feature.read()).resolves.toBeNull();
+    await expect(release.read()).resolves.toMatchObject({ identity: { branch: 'feature/b' } });
+    expect(shell.execQuiet).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.arrayContaining(['origin']),
+      expect.anything(),
+    );
+  });
+
+  it('prompts once when concurrent first-use up calls share a repository scope lock', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-concurrent-'));
+    const entered = vi.fn();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const currentLifecycle = lifecycle();
+    currentLifecycle.up = vi.fn(async () => {
+      entered();
+      await gate;
+      return sandbox();
+    });
+    const confirmation = vi.fn(async () => true);
+    const provider = createVercelProvider({
+      runner: runner(),
+      stateHome,
+      lifecycle: currentLifecycle,
+      confirmation,
+      terminal: { attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })) },
+    });
+    const first = provider.up(request({ branch: 'feature/one' }));
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+    const second = provider.up(request({ branch: 'feature/two' }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(confirmation).toHaveBeenCalledOnce();
+    expect(entered).toHaveBeenCalledOnce();
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { exitCode: 0 },
+      { exitCode: 0 },
+    ]);
+    expect(confirmation).toHaveBeenCalledOnce();
+    expect(currentLifecycle.up).toHaveBeenCalledTimes(2);
+  });
+
   it('maps provider failures through CLI dispatch without exposing credentials', async () => {
     const token = 'dispatch-vercel-secret';
     const currentLifecycle = lifecycle();
@@ -81,7 +314,7 @@ describe('Vercel provider', () => {
     });
     const provider = createVercelProvider({
       runner: runner(),
-      stateHome: '/tmp/devbox-provider-dispatch-test',
+      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-dispatch-')),
       lifecycle: currentLifecycle,
       confirmation: vi.fn(async () => true),
     });
@@ -117,7 +350,7 @@ describe('Vercel provider', () => {
     const currentLifecycle = lifecycle();
     const provider = createVercelProvider({
       runner: runner(),
-      stateHome: '/tmp/devbox-provider-nontty-test',
+      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-nontty-')),
       lifecycle: () => currentLifecycle,
       confirmation: vi.fn(async () => true),
       terminal: { attach: vi.fn() },
@@ -131,13 +364,13 @@ describe('Vercel provider', () => {
   });
 
   it('reuses stored scope for attach without a GitHub token or remote branch query', async () => {
-    const stateHome = '/tmp/devbox-provider-stored-test';
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-stored-'));
     const remote = 'github.com/acme/repo';
     const identity = createVercelIdentity({ remote, branch: 'feature/ui', packageVersion: '0.1.2' });
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: remote });
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: remote });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
+    await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
     await metadata.write({
-      teamId: 'stored-team',
-      projectId: 'stored-project',
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -194,13 +427,13 @@ describe('Vercel provider', () => {
   });
 
   it('renders only concise stop usage output', async () => {
-    const stateHome = '/tmp/devbox-provider-stop-test';
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-stop-'));
     const remote = 'github.com/acme/repo';
     const identity = createVercelIdentity({ remote, branch: 'feature/ui', packageVersion: '0.1.2' });
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: remote });
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: remote });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
+    await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
     await metadata.write({
-      teamId: 'stored-team',
-      projectId: 'stored-project',
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -255,13 +488,13 @@ describe('Vercel provider', () => {
   });
 
   it('routes list, URL/open, and remove through stored metadata without remote queries', async () => {
-    const stateHome = '/tmp/devbox-provider-actions-test';
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-actions-'));
     const remote = 'github.com/acme/repo';
     const identity = createVercelIdentity({ remote, branch: 'feature/ui', packageVersion: '0.1.2' });
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: remote });
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: remote });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
+    await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
     await metadata.write({
-      teamId: 'stored-team',
-      projectId: 'stored-project',
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -339,7 +572,7 @@ describe('Vercel provider', () => {
     const terminal = { attach: vi.fn(async () => ({ status: 'exited' as const, code: 23 })) } as VercelTerminalAdapter;
     const provider = createVercelProvider({
       runner: runner(),
-      stateHome: '/tmp/devbox-provider-terminal-result-test',
+      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-terminal-result-')),
       lifecycle: currentLifecycle,
       terminal,
       confirmation: vi.fn(async () => true),
@@ -357,14 +590,121 @@ describe('Vercel provider', () => {
     expect(currentLifecycle.remove).not.toHaveBeenCalled();
   });
 
+  it('recovers a missing branch record before fail-closed remove and keeps partial residuals', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-remove-recovery-'));
+    const remote = 'github.com/acme/repo';
+    const env = { VERCEL_TOKEN: 'vercel-secret', VERCEL_TEAM_ID: 'team-1', VERCEL_PROJECT_ID: 'project-1' };
+    let partial = true;
+    const seenIdentities: string[] = [];
+    const lifecycleFactory = (options: VercelLifecycleOptions): VercelLifecycle => ({
+      up: vi.fn(),
+      get: vi.fn(),
+      attach: vi.fn(),
+      list: vi.fn(),
+      routes: vi.fn(),
+      url: vi.fn(),
+      stop: vi.fn(),
+      remove: vi.fn(async () => {
+        const store = options.branchMetadataStore!;
+        const metadata = await store.read();
+        expect(metadata?.identity?.branch).toBe(options.branch);
+        expect(metadata?.identity?.tags.identity).toBeTruthy();
+        seenIdentities.push(metadata!.identity!.tags.identity);
+        if (partial) {
+          await store.write({
+            ...(metadata?.identity === undefined ? {} : { identity: metadata.identity }),
+            ...(metadata?.configuration === undefined ? {} : { configuration: metadata.configuration }),
+            residual: { sandboxIds: ['missing-sandbox'], reason: 'retry' },
+          });
+          return {
+            verified: false,
+            sandboxDeleted: false,
+            snapshotsCleaned: false,
+            sandboxMissing: false,
+            snapshotIds: [],
+            residualSandboxIds: ['missing-sandbox'],
+            residualSnapshotIds: [],
+            finalSessions: [],
+            errors: ['sandbox remained'],
+          };
+        }
+        await store.remove();
+        return {
+          verified: true,
+          sandboxDeleted: true,
+          snapshotsCleaned: true,
+          sandboxMissing: true,
+          snapshotIds: [],
+          residualSandboxIds: [],
+          residualSnapshotIds: [],
+          finalSessions: [],
+          errors: [],
+        };
+      }),
+    });
+    const shell: ShellRunner = {
+      exec: vi.fn(async () => 'git@github.com:Acme/Repo.git'),
+      execQuiet: vi.fn(async () => { throw new Error('remote branch query must not run'); }),
+      spawnInherit: vi.fn(),
+    };
+    const provider = createVercelProvider({ runner: shell, stateHome, lifecycle: lifecycleFactory });
+
+    await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).rejects.toMatchObject({ code: 'cleanup' });
+    const branchStore = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/recover' });
+    await expect(branchStore.read()).resolves.toMatchObject({
+      identity: { branch: 'feature/recover' },
+      residual: { sandboxIds: ['missing-sandbox'] },
+    });
+    expect(seenIdentities).toHaveLength(1);
+
+    partial = false;
+    await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
+    await expect(branchStore.read()).resolves.toBeNull();
+    expect(seenIdentities).toHaveLength(2);
+    expect(seenIdentities[0]).toBe(seenIdentities[1]);
+    expect(shell.execQuiet).not.toHaveBeenCalled();
+  });
+
+  it('routes terminal transport failures through centralized redacted errors without duplicate output', async () => {
+    const token = 'terminal-transport-secret';
+    const stderr = new PassThrough();
+    let output = '';
+    stderr.on('data', (chunk) => { output += chunk.toString(); });
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async (_sandbox, options) => {
+        options?.onError?.({
+          cause: new Error(`WebSocket failed with ${token}`),
+          message: `WebSocket failed with ${token}`,
+        });
+        return { status: 'detached' as const, reason: 'error' as const };
+      }),
+    };
+    const provider = createVercelProvider({
+      runner: runner(),
+      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-terminal-error-')),
+      lifecycle: lifecycle(),
+      terminal,
+      confirmation: vi.fn(async () => true),
+    });
+
+    await expect(provider.up(request({ stderr, env: {
+      GH_TOKEN: 'github-secret',
+      VERCEL_TOKEN: token,
+      VERCEL_TEAM_ID: 'team-1',
+      VERCEL_PROJECT_ID: 'project-1',
+    } }))).rejects.toMatchObject({ code: 'api', exitCode: 1 });
+    expect(output).not.toContain(token);
+    expect(output).not.toContain('WebSocket failed');
+  });
+
   it('reuses stored scope on up without reconfirming an existing sandbox', async () => {
-    const stateHome = '/tmp/devbox-provider-up-existing-test';
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-up-existing-'));
     const remote = 'github.com/acme/repo';
     const identity = createVercelIdentity({ remote, branch: 'feature/ui', packageVersion: '0.1.2' });
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: remote });
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: remote });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
+    await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
     await metadata.write({
-      teamId: 'stored-team',
-      projectId: 'stored-project',
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -420,7 +760,7 @@ describe('Vercel provider', () => {
 
     const provider = createVercelProvider({
       runner: runner(),
-      stateHome: '/tmp/devbox-provider-test',
+      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-first-use-')),
       lifecycle: (options) => {
         captured.push(options);
         return currentLifecycle;
