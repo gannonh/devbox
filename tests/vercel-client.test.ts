@@ -4,8 +4,123 @@ import {
   buildVercelSandboxCreateRequest,
   createVercelSandboxClient,
 } from '../src/providers/vercel/client.js';
+import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 
 describe('Vercel Sandbox client adapter', () => {
+  it('sends a v3 create request through the real SDK fetch seam', async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = { url: String(input), init: init ?? {} };
+      requests.push(request);
+      if (request.init.method !== 'POST') {
+        return new Response(JSON.stringify({ error: { code: 'not_found', message: 'missing' } }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const now = Date.now();
+      const session = {
+        id: 'session-fetch',
+        memory: 2048,
+        vcpus: 1,
+        region: 'iad1',
+        timeout: 1_800_000,
+        status: 'running',
+        requestedAt: now,
+        createdAt: now,
+        cwd: '/vercel/sandbox',
+        updatedAt: now,
+      };
+      return new Response(JSON.stringify({
+        sandbox: {
+          name: 'fetch-create',
+          persistent: true,
+          image: VERCEL_IMAGE_PIN.reference,
+          timeout: 1_800_000,
+          createdAt: now,
+          updatedAt: now,
+          currentSessionId: session.id,
+          status: session.status,
+          tags: {
+            provider: 'vercel',
+            repository: 'github-com-acme-repo',
+            branch: 'main',
+            version: 'v-1',
+            identity: 'identity',
+          },
+          keepLastSnapshots: { count: 1 },
+        },
+        session,
+        routes: [],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const client = createVercelSandboxClient({ fetch });
+
+    const handle = await client.getOrCreate({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      name: 'fetch-create',
+      image: VERCEL_IMAGE_PIN.reference,
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        revision: 'main',
+        username: 'x-access-token',
+        password: 'github-token',
+      },
+      timeout: 1_800_000,
+      persistent: true,
+      keepLastSnapshots: { count: 1 },
+      tags: {
+        provider: 'vercel',
+        repository: 'github-com-acme-repo',
+        branch: 'main',
+        version: 'v-1',
+        identity: 'identity',
+      },
+    });
+
+    expect(handle.name).toBe('fetch-create');
+    const lookupRequest = requests.find(({ init }) => init.method !== 'POST');
+    expect(lookupRequest?.url).toBe('https://vercel.com/api/v2/sandboxes/fetch-create?teamId=team&projectId=project');
+    expect(lookupRequest?.init.headers).toMatchObject({ Authorization: 'Bearer vercel-token' });
+    const createRequest = requests.find(({ init }) => init.method === 'POST');
+    expect(createRequest).toBeDefined();
+    expect(createRequest?.url).toBe('https://vercel.com/api/v3/sandboxes?teamId=team');
+    expect(createRequest?.init.headers).toMatchObject({
+      Authorization: 'Bearer vercel-token',
+      'content-type': 'application/json',
+    });
+    const body = JSON.parse(String(createRequest?.init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      projectId: 'project',
+      image: VERCEL_IMAGE_PIN.reference,
+      name: 'fetch-create',
+      persistent: true,
+      keepLastSnapshots: { count: 1 },
+      timeout: 1_800_000,
+      tags: {
+        provider: 'vercel',
+        repository: 'github-com-acme-repo',
+        branch: 'main',
+        version: 'v-1',
+        identity: 'identity',
+      },
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        username: 'x-access-token',
+        password: 'github-token',
+        revision: 'main',
+      },
+    });
+    expect(body.ports).toEqual([]);
+    expect('runtime' in body).toBe(false);
+    expect(JSON.stringify({ url: createRequest?.url, body })).not.toContain('vercel-token');
+  });
+
   it('uses the real SDK classes through the sandbox-mock lifecycle boundary', async () => {
     const client = createVercelSandboxClient({
       sandbox: MockSandbox as never,
@@ -14,7 +129,7 @@ describe('Vercel Sandbox client adapter', () => {
     const handle = await client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'mock-client-adapter',
-      image: 'vercel/sandbox/universal:latest',
+      image: VERCEL_IMAGE_PIN.reference,
       ports: [3000],
       source: {
         type: 'git',
@@ -66,6 +181,42 @@ describe('Vercel Sandbox client adapter', () => {
       name: 'mock-client-adapter',
     })).resolves.toEqual([]);
     await client.deleteSandbox(attached);
+  });
+
+  it('covers snapshot create, list, get, and delete through sandbox-mock', async () => {
+    const sandbox = await MockSandbox.create({
+      name: 'mock-snapshot-lifecycle',
+      image: VERCEL_IMAGE_PIN.reference,
+      timeout: 10_000,
+      persistent: true,
+      keepLastSnapshots: { count: 1 },
+      tags: {
+        provider: 'vercel',
+        repository: 'repo',
+        branch: 'main',
+        version: 'v',
+        identity: 'snapshot',
+      },
+    });
+    const command = await sandbox.runCommand('echo', ['snapshot']);
+    expect(command.exitCode).toBe(0);
+    const created = await sandbox.snapshot();
+    expect(created.snapshotId).toBeTruthy();
+
+    const listed = await MockSnapshot.list({ name: sandbox.name }).then((page) => page.toArray());
+    expect(listed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: created.snapshotId, status: 'created' }),
+    ]));
+    const fetched = await MockSnapshot.get({ snapshotId: created.snapshotId });
+    expect(fetched.snapshotId).toBe(created.snapshotId);
+    expect(fetched.status).toBe('created');
+
+    await fetched.delete();
+    const afterDelete = await MockSnapshot.list({ name: sandbox.name }).then((page) => page.toArray());
+    expect(afterDelete).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: created.snapshotId, status: 'deleted' }),
+    ]));
+    await sandbox.delete();
   });
 
   it('consumes every SDK sandbox and snapshot pagination page', async () => {
@@ -145,7 +296,7 @@ describe('Vercel Sandbox client adapter', () => {
     await client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'serialized',
-      image: 'vcr.vercel.com/team/project/image@sha256:digest',
+      image: VERCEL_IMAGE_PIN.reference,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -163,7 +314,7 @@ describe('Vercel Sandbox client adapter', () => {
       token: 'vercel-token',
       teamId: 'team',
       projectId: 'project',
-      image: 'vcr.vercel.com/team/project/image@sha256:digest',
+      image: VERCEL_IMAGE_PIN.reference,
       source: { username: 'x-access-token', password: 'github-token', revision: 'feature' },
       persistent: true,
       keepLastSnapshots: { count: 1 },
@@ -184,7 +335,7 @@ describe('Vercel Sandbox client adapter', () => {
     await expect(client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'redaction-test',
-      image: 'image',
+      image: VERCEL_IMAGE_PIN.reference,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -201,9 +352,7 @@ describe('Vercel Sandbox client adapter', () => {
 
   it('builds the v3 persistent Git source request without a runtime field', () => {
     const request = buildVercelSandboxCreateRequest({
-      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'devbox-vercel-repo-main',
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -223,7 +372,7 @@ describe('Vercel Sandbox client adapter', () => {
 
     expect(request).toMatchObject({
       name: 'devbox-vercel-repo-main',
-      image: 'vcr.vercel.com/team/project/image@sha256:digest',
+      image: VERCEL_IMAGE_PIN.reference,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',

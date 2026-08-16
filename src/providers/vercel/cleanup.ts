@@ -1,4 +1,5 @@
 import type { VercelCredentials } from './auth.js';
+import type { VercelIdentityTags } from './metadata-schema.js';
 import {
   collectPaginated,
   isVercelNotFound,
@@ -21,7 +22,9 @@ export interface VercelCleanupSandbox {
   readonly id?: string;
   readonly name: string;
   readonly status: SandboxSessionStatus;
+  readonly persistent?: boolean;
   readonly tags?: Record<string, string>;
+  readonly currentSnapshotId?: string;
 }
 
 export interface VercelCleanupSnapshot {
@@ -74,6 +77,8 @@ export interface VercelCleanupResult {
 export interface VercelCleanupOptions {
   name: string;
   credentials: VercelCredentials;
+  expectedTags: VercelIdentityTags;
+  knownSnapshotIds?: readonly string[];
   adapter: VercelCleanupAdapter;
   timeoutMs?: number;
   maxAttempts?: number;
@@ -98,20 +103,27 @@ export async function cleanupVercelSandbox(
     throw new TypeError('Vercel cleanup backoffMs must be non-negative');
   }
 
-  const startedAt = Date.now();
-  const deadline = startedAt + timeoutMs;
+  const deadline = Date.now() + timeoutMs;
   const errors: string[] = [];
   const snapshotIds = new Set<string>();
-  let residualSnapshotIds = new Set<string>();
+  const knownSnapshotIds = new Set<string>();
+  const residualSnapshotIds = new Set<string>();
+  const snapshotStatuses = new Map<string, SandboxSnapshotRecord['status']>();
   const residualSandboxIds = new Set<string>();
+  for (const snapshotId of options.knownSnapshotIds ?? []) {
+    rememberSnapshotId(snapshotId, knownSnapshotIds, snapshotIds, residualSnapshotIds);
+  }
+
   let finalSessions: SandboxSessionRecord[] = [];
   let finalStop: VercelStopResult | undefined;
   let sandbox: VercelCleanupSandbox | undefined;
   let sandboxMissing = false;
   let sandboxDeleted = false;
   let snapshotsCleaned = false;
-  let sessionObservationOk = true;
-  let snapshotListingOk = true;
+  let sandboxLookupOk = true;
+  let sandboxIdentityVerified = true;
+  let sessionObservationOk = false;
+  let absentRelistStreak = 0;
 
   const recordError = (operation: string, error: unknown): void => {
     const detail = redactSecrets(error, [options.credentials.token]).slice(0, 500);
@@ -137,144 +149,182 @@ export async function cleanupVercelSandbox(
     if (isVercelNotFound(error)) {
       sandboxMissing = true;
       sandboxDeleted = true;
-    } else recordError('sandbox lookup', error);
-  }
-
-  if (sandbox) {
-    let observation = await listSessions(options.adapter, sandbox, options.signal, recordError);
-    sessionObservationOk = observation.ok;
-    finalSessions = observation.sessions;
-    const needsStop =
-      STOPPABLE_SESSION_STATES.has(sandbox.status) ||
-      observation.sessions.some((session) => STOPPABLE_SESSION_STATES.has(session.status));
-    if (needsStop) {
-      try {
-        finalStop = await options.adapter.stop(sandbox, { signal: options.signal });
-      } catch (error) {
-        recordError('sandbox stop', error);
-      }
-      observation = await listSessions(options.adapter, sandbox, options.signal, recordError);
-      sessionObservationOk = sessionObservationOk && observation.ok;
-      finalSessions = observation.sessions;
-    }
-    if (!sessionObservationOk || hasNonTerminalSessions(finalSessions)) {
-      for (const session of finalSessions) {
-        if (!TERMINAL_SESSION_STATES.has(session.status)) {
-          residualSandboxIds.add(sandboxIdentifier(sandbox) ?? options.name);
-        }
-      }
-      if (sessionObservationOk) {
-        recordError('session verification', new Error('not every Sandbox session is stopped or aborted'));
-      }
+      sessionObservationOk = true;
+    } else {
+      sandboxLookupOk = false;
+      recordError('sandbox lookup', error);
     }
   }
 
-  let snapshotObservation = await listSnapshots(
-    options.adapter,
-    options.credentials,
-    options.name,
-    options.signal,
-    recordError,
-  );
-  snapshotListingOk = snapshotObservation.ok;
-  let listedSnapshots = snapshotObservation.snapshots;
-  rememberSnapshots(listedSnapshots, snapshotIds, residualSnapshotIds);
-
-  if (snapshotListingOk) {
-    await deleteNonDeletedSnapshots(
-      listedSnapshots,
-      options,
-      snapshotIds,
-      residualSnapshotIds,
-      recordError,
+  if (sandbox && !matchesExpectedIdentity(sandbox, options.name, options.expectedTags)) {
+    sandboxIdentityVerified = false;
+    residualSandboxIds.add(sandboxIdentifier(sandbox) ?? options.name);
+    recordError(
+      'sandbox identity verification',
+      new Error(`fetched sandbox does not match expected name or identity tags for ${options.name}`),
     );
+    sandbox = undefined;
+  }
+  if (sandbox) {
+    rememberSnapshotId(sandbox.currentSnapshotId, knownSnapshotIds, snapshotIds, residualSnapshotIds);
   }
 
-  if (sandbox && sessionObservationOk && !hasNonTerminalSessions(finalSessions)) {
-    try {
-      await options.adapter.delete(sandbox, { signal: options.signal });
-    } catch (error) {
-      if (isVercelNotFound(error)) sandboxDeleted = true;
-      else recordError('sandbox delete', error);
-    }
-  }
-
-  let attempts = 0;
-  while (attempts < maxAttempts && remaining() > 0) {
-    throwIfAborted();
-    attempts += 1;
-
-    if (!sandboxMissing && !sandboxDeleted) {
-      try {
-        const observed = await options.adapter.get({
-          credentials: options.credentials,
-          name: options.name,
-          resume: false,
-          signal: options.signal,
-        });
-        sandbox = observed;
-        let observation = await listSessions(options.adapter, observed, options.signal, recordError);
-        sessionObservationOk = observation.ok;
-        finalSessions = observation.sessions;
-        if (sessionObservationOk && hasNonTerminalSessions(finalSessions)) {
-          try {
-            finalStop = await options.adapter.stop(observed, { signal: options.signal });
-            observation = await listSessions(options.adapter, observed, options.signal, recordError);
-            sessionObservationOk = observation.ok;
-            finalSessions = observation.sessions;
-          } catch (error) {
-            recordError('sandbox retry stop', error);
-          }
-        }
-        if (sessionObservationOk && !hasNonTerminalSessions(finalSessions)) {
-          try {
-            await options.adapter.delete(observed, { signal: options.signal });
-          } catch (error) {
-            if (isVercelNotFound(error)) sandboxDeleted = true;
-            else recordError('sandbox retry delete', error);
-          }
-        }
-      } catch (error) {
-        if (isVercelNotFound(error)) {
-          sandboxDeleted = true;
-          sandboxMissing = true;
-          sessionObservationOk = true;
-        } else {
-          recordError('sandbox deletion verification', error);
-        }
-      }
-    }
-
-    snapshotObservation = await listSnapshots(
+  const processSnapshotRelist = async (attemptedSnapshotIds: Set<string>, allowDelete = true): Promise<boolean> => {
+    const snapshotObservation = await listSnapshots(
       options.adapter,
       options.credentials,
       options.name,
       options.signal,
       recordError,
     );
-    snapshotListingOk = snapshotObservation.ok;
-    listedSnapshots = snapshotObservation.snapshots;
-    if (snapshotListingOk) {
-      rememberSnapshots(listedSnapshots, snapshotIds, residualSnapshotIds);
-      residualSnapshotIds = new Set(
-        listedSnapshots.filter((snapshot) => snapshot.status !== 'deleted').map((snapshot) => snapshot.id),
-      );
-      if (residualSnapshotIds.size === 0) snapshotsCleaned = true;
-      else {
-        snapshotsCleaned = false;
-        await deleteNonDeletedSnapshots(
-          listedSnapshots,
+    if (!snapshotObservation.ok) {
+      snapshotsCleaned = false;
+      absentRelistStreak = 0;
+      return false;
+    }
+    rememberSnapshotListing(
+      snapshotObservation.snapshots,
+      knownSnapshotIds,
+      snapshotIds,
+      residualSnapshotIds,
+      snapshotStatuses,
+    );
+    const resolution = resolveSnapshotRelist(
+      snapshotObservation.snapshots,
+      knownSnapshotIds,
+      residualSnapshotIds,
+      snapshotStatuses,
+    );
+    if (!resolution.allResolved) {
+      snapshotsCleaned = false;
+      absentRelistStreak = 0;
+      if (allowDelete) {
+        await deleteKnownSnapshots(
+          knownSnapshotIds,
+          snapshotStatuses,
           options,
-          snapshotIds,
-          residualSnapshotIds,
           recordError,
+          attemptedSnapshotIds,
         );
       }
+      return true;
+    }
+    if (resolution.requiresAbsenceConfirmation) {
+      absentRelistStreak += 1;
+      snapshotsCleaned = absentRelistStreak >= 2;
     } else {
-      snapshotsCleaned = false;
+      snapshotsCleaned = true;
+    }
+    return false;
+  };
+
+  let firstSandboxObservation = true;
+  let attempts = 0;
+  while (attempts < maxAttempts && remaining() > 0) {
+    throwIfAborted();
+    if (!sandboxLookupOk || !sandboxIdentityVerified) break;
+    attempts += 1;
+
+    if (!sandboxMissing && !sandboxDeleted) {
+      if (!firstSandboxObservation) {
+        try {
+          sandbox = await options.adapter.get({
+            credentials: options.credentials,
+            name: options.name,
+            resume: false,
+            signal: options.signal,
+          });
+          if (!matchesExpectedIdentity(sandbox, options.name, options.expectedTags)) {
+            sandboxIdentityVerified = false;
+            residualSandboxIds.add(sandboxIdentifier(sandbox) ?? options.name);
+            recordError(
+              'sandbox identity verification',
+              new Error(`fetched sandbox does not match expected name or identity tags for ${options.name}`),
+            );
+            break;
+          }
+          rememberSnapshotId(sandbox.currentSnapshotId, knownSnapshotIds, snapshotIds, residualSnapshotIds);
+        } catch (error) {
+          if (isVercelNotFound(error)) {
+            sandboxMissing = true;
+            sandboxDeleted = true;
+            sessionObservationOk = true;
+          } else {
+            recordError('sandbox deletion verification', error);
+            sessionObservationOk = false;
+          }
+        }
+      }
+      firstSandboxObservation = false;
+
+      if (sandbox && !sandboxMissing && !sandboxDeleted && sandboxIdentityVerified) {
+        const observation = await stopAndVerifySessions(
+          options.adapter,
+          sandbox,
+          options.signal,
+          recordError,
+        );
+        sessionObservationOk = observation.ok;
+        finalSessions = observation.sessions;
+        if (observation.stop !== undefined) {
+          finalStop = observation.stop;
+          rememberSnapshotId(
+            observation.stop.snapshot?.id,
+            knownSnapshotIds,
+            snapshotIds,
+            residualSnapshotIds,
+          );
+        }
+        rememberSnapshotId(sandbox.currentSnapshotId, knownSnapshotIds, snapshotIds, residualSnapshotIds);
+
+        const snapshotObservation = await listSnapshots(
+          options.adapter,
+          options.credentials,
+          options.name,
+          options.signal,
+          recordError,
+        );
+        if (snapshotObservation.ok) {
+          rememberSnapshotListing(
+            snapshotObservation.snapshots,
+            knownSnapshotIds,
+            snapshotIds,
+            residualSnapshotIds,
+            snapshotStatuses,
+          );
+        }
+
+        if (sessionObservationOk && !hasNonTerminalSessions(finalSessions) && snapshotObservation.ok) {
+          try {
+            await options.adapter.delete(sandbox, { signal: options.signal });
+            sandboxDeleted = true;
+          } catch (error) {
+            if (isVercelNotFound(error)) {
+              sandboxMissing = true;
+              sandboxDeleted = true;
+            } else recordError('sandbox delete', error);
+          }
+        }
+      }
     }
 
-    if (sandboxDeleted && snapshotsCleaned && sessionObservationOk && !hasNonTerminalSessions(finalSessions)) break;
+    if (sandboxDeleted || sandboxMissing) {
+      const attemptedSnapshotIds = new Set<string>();
+      await deleteKnownSnapshots(
+        knownSnapshotIds,
+        snapshotStatuses,
+        options,
+        recordError,
+        attemptedSnapshotIds,
+      );
+      const followUpRelist = await processSnapshotRelist(attemptedSnapshotIds);
+      if (followUpRelist && sandboxMissing && remaining() > 0) {
+        await processSnapshotRelist(attemptedSnapshotIds, false);
+      }
+    }
+
+    const terminal = sessionObservationOk && !hasNonTerminalSessions(finalSessions);
+    if (sandboxDeleted && snapshotsCleaned && terminal) break;
     if (attempts < maxAttempts && remaining() > 0) {
       await sleep(Math.min(backoffMs * attempts, remaining()), options.signal);
     }
@@ -283,12 +333,12 @@ export async function cleanupVercelSandbox(
   if (!sandboxDeleted && (sandboxMissing || attempts >= maxAttempts || remaining() <= 0)) {
     residualSandboxIds.add(sandboxIdentifier(sandbox) ?? options.name);
   }
-  if (!snapshotsCleaned) {
-    residualSnapshotIds = new Set(residualSnapshotIds);
+  for (const snapshotId of knownSnapshotIds) {
+    if (!snapshotsCleaned) residualSnapshotIds.add(snapshotId);
   }
 
   const terminal = sessionObservationOk && !hasNonTerminalSessions(finalSessions);
-  const verified = sandboxDeleted && snapshotsCleaned && terminal;
+  const verified = sandboxLookupOk && sandboxIdentityVerified && sandboxDeleted && snapshotsCleaned && terminal;
   return {
     verified,
     sandboxDeleted,
@@ -306,11 +356,46 @@ export async function cleanupVercelSandbox(
 interface SessionObservation {
   sessions: SandboxSessionRecord[];
   ok: boolean;
+  stop?: VercelStopResult;
 }
 
 interface SnapshotObservation {
   snapshots: SandboxSnapshotRecord[];
   ok: boolean;
+}
+
+interface SnapshotRelistResolution {
+  allResolved: boolean;
+  requiresAbsenceConfirmation: boolean;
+}
+
+async function stopAndVerifySessions(
+  adapter: VercelCleanupAdapter,
+  sandbox: VercelCleanupSandbox,
+  signal: AbortSignal | undefined,
+  recordError: (operation: string, error: unknown) => void,
+): Promise<SessionObservation> {
+  const first = await listSessions(adapter, sandbox, signal, recordError);
+  if (!first.ok) return first;
+  const needsStop =
+    STOPPABLE_SESSION_STATES.has(sandbox.status) ||
+    first.sessions.some((session) => STOPPABLE_SESSION_STATES.has(session.status));
+  if (!needsStop) return first;
+
+  let stop: VercelStopResult | undefined;
+  let stopOk = true;
+  try {
+    stop = await adapter.stop(sandbox, { signal });
+  } catch (error) {
+    stopOk = false;
+    recordError('sandbox stop', error);
+  }
+  const after = await listSessions(adapter, sandbox, signal, recordError);
+  return {
+    sessions: after.sessions,
+    ok: stopOk && after.ok,
+    ...(stop === undefined ? {} : { stop }),
+  };
 }
 
 async function listSessions(
@@ -351,46 +436,93 @@ async function listSnapshots(
   }
 }
 
-async function deleteNonDeletedSnapshots(
-  snapshots: SandboxSnapshotRecord[],
+async function deleteKnownSnapshots(
+  knownSnapshotIds: Set<string>,
+  snapshotStatuses: Map<string, SandboxSnapshotRecord['status']>,
   options: VercelCleanupOptions,
-  snapshotIds: Set<string>,
-  residualSnapshotIds: Set<string>,
   recordError: (operation: string, error: unknown) => void,
+  attemptedSnapshotIds?: Set<string>,
 ): Promise<void> {
-  for (const listed of snapshots) {
-    snapshotIds.add(listed.id);
-    if (listed.status === 'deleted') {
-      residualSnapshotIds.delete(listed.id);
-      continue;
-    }
+  for (const snapshotId of knownSnapshotIds) {
+    if (snapshotStatuses.get(snapshotId) === 'deleted' || attemptedSnapshotIds?.has(snapshotId)) continue;
+    attemptedSnapshotIds?.add(snapshotId);
     try {
       const snapshot = await options.adapter.getSnapshot({
         credentials: options.credentials,
-        snapshotId: listed.id,
+        snapshotId,
         signal: options.signal,
       });
-      if (snapshot.status !== 'deleted') {
-        await snapshot.delete({ signal: options.signal });
-      }
-      residualSnapshotIds.delete(listed.id);
+      snapshotStatuses.set(snapshotId, snapshot.status);
+      if (snapshot.status !== 'deleted') await snapshot.delete({ signal: options.signal });
     } catch (error) {
-      if (isVercelNotFound(error)) residualSnapshotIds.delete(listed.id);
-      else recordError(`snapshot delete ${listed.id}`, error);
+      if (!isVercelNotFound(error)) recordError(`snapshot delete ${snapshotId}`, error);
+      // A successful delete or a 404 is not proof of absence. The next
+      // complete relist alone may remove this ID from residual state.
     }
   }
 }
 
-function rememberSnapshots(
+function rememberSnapshotListing(
   snapshots: SandboxSnapshotRecord[],
+  knownSnapshotIds: Set<string>,
+  snapshotIds: Set<string>,
+  residualSnapshotIds: Set<string>,
+  snapshotStatuses: Map<string, SandboxSnapshotRecord['status']>,
+): void {
+  for (const snapshot of snapshots) {
+    rememberSnapshotId(snapshot.id, knownSnapshotIds, snapshotIds, residualSnapshotIds);
+    snapshotStatuses.set(snapshot.id, snapshot.status);
+  }
+}
+
+function resolveSnapshotRelist(
+  snapshots: SandboxSnapshotRecord[],
+  knownSnapshotIds: Set<string>,
+  residualSnapshotIds: Set<string>,
+  snapshotStatuses: Map<string, SandboxSnapshotRecord['status']>,
+): SnapshotRelistResolution {
+  const listed = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+  let allResolved = true;
+  let requiresAbsenceConfirmation = false;
+  for (const snapshotId of knownSnapshotIds) {
+    const snapshot = listed.get(snapshotId);
+    if (!snapshot) {
+      residualSnapshotIds.delete(snapshotId);
+      snapshotStatuses.set(snapshotId, 'deleted');
+      requiresAbsenceConfirmation = true;
+    } else if (snapshot.status === 'deleted') {
+      residualSnapshotIds.delete(snapshotId);
+    } else {
+      residualSnapshotIds.add(snapshotId);
+      allResolved = false;
+    }
+  }
+  return { allResolved, requiresAbsenceConfirmation };
+}
+
+function rememberSnapshotId(
+  snapshotId: unknown,
+  knownSnapshotIds: Set<string>,
   snapshotIds: Set<string>,
   residualSnapshotIds: Set<string>,
 ): void {
-  for (const snapshot of snapshots) {
-    snapshotIds.add(snapshot.id);
-    if (snapshot.status === 'deleted') residualSnapshotIds.delete(snapshot.id);
-    else residualSnapshotIds.add(snapshot.id);
-  }
+  if (typeof snapshotId !== 'string' || !snapshotId.trim()) return;
+  knownSnapshotIds.add(snapshotId);
+  snapshotIds.add(snapshotId);
+  residualSnapshotIds.add(snapshotId);
+}
+
+function matchesExpectedIdentity(
+  sandbox: VercelCleanupSandbox,
+  expectedName: string,
+  expectedTags: VercelIdentityTags,
+): boolean {
+  if (sandbox.name !== expectedName || !sandbox.tags) return false;
+  const expectedKeys = ['provider', 'repository', 'branch', 'version', 'identity'];
+  const actualKeys = Object.keys(sandbox.tags).sort();
+  const requiredKeys = [...expectedKeys].sort();
+  return actualKeys.length === requiredKeys.length &&
+    actualKeys.every((key, index) => key === requiredKeys[index] && sandbox.tags?.[key] === (expectedTags as unknown as Record<string, string>)[key]);
 }
 
 function hasNonTerminalSessions(sessions: SandboxSessionRecord[]): boolean {

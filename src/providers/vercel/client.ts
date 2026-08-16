@@ -1,5 +1,6 @@
 import { Sandbox, Snapshot } from '@vercel/sandbox';
 import type { VercelCredentials } from './auth.js';
+import { VERCEL_IMAGE_PIN } from './image.js';
 import type { GitSource } from './source.js';
 import { redactedError, redactSecrets } from './redaction.js';
 
@@ -120,9 +121,7 @@ export interface VercelSandboxGetRequest {
 }
 
 export interface VercelSandboxCreateInput {
-  credentials: VercelCredentials;
   name: string;
-  imageReference: string;
   source: GitSource;
   timeoutMs: number;
   ports?: number[];
@@ -140,7 +139,7 @@ export function buildVercelSandboxCreateRequest(
   }
   return {
     name: input.name,
-    image: input.imageReference,
+    image: VERCEL_IMAGE_PIN.reference,
     source: input.source,
     timeout: input.timeoutMs,
     ...(input.ports === undefined ? {} : { ports: [...input.ports] }),
@@ -247,6 +246,9 @@ export function createVercelSandboxClient(
 
   return {
     getOrCreate: async (request) => {
+      if (request.image !== VERCEL_IMAGE_PIN.reference) {
+        throw new Error('Vercel Sandbox creation must use VERCEL_IMAGE_PIN.reference');
+      }
       const { credentials, ...createRequest } = request;
       const sourcePassword = createRequest.source.password;
       const params = {

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import { createVercelLifecycle } from '../src/providers/vercel/lifecycle.js';
+import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
 
@@ -41,7 +42,7 @@ function sandbox(): VercelSandboxHandle {
     name: identity.name,
     status: 'running',
     persistent: true,
-    image: 'vcr.vercel.com/team/project/image@sha256:digest',
+    image: VERCEL_IMAGE_PIN.reference,
     tags: { ...identity.tags },
     listSessions: async () => [],
     stop: async () => ({ id: 'session', status: 'stopped' }),
@@ -73,7 +74,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     });
 
     await lifecycle.up();
@@ -109,7 +109,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     });
     const first = lifecycle.up();
     await vi.waitFor(() => expect(client.getOrCreate).toHaveBeenCalledOnce());
@@ -138,7 +137,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     } as const;
     await createVercelLifecycle(common).up();
 
@@ -164,7 +162,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     });
     await lifecycle.up();
     const stored = (await metadata.read())!;
@@ -179,6 +176,43 @@ describe('Vercel lifecycle', () => {
     await expect(lifecycle.remove()).rejects.toMatchObject({ code: 'identity_conflict' });
     expect(client.listSandboxes).not.toHaveBeenCalled();
     expect(client.get).not.toHaveBeenCalled();
+  });
+
+  it('retains metadata and performs no destructive action when remove finds mismatched tags', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      get: vi.fn(async () => ({ ...handle, tags: { ...handle.tags, identity: 'wrong-identity' } })),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'running' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+    await lifecycle.up();
+
+    await expect(lifecycle.remove()).rejects.toMatchObject({
+      name: 'VercelCleanupError',
+      code: 'cleanup_incomplete',
+    });
+    expect(client.stopSandbox).not.toHaveBeenCalled();
+    expect(client.deleteSandbox).not.toHaveBeenCalled();
+    await expect(metadata.read()).resolves.toMatchObject({
+      identity: expect.objectContaining({ tags: handle.tags }),
+      residual: expect.objectContaining({ sandboxIds: [handle.name] }),
+    });
   });
 
   it('retains non-secret residual metadata when cleanup is partial', async () => {
@@ -206,7 +240,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
     await lifecycle.up();
@@ -224,6 +257,53 @@ describe('Vercel lifecycle', () => {
       },
     });
     expect(JSON.stringify(retained)).not.toContain('vercel-token');
+  });
+
+  it('seeds remove cleanup from stored snapshot IDs before relisting', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    let deleted = false;
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      get: vi.fn(async () => {
+        if (deleted) throw Object.assign(new Error('not found'), { notFound: true });
+        return handle;
+      }),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(async () => ({
+        snapshotId: 'metadata-snapshot',
+        status: 'created' as const,
+        delete: async () => {},
+      })),
+      deleteSandbox: vi.fn(async () => { deleted = true; }),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 3, sleep: async () => {} },
+    });
+    await lifecycle.up();
+    const stored = (await metadata.read())!;
+    await metadata.write({
+      teamId: stored.teamId,
+      projectId: stored.projectId,
+      identity: stored.identity,
+      sandboxId: stored.sandboxId,
+      snapshotIds: ['metadata-snapshot'],
+      configuration: stored.configuration,
+    });
+
+    await expect(lifecycle.remove()).resolves.toMatchObject({ verified: true });
+    expect(client.getSnapshot).toHaveBeenCalledWith(expect.objectContaining({ snapshotId: 'metadata-snapshot' }));
+    await expect(metadata.read()).resolves.toBeNull();
   });
 
   it('removes the sandbox only after verified cleanup and then removes metadata', async () => {
@@ -257,8 +337,7 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
-      cleanup: { maxAttempts: 2, sleep: async () => {} },
+      cleanup: { maxAttempts: 3, sleep: async () => {} },
     });
     await lifecycle.up();
 
@@ -278,8 +357,33 @@ describe('Vercel lifecycle', () => {
     const handle = sandbox();
     const records = [
       { name: handle.name, status: 'running' as const, tags: handle.tags },
+      {
+        name: 'other-branch',
+        status: 'running' as const,
+        tags: { ...handle.tags, branch: 'other-branch', version: 'v-other', identity: 'other-id' },
+      },
       { name: 'other-provider', status: 'running' as const, tags: { ...handle.tags, provider: 'local' } },
       { name: 'other-repo', status: 'running' as const, tags: { ...handle.tags, repository: 'other' } },
+      {
+        name: 'missing-identity-tag',
+        status: 'running' as const,
+        tags: {
+          provider: handle.tags?.provider,
+          repository: handle.tags?.repository,
+          branch: 'other-branch',
+          version: 'v-other',
+        },
+      },
+      {
+        name: 'empty-identity-tag',
+        status: 'running' as const,
+        tags: { ...handle.tags, identity: '' },
+      },
+      {
+        name: 'extra-identity-tag',
+        status: 'running' as const,
+        tags: { ...handle.tags, extra: 'not-allowed' },
+      },
     ];
     const client = {
       getOrCreate: vi.fn(async () => handle),
@@ -293,11 +397,10 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     });
     await lifecycle.up();
 
-    await expect(lifecycle.list()).resolves.toEqual([records[0]]);
+    await expect(lifecycle.list()).resolves.toEqual([records[0], records[1]]);
     expect(client.listSandboxes).toHaveBeenCalledWith({
       credentials,
       tags: { provider: 'vercel', repository: handle.tags?.repository },
@@ -321,7 +424,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     });
     await lifecycle.up();
 
@@ -367,7 +469,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     });
     await lifecycle.up();
 
@@ -406,7 +507,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
     });
 
     await expect(lifecycle.up()).rejects.toMatchObject({
@@ -439,7 +539,6 @@ describe('Vercel lifecycle', () => {
       source,
       metadataStore: metadata,
       client,
-      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
       onNotice: (notice) => notices.push(notice),
     });
 
@@ -452,7 +551,7 @@ describe('Vercel lifecycle', () => {
     );
     expect(requests[0]).toMatchObject({
       name: handle.name,
-      image: 'vcr.vercel.com/team/project/image@sha256:digest',
+      image: VERCEL_IMAGE_PIN.reference,
       source: { revision: 'main' },
       persistent: true,
       keepLastSnapshots: { count: 1 },

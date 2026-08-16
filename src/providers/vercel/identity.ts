@@ -42,13 +42,25 @@ export function normalizeGitHubRemote(remote: string): GitHubRemoteIdentity {
     } catch (error) {
       throw new Error(`Invalid GitHub remote: ${error instanceof Error ? error.message : String(error)}`);
     }
+    if (parsed.search || parsed.hash) {
+      throw new Error('GitHub remote must not contain query or fragment components');
+    }
+    if (parsed.password || (parsed.username && (parsed.protocol !== 'ssh:' || parsed.username !== 'git'))) {
+      throw new Error('GitHub remote must not contain credentials');
+    }
     host = normalizeHost(parsed.hostname, parsed.port);
     repositoryPath = parsed.pathname;
   } else {
-    const match = /^(?:[^@/]+@)?([^/:]+)(?::|\/)(.+)$/.exec(value);
+    if (/[?#%]/.test(value)) {
+      throw new Error('GitHub remote contains reserved characters');
+    }
+    const match = /^(?:([^@/]+)@)?([^/:]+)(?::|\/)(.+)$/.exec(value);
     if (!match) throw new Error(`Invalid GitHub remote: ${remote}`);
-    host = normalizeHost(match[1], '');
-    repositoryPath = match[2];
+    if (match[1] && match[1].toLowerCase() !== 'git') {
+      throw new Error('GitHub remote must use the git username');
+    }
+    host = normalizeHost(match[2], '');
+    repositoryPath = match[3];
   }
 
   let path: string;

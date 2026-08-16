@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { normalizeGitHubRemote } from '../src/providers/vercel/identity.js';
 import {
   normalizeGitHubSourceRemote,
   resolveGitHubSource,
@@ -100,6 +101,13 @@ describe('Vercel GitHub source selection', () => {
   it('rejects non-canonical GitHub origins and unsafe branch names', () => {
     expect(() => normalizeGitHubSourceRemote('http://github.com/acme/repo.git')).toThrow(/HTTPS or SSH/i);
     expect(() => normalizeGitHubSourceRemote('https://user:password@github.com/acme/repo.git')).toThrow(/credentials/i);
+    expect(() => normalizeGitHubSourceRemote('ssh://git:password@github.com/acme/repo.git')).toThrow(/credentials|password/i);
+    expect(() => normalizeGitHubSourceRemote('ssh://user@github.com/acme/repo.git')).toThrow(/username|credentials|git/i);
+    expect(() => normalizeGitHubSourceRemote('ssh://github.com/acme/repo.git')).toThrow(/username|credentials|git/i);
+    expect(() => normalizeGitHubSourceRemote('git@github.com:acme/repo?ref=main')).toThrow(/reserved|query|origin/i);
+    expect(() => normalizeGitHubSourceRemote('git@github.com:acme/repo#main')).toThrow(/reserved|fragment|origin/i);
+    expect(() => normalizeGitHubSourceRemote('git@github.com:acme/re%70o')).toThrow(/reserved|origin/i);
+    expect(() => normalizeGitHubRemote('https://user:password@github.com/acme/repo.git')).toThrow(/credentials/i);
     expect(() => normalizeGitHubSourceRemote('git@gitlab.com:acme/repo.git')).toThrow(/HTTPS or SSH|github.com/i);
     expect(() => selectGitHubRevision({
       requestedBranch: '-c',

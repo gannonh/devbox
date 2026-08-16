@@ -65,10 +65,11 @@ export function normalizeGitHubSourceRemote(remote: string): GitHubSourceRemote 
     if (parsed.hostname.toLowerCase() !== 'github.com') {
       throw new Error('GitHub origin must use github.com');
     }
-    if (parsed.username || parsed.password) {
-      if (isHttps || parsed.username !== 'git') {
-        throw new Error('GitHub origin must not contain credentials');
-      }
+    if (isHttps && (parsed.username || parsed.password)) {
+      throw new Error('GitHub origin must not contain credentials');
+    }
+    if (isSshUrl && (parsed.username !== 'git' || parsed.password)) {
+      throw new Error('GitHub SSH origin must use the git username without a password');
     }
     if (parsed.search || parsed.hash) {
       throw new Error('GitHub origin must not contain query or fragment components');
@@ -79,8 +80,8 @@ export function normalizeGitHubSourceRemote(remote: string): GitHubSourceRemote 
     if (isSshUrl && parsed.port && parsed.port !== '22') {
       throw new Error('GitHub SSH origin must use the default port');
     }
-  } else if (!/^git@github\.com:[^\s]+$/i.test(value)) {
-    throw new Error('GitHub SSH origin must use git@github.com:<owner>/<repository>');
+  } else if (!/^git@github\.com:[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/i.test(value)) {
+    throw new Error('GitHub SCP origin contains reserved characters or an invalid path');
   }
 
   const identity = normalizeGitHubRemote(value);

@@ -24,7 +24,12 @@ import {
   type VercelMetadataIdentity,
   type VercelMetadataStore,
 } from './metadata.js';
-import { renderRemoteSourceNotice, resolveGitHubSource, type GitHubSourcePlan } from './source.js';
+import {
+  normalizeRequestedSourceBranch,
+  renderRemoteSourceNotice,
+  resolveGitHubSource,
+  type GitHubSourcePlan,
+} from './source.js';
 import { redactSecrets } from './redaction.js';
 
 export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 30 * 60 * 1000;
@@ -99,7 +104,6 @@ export interface VercelLifecycleOptions {
   stateHome?: string;
   repoKey?: string;
   client?: VercelSandboxClient;
-  imageReference?: string;
   timeoutMs?: number;
   onNotice?: (notice: string) => void | Promise<void>;
   cleanup?: Pick<VercelCleanupOptions, 'timeoutMs' | 'maxAttempts' | 'backoffMs' | 'sleep'>;
@@ -162,9 +166,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         if (existing?.configuration) assertConfiguration(existing.configuration, context.configuration);
 
         const createRequest = buildVercelSandboxCreateRequest({
-          credentials: context.credentials,
           name: context.identity.name,
-          imageReference: context.imageReference,
           source: context.source.source,
           timeoutMs: context.timeoutMs,
           tags: { ...context.identity.tags },
@@ -225,9 +227,10 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             repository: identity.tags.repository,
           },
         });
-        return records.filter((record) => (
-          record.tags?.provider === identity.tags.provider &&
-          record.tags?.repository === identity.tags.repository
+        return records.filter((record) => isValidGlobalListIdentityTags(
+          record.tags,
+          identity.tags.provider,
+          identity.tags.repository,
         ));
       });
     },
@@ -263,12 +266,20 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           throw new VercelLifecycleError('stop_incomplete', 'Vercel Sandbox still has a non-terminal session');
         }
         const snapshot = finalStop?.snapshot;
+        const knownSnapshotIds = [
+          ...new Set([
+            ...(metadata?.snapshotIds ?? []),
+            ...(metadata?.residual?.snapshotIds ?? []),
+            ...(snapshot === undefined ? [] : [snapshot.id]),
+          ]),
+        ];
         await context.metadataStore.write({
           teamId: credentials.teamId,
           projectId: credentials.projectId,
           identity,
           sandboxId: sandboxIdentifier(sandbox),
-          ...(snapshot === undefined ? {} : { snapshotIds: [snapshot.id] }),
+          ...(knownSnapshotIds.length === 0 ? {} : { snapshotIds: knownSnapshotIds }),
+          ...(metadata?.residual === undefined ? {} : { residual: metadata.residual }),
           configuration: context.configuration,
         });
         const finalSession = sessions.at(-1);
@@ -301,6 +312,13 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         const result = await cleanupVercelSandbox({
           name: identity.name,
           credentials,
+          expectedTags: identity.tags,
+          knownSnapshotIds: [
+            ...new Set([
+              ...(metadata?.snapshotIds ?? []),
+              ...(metadata?.residual?.snapshotIds ?? []),
+            ]),
+          ],
           adapter,
           ...(options.cleanup ?? {}),
         });
@@ -346,7 +364,7 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
       env: options.env,
       ...options.credentialOptions,
     });
-  const imageReference = options.imageReference ?? VERCEL_IMAGE_PIN.reference;
+  const imageReference = VERCEL_IMAGE_PIN.reference;
   const timeoutMs = options.timeoutMs ?? DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');
@@ -554,6 +572,34 @@ type TagSet = {
   version: string;
   identity: string;
 };
+
+function isValidGlobalListIdentityTags(
+  tags: Record<string, string> | undefined,
+  expectedProvider: string,
+  expectedRepository: string,
+): boolean {
+  if (!tags) return false;
+  const expectedKeys = ['provider', 'repository', 'branch', 'version', 'identity'];
+  const actualKeys = Object.keys(tags).sort();
+  if (actualKeys.length !== expectedKeys.length ||
+      !actualKeys.every((key, index) => key === [...expectedKeys].sort()[index])) {
+    return false;
+  }
+  if (tags.provider !== expectedProvider || tags.repository !== expectedRepository) return false;
+  try {
+    normalizeRequestedSourceBranch(tags.branch);
+  } catch {
+    return false;
+  }
+  return isValidTagValue(tags.version) && isValidTagValue(tags.identity);
+}
+
+function isValidTagValue(value: string): boolean {
+  return value.trim().length > 0 && [...value].every((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code > 0x1f && code !== 0x7f && !/\s/.test(character);
+  });
+}
 
 function sameTags(actual: Record<string, string> | TagSet, expected: Readonly<Record<string, string>> | TagSet): boolean {
   const actualKeys = Object.keys(actual).sort();

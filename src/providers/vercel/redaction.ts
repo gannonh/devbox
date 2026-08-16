@@ -7,7 +7,7 @@ export function redactSecrets(value: unknown, secrets: readonly string[] = []): 
     : typeof value === 'string'
       ? value
       : stringify(value);
-  return [...new Set(secrets)]
+  return [...new Set(secrets.flatMap(secret => [secret, encodeURIComponent(secret)]))]
     .filter((secret) => secret.length > 0)
     .sort((left, right) => right.length - left.length)
     .reduce((result, secret) => {
