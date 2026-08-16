@@ -98,6 +98,13 @@ export function mapVercelError(
       `The stored Vercel sandbox is stale; retry ${removeRecoveryCommand(context)}, then create it again.`,
     );
   }
+  if (isAmbiguousIdentityError(message)) {
+    return new VercelProviderError(
+      'identity',
+      'Multiple live Vercel sandboxes match this repository and branch; do not run automatic removal. Resolve the duplicate in the Vercel console or manually identify and remove only the exact resource, then retry.',
+      2,
+    );
+  }
   if (error instanceof VercelIdentityConflictError || lifecycleCode === 'identity_conflict') {
     return new VercelProviderError(
       'identity',
@@ -105,7 +112,7 @@ export function mapVercelError(
       2,
     );
   }
-  if (error instanceof VercelScopeConflictError || lifecycleCode === 'scope_conflict') {
+  if (error instanceof VercelScopeConflictError || lifecycleCode === 'scope_conflict' || isStoredScopeMismatch(message)) {
     return new VercelProviderError(
       'scope',
       `The stored Vercel team/project scope conflicts with this request; use the stored scope or remove its box with ${removeRecoveryCommand(context)}.`,
@@ -180,7 +187,7 @@ export function mapVercelError(
       `Vercel quota or rate limit reached; ${retry} and run ${command}.`,
     );
   }
-  if (lifecycleCode === 'image_not_ready' || isImageReadinessError(message)) {
+  if (lifecycleCode === 'image_not_ready') {
     return new VercelProviderError(
       'image_not_ready',
       `The pinned Vercel image is not ready; wait for image readiness and retry ${command}.`,
@@ -258,8 +265,6 @@ function isConfirmationError(message: string): boolean {
   return [
     /^vercel scope confirmation requires a tty(?: \[redacted\])?$/,
     /^vercel scope confirmation was refused(?: \[redacted\])?$/,
-    /^confirmation requires a tty(?: \[redacted\])?$/,
-    /^confirmation was refused(?: \[redacted\])?$/,
   ].some((pattern) => pattern.test(message));
 }
 
@@ -290,9 +295,6 @@ function isPrivateRepoError(
 ): boolean {
   return code === 'github_source_access_denied'
     || code === 'github_credentials_unavailable'
-    || code === 'github_clone_failed'
-    || code === 'git_clone_failed'
-    || code === 'clone_failed'
     || (operation === 'source' && (status === 401 || status === 403));
 }
 
@@ -300,9 +302,12 @@ function isSourceError(operation: string | undefined, code: string | undefined):
   return operation === 'source' || (code?.startsWith('github_') ?? false);
 }
 
-function isImageReadinessError(message: string): boolean {
-  return /^image is preparing(?: \[redacted\])?$/.test(message)
-    || /^the pinned vercel image is not ready(?:; .+)?$/.test(message);
+function isAmbiguousIdentityError(message: string): boolean {
+  return /^multiple live vercel sandboxes match .+$/.test(message);
+}
+
+function isStoredScopeMismatch(message: string): boolean {
+  return message === 'stored vercel team/project does not match resolved credentials';
 }
 
 function isAbortError(error: unknown, message: string, code: string | undefined): boolean {

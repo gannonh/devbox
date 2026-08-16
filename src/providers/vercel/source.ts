@@ -21,8 +21,7 @@ export type GitHubSourceErrorCode =
   | 'github_source_access_denied'
   | 'github_source_resolution_failed'
   | 'github_default_branch_unavailable'
-  | 'github_branch_probe_failed'
-  | 'github_clone_failed';
+  | 'github_branch_probe_failed';
 
 export class GitHubSourceError extends Error {
   readonly operation = 'source' as const;

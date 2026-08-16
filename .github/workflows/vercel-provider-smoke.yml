@@ -1,0 +1,140 @@
+name: Vercel provider terminal smoke
+
+# This workflow has no pull_request trigger. The job also requires the
+# repository owner to dispatch it from the default branch, so fork or
+# untrusted PR code can never receive these secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: 'Provider source path to exercise'
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - existing
+          - missing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-provider-terminal-smoke
+  cancel-in-progress: false
+
+jobs:
+  provider-smoke:
+    name: private-clone terminal smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.actor == github.repository_owner &&
+      github.ref_name == github.event.repository.default_branch &&
+      github.event.repository.fork == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      ARTIFACT_DIR: ${{ runner.temp }}/vercel-provider-smoke-evidence
+      SMOKE_PATH: ${{ inputs.path }}
+      SMOKE_TIMEOUT_MS: '720000'
+      SMOKE_OPERATION_TIMEOUT_MS: '30000'
+      SMOKE_COMMAND_TIMEOUT_MS: '60000'
+      SMOKE_TERMINAL_TIMEOUT_MS: '90000'
+      SMOKE_CLEANUP_TIMEOUT_MS: '120000'
+      SMOKE_GITHUB_TIMEOUT_MS: '10000'
+    steps:
+      - name: Guard trusted default-branch dispatch
+        env:
+          EXPECTED_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' || { echo 'provider smoke accepts workflow_dispatch only' >&2; exit 1; }
+          test "${GITHUB_REF_NAME}" = "${EXPECTED_DEFAULT_BRANCH}" || {
+            echo "provider smoke must run from the repository default branch (${EXPECTED_DEFAULT_BRANCH})" >&2
+            exit 1
+          }
+          test "${{ github.actor }}" = "${{ github.repository_owner }}" || {
+            echo 'provider smoke is restricted to the repository owner; no secrets were used' >&2
+            exit 1
+          }
+          case "${SMOKE_PATH}" in
+            existing|missing|both) ;;
+            *) echo 'SMOKE_PATH must be existing, missing, or both' >&2; exit 1 ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20.18.1'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare evidence directory
+        run: |
+          set -euo pipefail
+          mkdir -p "${ARTIFACT_DIR}"
+          printf '{"schemaVersion":1,"workflow":"vercel-provider-terminal-smoke","path":"%s","redacted":true}\n' "${SMOKE_PATH}" > "${ARTIFACT_DIR}/invocation.json"
+
+      - name: Build production provider adapters
+        run: npm run build
+
+      # dist/providers/vercel/image.js is compiled directly from the reviewed
+      # src/providers/vercel/image.ts pin; no workflow image override is allowed.
+      - name: Reject an unpromoted image pin early
+        id: pin
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { assertPromotedVercelImagePin } from './dist/providers/vercel/smoke-config.js';
+          import { VERCEL_IMAGE_PIN } from './dist/providers/vercel/image.js';
+          assertPromotedVercelImagePin(VERCEL_IMAGE_PIN);
+          NODE
+
+      # The script repeats the pin check before reading the secret-backed
+      # config, then writes a blocked report even when the checked-in pin is
+      # still zero. It uses no Vercel CLI or GitHub CLI.
+      - name: Run real provider smoke
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          GITHUB_FIXTURE_TOKEN: ${{ secrets.GITHUB_FIXTURE_TOKEN }}
+          GITHUB_FIXTURE_REPOSITORY: ${{ secrets.GITHUB_FIXTURE_REPOSITORY }}
+          GITHUB_FIXTURE_BRANCH: ${{ secrets.GITHUB_FIXTURE_BRANCH }}
+          GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.GITHUB_FIXTURE_DEFAULT_BRANCH }}
+          GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.GITHUB_FIXTURE_EXPECTED_FILE }}
+          GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.GITHUB_FIXTURE_EXPECTED_CONTENT }}
+          SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/provider-smoke.json
+        run: node scripts/vercel/provider-smoke.mjs
+
+      - name: Redact all provider smoke evidence
+        id: redact
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          GITHUB_FIXTURE_TOKEN: ${{ secrets.GITHUB_FIXTURE_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      # Upload is guarded by successful redaction: evidence is always uploaded
+      # for a normal pass/fail run, while an unexpected redaction failure
+      # withholds the directory rather than risking credential exposure.
+      - name: Upload redacted provider smoke evidence
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vercel-provider-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

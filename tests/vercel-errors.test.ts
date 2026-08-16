@@ -65,6 +65,22 @@ describe('Vercel provider errors', () => {
     }
   });
 
+  it('classifies the exact stored scope mismatch as scope and gives safe ambiguous recovery guidance', () => {
+    const scope = mapVercelError(new Error('Stored Vercel team/project does not match resolved credentials'), {
+      action: 'attach',
+      branch: 'feature/ui',
+    });
+    expect(scope.code).toBe('scope');
+
+    const ambiguous = mapVercelError(new Error('Multiple live Vercel sandboxes match github.com/acme/repo branch feature/ui'), {
+      action: 'remove',
+      branch: 'feature/ui',
+    });
+    expect(ambiguous.code).toBe('identity');
+    expect(ambiguous.message).toMatch(/Vercel console|manual/i);
+    expect(ambiguous.message).not.toContain('--rm');
+  });
+
   it('only classifies exact scope confirmation phrases', () => {
     expect(mapVercelError(new Error('terminal transport mentioned tty'), {
       action: 'attach',
@@ -78,6 +94,10 @@ describe('Vercel provider errors', () => {
       action: 'up',
       branch: 'feature/ui',
     }).code).toBe('confirmation');
+    expect(mapVercelError(new Error('confirmation requires a TTY'), {
+      action: 'up',
+      branch: 'feature/ui',
+    }).code).toBe('api');
   });
 
   it('leaves generic lookalike text in the API category', () => {
@@ -90,6 +110,7 @@ describe('Vercel provider errors', () => {
       'resource gone',
       'sandbox stale',
       'request timed out in a payload field',
+      'image is preparing',
     ]) {
       expect(mapVercelError(new Error(message), { action: 'attach', branch: 'feature/ui' }).code, message)
         .toBe('api');

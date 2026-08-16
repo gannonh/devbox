@@ -15,6 +15,70 @@ is deliberately release-invalid until the secret-gated workflow has produced
 and independently smoked a public candidate; the workflow then opens a
 reviewed PR that replaces the bootstrap metadata.
 
+## Issue #5: real provider terminal smoke
+
+Run **Actions → Vercel provider terminal smoke → Run workflow** manually from
+the repository owner's account, on the default branch. Select `both` for the
+normal gate, or select `existing`/`missing` while diagnosing one deterministic
+source path. This workflow is separate from the image candidate workflow and
+has no `pull_request` trigger. Its job guard rejects fork/untrusted or
+non-default-branch dispatches, grants only `contents: read`, serializes runs,
+and has a 30-minute job timeout.
+
+Create these exact repository secrets:
+
+| Secret | Contract |
+| --- | --- |
+| `VERCEL_TOKEN` | Least-privilege token for the Sandbox project |
+| `VERCEL_TEAM_ID` | Exact Vercel team/account ID for that token |
+| `VERCEL_PROJECT_ID` | Exact Vercel project ID for that token |
+| `GITHUB_FIXTURE_TOKEN` | Read-only token able to clone the private fixture |
+| `GITHUB_FIXTURE_REPOSITORY` | Exact `owner/repository` pair |
+| `GITHUB_FIXTURE_BRANCH` | Branch expected to exist for the existing path |
+| `GITHUB_FIXTURE_DEFAULT_BRANCH` | Expected GitHub API default branch |
+| `GITHUB_FIXTURE_EXPECTED_FILE` | Safe relative POSIX path to assert after clone |
+| `GITHUB_FIXTURE_EXPECTED_CONTENT` | Exact expected file bytes (multiline allowed) |
+
+The script builds the checked-in production adapters and rejects
+`VERCEL_IMAGE_PIN` before reading the cloud configuration if its digest,
+provenance, or promotion evidence is still zero/pending. This checkout has
+that intentional bootstrap pin, so a run currently produces a blocked/not-run
+report and must not be described as real provider evidence until a reviewed
+image promotion replaces the pin.
+
+After the pin is promoted, the gate validates that the fixture is private, the
+API `full_name` and default branch match, and the requested branch has the
+expected existence. It passes the private Git source to the stable
+`@vercel/sandbox` v3 production client; it does not invoke `vercel`, `gh`, or a
+host shell-out. The existing path clones `GITHUB_FIXTURE_BRANCH`. The missing
+path verifies a run-unique branch is absent, clones the expected default, and
+creates that branch inside the Sandbox without pushing it. Both paths assert
+`origin`, commit `HEAD`, checked-out branch, clean status, and configured file
+content. The production terminal adapter calls `openInteractive`, executes a
+command, sends Ctrl-C through the terminal protocol, exits, stops for snapshot
+completion, resumes/reconnects, and repeats terminal coverage. Final session
+listing must show every created VM as `stopped` or `aborted`.
+
+Cleanup is unconditional. The gate removes the run-unique Sandbox through the
+production cleanup adapter, resolves paginated snapshot metadata through
+`Snapshot.get` before deletion, re-lists until each matching snapshot is
+absent or explicitly `deleted`, and rejects every non-deleted residual. It also
+runs the existing owned-resource recovery helper by exact name/tag/scope so a
+lost create response is not treated as success. Evidence records the run
+identity, scope IDs, statuses, timings, checks, recovery history, and final
+residuals; it never records either token, source password, interactive token,
+or expected secret values. The workflow redacts all files immediately before
+upload and withholds the directory if redaction itself fails.
+
+If cleanup reports an ambiguous duplicate, do not blindly retry `--rm` or
+choose a name from a broad list. Use the matching team/project in the Vercel
+console, or manually identify and remove only the exact run-unique name/tags;
+then rerun the workflow. This is a manual recovery path, not permission to
+delete an unrelated user Sandbox. First-use device authentication remains under
+the repository scope lock: concurrent first-use commands serialize scope
+confirmation and persistence, while later branch operations release the lock
+before attaching the terminal.
+
 ## One-time publisher setup
 
 1. Create or select a dedicated Vercel **publisher project** and team. The VCR

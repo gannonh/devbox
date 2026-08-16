@@ -100,6 +100,50 @@ reviewed promotion process, rollback, and orphan cleanup are documented in the
 [`Vercel image supply chain runbook`](docs/runbooks/vercel-image-supply-chain.md).
 The live image workflow is secret-gated and never auto-promotes upstream drift.
 
+## Real Vercel provider smoke
+
+The secret-gated provider terminal smoke is a separate manual workflow. Run
+**Actions → Vercel provider terminal smoke → Run workflow** from the repository
+owner account on the default branch, then choose `both`, `existing`, or
+`missing`. It has no pull-request trigger and rejects non-owner or non-default-
+branch dispatches.
+
+Configure these repository secrets exactly:
+
+- `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` — one least-privilege
+  Vercel credential triad for the Sandbox project.
+- `GITHUB_FIXTURE_TOKEN` — a read-only token that can clone the private fixture.
+- `GITHUB_FIXTURE_REPOSITORY` — exact `owner/repository`.
+- `GITHUB_FIXTURE_BRANCH` — the branch expected to exist for the `existing` path.
+- `GITHUB_FIXTURE_DEFAULT_BRANCH` — the GitHub API default branch expectation.
+- `GITHUB_FIXTURE_EXPECTED_FILE` and `GITHUB_FIXTURE_EXPECTED_CONTENT` — the
+  file/content assertion shared by the clone paths.
+
+The smoke validates the private repository and default/branch expectations,
+then uses the production `@vercel/sandbox` v3 client and terminal adapter (not
+CLI shell-out). The existing path clones the requested branch; the missing path
+clones the default and creates a run-unique branch locally. It asserts the
+remote, `HEAD`, branch, clean worktree, and fixture content, exercises
+`openInteractive`, Ctrl-C, stop/snapshot completion, resume/attach, and every
+created VM session. `finally` cleanup stops/removes the owned Sandbox, paginates
+snapshot cleanup, re-lists until every item is absent or `deleted`, and fails on
+any residual or running session. The run-unique name/tags and Vercel
+team/project scope are preserved in the redacted evidence artifact.
+
+Artifacts are uploaded after a final redaction step, even for a normal failed
+smoke. A redaction failure withholds the directory rather than risk a secret
+leak. Tokens are passed through environment/headers and in-memory SDK source
+credentials only; they are never command arguments, report fields, or files.
+If recovery finds an ambiguous duplicate, do not blindly run `--rm`: resolve it
+in the Vercel console or manually identify the exact owned resource first.
+
+The checked-in `VERCEL_IMAGE_PIN` is currently the intentional zero/unpromoted
+bootstrap pin. Until a reviewed image promotion replaces it, this workflow
+fails early with a blocked/not-run report; that is not evidence of a real
+provider execution. First-use device auth remains under the repository scope
+lock, so concurrent first-use commands serialize confirmation and credential
+persistence; later branch operations release the lock before the terminal.
+
 ## Design spec
 
 The package design is documented in [`docs/specs/2026-06-28-devbox-npm-package-design.md`](docs/specs/2026-06-28-devbox-npm-package-design.md).
