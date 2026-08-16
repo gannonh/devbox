@@ -25,6 +25,7 @@ function context(shell: ShellRunner): LauncherContext & { stdout: PassThrough; s
     runner: shell,
     env: {},
     tty: false,
+    stdin: new PassThrough(),
     stdout: new PassThrough(),
     stderr: new PassThrough(),
   };
@@ -39,7 +40,7 @@ describe('local command output', () => {
     let output = '';
     ctx.stderr.on('data', (chunk) => { output += chunk.toString(); });
 
-    expect(await list(ctx, ctx.stderr)).toBe(0);
+    expect(await list(ctx)).toBe(0);
     expect(output).toContain('(none)');
   });
 

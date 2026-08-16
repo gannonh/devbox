@@ -19,6 +19,7 @@ function request(branch = 'feature'): ProviderBranchRequest {
     repoName: 'repo',
     env: {},
     tty: false,
+    stdin: new PassThrough(),
     stdout: new PassThrough(),
     stderr: new PassThrough(),
     branch,

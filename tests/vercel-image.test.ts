@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  matchesVercelSandboxImageDigest,
   parseVercelImageReference,
+  VERCEL_IMAGE_PIN,
   VERCEL_IMAGE_PROVENANCE,
   validateVercelImagePin,
 } from '../src/providers/vercel/image.js';
@@ -31,6 +33,14 @@ function validPin(overrides: Record<string, unknown> = {}) {
 }
 
 describe('Vercel image pin validation', () => {
+  it('accepts only a returned sandbox image with the exact expected digest', () => {
+    const digest = 'sha256:' + 'a'.repeat(64);
+    expect(matchesVercelSandboxImageDigest(`repository@${digest}`, digest)).toBe(true);
+    expect(matchesVercelSandboxImageDigest('repository:latest', digest)).toBe(false);
+    expect(matchesVercelSandboxImageDigest(undefined, digest)).toBe(false);
+    expect(matchesVercelSandboxImageDigest(`repository@sha256:${'b'.repeat(64)}`, digest)).toBe(false);
+  });
+
   it('accepts a fully-qualified immutable public digest with mirrored provenance', () => {
     const result = validateVercelImagePin(validPin());
 
@@ -107,6 +117,15 @@ describe('Vercel image pin validation', () => {
       { ...pin, provenance: { ...VERCEL_IMAGE_PROVENANCE, aptSnapshot: '20260802T000000Z' } },
       raw,
     )).toThrow(/provenance does not match/);
+  });
+
+  it('keeps the checked-in pin provenance canonical and byte-digest bound', () => {
+    const raw = readFileSync('images/vercel/provenance.json', 'utf8');
+    const digest = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
+
+    expect(VERCEL_IMAGE_PIN.provenanceDigest).toBe(digest);
+    expect(JSON.stringify(VERCEL_IMAGE_PIN.provenance)).toBe(JSON.stringify(JSON.parse(raw)));
+    expect(validateVercelImagePin(VERCEL_IMAGE_PIN).ok).toBe(true);
   });
 
   it('rejects a floating tag, mismatched smoke reference, and unproven consumer', () => {

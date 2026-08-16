@@ -30,6 +30,10 @@ function stubProvider(name: 'local' | 'vercel'): DevboxProvider {
 }
 
 describe('provider registry', () => {
+  it('registers the production Vercel provider without resolving credentials at import time', () => {
+    expect(resolveProvider('vercel', undefined).name).toBe('vercel');
+  });
+
   it('selects local by default and routes explicit provider names', () => {
     const local = stubProvider('local');
     const vercel = stubProvider('vercel');

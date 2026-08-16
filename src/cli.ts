@@ -6,7 +6,6 @@
  * point. Provider implementations receive provider-neutral requests and keep
  * their own lifecycle behavior and formatting behind that boundary.
  */
-import type { Writable } from 'node:stream';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { init } from './commands/init.js';
@@ -22,7 +21,9 @@ import type {
   ProviderActionResult,
   ProviderBranchRequest,
   ProviderListRequest,
+  ProviderInput,
   ProviderName,
+  ProviderOutput,
   ProviderUrlRequest,
 } from './providers/types.js';
 
@@ -31,10 +32,10 @@ const USAGE = `devbox — one-command isolated worktree dev containers
 USAGE
   devbox [--provider local|vercel] <branch>                    create/boot a box
   devbox [--provider local|vercel] <branch> --attach|-a        re-enter a running box
-  devbox [--provider local|vercel] <branch> --url [--open|-o]  print or open the noVNC URL
+  devbox [--provider local|vercel] <branch> --url [--open|-o]  print or open provider routes
   devbox [--provider local|vercel] <branch> --stop             stop (keeps worktree + container)
   devbox [--provider local|vercel] <branch> --rm               remove container, worktree, and branch
-  devbox [--provider local|vercel] <branch> --password         retrieve display credentials
+  devbox [--provider local|vercel] <branch> --password         retrieve display credentials (when supported)
   devbox [--provider local|vercel] --list|-l                  list provider devboxes
   devbox --help|-h                                             show this help
 
@@ -49,8 +50,12 @@ EXAMPLES
   devbox --provider local --list    # list local boxes
 
 NOTE
-  The Vercel provider name is reserved for a future release; this package
-  does not claim Vercel lifecycle support yet.`;
+  Vercel is a core provider. It uses the authenticated GitHub origin only;
+  local dirty files and unpushed commits are not copied to the sandbox.
+  First use displays the Vercel team/project and requires TTY confirmation.
+  In the remote terminal, Ctrl-C reaches the remote process and Ctrl-]
+  detaches without stopping the sandbox. Core URL output lists current
+  routes; noVNC/password parity and password generation are not included.`;
 
 const INIT_HELP = `devbox init — scaffold .devbox/ + .devcontainer/ in this repo
 
@@ -74,8 +79,8 @@ ACTIONS
   --attach|-a    re-enter a running box
   --stop         stop the box (keeps local resources)
   --rm           remove the box and local resources
-  --url [--open|-o]  print or open the noVNC URL
-  --password     retrieve labeled display credentials
+  --url [--open|-o]  print or open provider routes
+  --password     retrieve labeled display credentials when supported
 
 FLAGS
   --provider local|vercel   select a provider (local is the default)
@@ -85,9 +90,17 @@ EXAMPLES
   devbox ${branch} --attach              # re-enter the running box
   devbox ${branch} --stop                # stop it
   devbox ${branch} --password            # retrieve credentials if supported
-  devbox --provider vercel ${branch}     # reserved; unavailable in this release`;
+  devbox --provider vercel ${branch}     # remote Vercel sandbox; confirm scope on first use
 
-const LIST_HELP = `devbox --list — list provider devboxes + noVNC URLs
+VERCEL CORE
+  Uses the authenticated GitHub origin; local dirty files and unpushed commits
+  are not copied. First use confirms the displayed team/project in a TTY.
+  Without a complete Vercel credential triad, device auth prints the verification
+  URL and user code. Ctrl-C is sent to the remote process. Ctrl-] detaches without stopping it.
+  --url prints current provider routes and --open opens the first route.
+  --password is explicitly unsupported in this core phase.`;
+
+const LIST_HELP = `devbox --list — list provider devboxes and routes
 
 USAGE
   devbox [--provider local|vercel] --list|-l
@@ -100,8 +113,8 @@ EXAMPLES
   devbox --provider local --list      # explicit local provider
 
 DESCRIPTION
-  Lists boxes for the selected provider. The Vercel provider is reserved for
-  a future release and is not available in this package.`;
+  Lists boxes for the selected provider. Vercel listing is scoped to the
+  current GitHub repository and includes status and identity tags.`;
 
 const ATTACH_HELP = (branch: string) => `devbox ${branch} --attach — re-enter a running box
 
@@ -111,6 +124,8 @@ USAGE
 DESCRIPTION
   Re-enters a running box for the branch. If the box is stopped, starts it
   and re-brings the display stack up, then drops into a shell in /workspace.
+  For Vercel, Ctrl-C reaches the remote process and Ctrl-] detaches without
+  stopping the sandbox.
 
 EXAMPLES
   devbox ${branch} --attach
@@ -142,13 +157,13 @@ EXAMPLES
   devbox ${branch} --rm
   devbox --provider local ${branch} --rm`;
 
-const URL_HELP = (branch: string) => `devbox ${branch} --url — print or open the noVNC URL
+const URL_HELP = (branch: string) => `devbox ${branch} --url — print or open provider routes
 
 USAGE
   devbox [--provider local|vercel] <branch> --url [--open|-o]
 
 FLAGS
-  --open|-o    open the noVNC URL in a browser instead of printing it
+  --open|-o    open the first provider route in a browser after printing routes
 
 EXAMPLES
   devbox ${branch} --url
@@ -407,8 +422,9 @@ export function parseCliArgs(args: string[]): ParsedCommand {
 export const parseArgs = parseCliArgs;
 
 export interface DispatchIO {
-  stdout: Writable;
-  stderr: Writable;
+  stdin: ProviderInput;
+  stdout: ProviderOutput;
+  stderr: ProviderOutput;
 }
 
 export interface DispatchOptions {
@@ -519,7 +535,8 @@ export async function dispatch(
     repoRoot: root,
     repoName: repoName(root),
     env: options.env ?? { ...process.env },
-    tty: options.tty ?? Boolean(process.stdin.isTTY),
+    tty: options.tty ?? Boolean(io.stdin.isTTY),
+    stdin: io.stdin,
     stdout: io.stdout,
     stderr: io.stderr,
   };
@@ -551,7 +568,11 @@ export async function dispatch(
 // Entry point when run as a bin.
 async function main() {
   const args = process.argv.slice(2);
-  const code = await dispatch(args, { stdout: process.stdout, stderr: process.stderr });
+  const code = await dispatch(args, {
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
+  });
   process.exit(code);
 }
 

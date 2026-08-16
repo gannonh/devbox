@@ -1,0 +1,239 @@
+name: Vercel provider terminal smoke
+
+# This workflow has no pull_request trigger of its own. Direct runs are limited
+# to a manual default-branch dispatch; reusable PR calls perform their own
+# exact-head authorization. The protected vercel-provider-smoke GitHub
+# environment supplies optional reviewer approval without relying on actor equality.
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: 'Exact full lowercase commit SHA authorized for smoke'
+        required: true
+        type: string
+      path:
+        description: 'Provider source path to exercise'
+        required: true
+        type: string
+    secrets:
+      # The credential source is the verified Issue #4 VERCEL_CONSUMER_* triad
+      # (devbox-uat Sandbox project). The smoke and redaction steps map those
+      # values into the script environment under the exact generic
+      # VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID names the smoke script
+      # requires; nothing is inherited or re-exported.
+      VERCEL_CONSUMER_TOKEN:
+        required: true
+      VERCEL_CONSUMER_TEAM_ID:
+        required: true
+      VERCEL_CONSUMER_PROJECT_ID:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_TOKEN:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_REPOSITORY:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_BRANCH:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT:
+        required: true
+  workflow_dispatch:
+    inputs:
+      path:
+        description: 'Provider source path to exercise'
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - existing
+          - missing
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-provider-terminal-smoke
+  cancel-in-progress: false
+
+jobs:
+  provider-smoke:
+    name: private-clone terminal smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: vercel-provider-smoke
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      SMOKE_PATH: ${{ inputs.path }}
+      SMOKE_TIMEOUT_MS: '720000'
+      SMOKE_TOTAL_TIMEOUT_MS: '2400000'
+      SMOKE_OPERATION_TIMEOUT_MS: '30000'
+      SMOKE_COMMAND_TIMEOUT_MS: '60000'
+      SMOKE_TERMINAL_TIMEOUT_MS: '90000'
+      SMOKE_CLEANUP_TIMEOUT_MS: '120000'
+      SMOKE_GITHUB_TIMEOUT_MS: '10000'
+    steps:
+      - name: Guard trusted smoke authorization
+        id: guard
+        env:
+          EXPECTED_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_EVENT_ACTION: ${{ github.event.action }}
+          EXPECTED_EVENT_ACTOR: ${{ github.actor }}
+          EXPECTED_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_LABEL_NAME: ${{ github.event.label.name }}
+          EXPECTED_REPOSITORY_FORK: ${{ github.event.repository.fork }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_SHA}" =~ ^[a-f0-9]{40}$ ]] || {
+            echo 'SOURCE_SHA must be a full 40-character lowercase commit SHA' >&2
+            exit 1
+          }
+          case "${SMOKE_PATH}" in
+            existing|missing|both) ;;
+            *) echo 'SMOKE_PATH must be existing, missing, or both' >&2; exit 1 ;;
+          esac
+
+          # workflow_call retains the caller's github event. A PR call is
+          # trusted only for an owner-labeled, same-repository exact head.
+          case "${GITHUB_EVENT_NAME}" in
+            workflow_dispatch)
+              test "${GITHUB_REF_NAME}" = "${EXPECTED_DEFAULT_BRANCH}" || {
+                echo "provider smoke must run from the repository default branch (${EXPECTED_DEFAULT_BRANCH})" >&2
+                exit 1
+              }
+              test "${GITHUB_REPOSITORY}" = "${EXPECTED_REPOSITORY}" || {
+                echo 'provider smoke repository context changed unexpectedly' >&2
+                exit 1
+              }
+              test "${EXPECTED_REPOSITORY_FORK}" = 'false' || {
+                echo 'provider smoke manual dispatch must target the repository, not a fork' >&2
+                exit 1
+              }
+              ;;
+            pull_request)
+              test "${EXPECTED_EVENT_ACTION}" = 'labeled' || {
+                echo 'provider smoke PR calls require a labeled event' >&2
+                exit 1
+              }
+              test "${EXPECTED_EVENT_ACTOR}" = "${EXPECTED_REPOSITORY_OWNER}" || {
+                echo 'provider smoke PR calls require a repository-owner labeler' >&2
+                exit 1
+              }
+              test "${EXPECTED_HEAD_REPOSITORY}" = "${EXPECTED_REPOSITORY}" || {
+                echo 'provider smoke refuses fork pull requests' >&2
+                exit 1
+              }
+              test "${EXPECTED_HEAD_SHA}" = "${SOURCE_SHA}" || {
+                echo 'provider smoke source SHA does not match the current PR head' >&2
+                exit 1
+              }
+              test "${EXPECTED_LABEL_NAME}" = "psmoke:${SOURCE_SHA}" || {
+                echo 'provider smoke requires the exact psmoke:<full-head-sha> label' >&2
+                exit 1
+              }
+              ;;
+            *)
+              echo 'provider smoke accepts workflow_dispatch or trusted pull_request calls only' >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare evidence directory
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/vercel-provider-smoke-evidence"
+          echo "ARTIFACT_DIR=${artifact_dir}" >> "${GITHUB_ENV}"
+          checked_out_sha="$(git rev-parse HEAD)"
+          [[ "${checked_out_sha}" == "${SOURCE_SHA}" ]] || {
+            echo "checkout does not match authorized source SHA: ${checked_out_sha} != ${SOURCE_SHA}" >&2
+            exit 1
+          }
+          mkdir -p "${artifact_dir}"
+          printf '{"schemaVersion":1,"workflow":"vercel-provider-terminal-smoke","sourceSha":"%s","path":"%s","redacted":false}\n' \
+            "${checked_out_sha}" "${SMOKE_PATH}" > "${artifact_dir}/invocation.json"
+
+      - name: Build production provider adapters
+        run: npm run build
+
+      # dist/providers/vercel/image.js is compiled directly from the reviewed
+      # src/providers/vercel/image.ts pin; no workflow image override is allowed.
+      - name: Validate promoted image pin before credentials
+        id: pin
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { assertPromotedVercelImagePin } from './dist/providers/vercel/smoke-config.js';
+          import { VERCEL_IMAGE_PIN } from './dist/providers/vercel/image.js';
+          assertPromotedVercelImagePin(VERCEL_IMAGE_PIN);
+          NODE
+
+      # The script repeats the pin check before reading the secret-backed
+      # config. With a valid pin, a local invocation fails only on missing
+      # configuration; it uses no Vercel CLI or GitHub CLI.
+      - name: Run real provider smoke
+        if: success() && steps.guard.outcome == 'success'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+          SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/provider-smoke.json
+        run: node scripts/vercel/provider-smoke.mjs
+
+      - name: Redact all provider smoke evidence
+        id: redact
+        if: always() && steps.guard.outcome == 'success'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+        run: |
+          set -euo pipefail
+          node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      # Upload is guarded by successful redaction: evidence is always uploaded
+      # for a normal pass/fail run, while an unexpected redaction failure
+      # withholds the directory rather than risking credential exposure.
+      - name: Upload redacted provider smoke evidence
+        if: always() && steps.guard.outcome == 'success' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vercel-provider-smoke-${{ env.SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

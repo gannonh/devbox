@@ -99,6 +99,16 @@ export interface VercelImagePinValidation {
   errors: string[];
 }
 
+/** Compare an SDK-returned repository@digest image to the promoted manifest digest. */
+export function matchesVercelSandboxImageDigest(
+  image: unknown,
+  expectedDigest: string,
+): boolean {
+  if (!DIGEST_VALUE.test(expectedDigest) || typeof image !== 'string') return false;
+  const match = /^.+@(sha256:[a-f0-9]{64})$/.exec(image);
+  return match?.[1] === expectedDigest;
+}
+
 /**
  * Parse a fully-qualified VCR image reference.
  *
@@ -312,7 +322,7 @@ export function assertValidVercelImagePin(pin: VercelImagePin): VercelImageRefer
 }
 
 export const VERCEL_IMAGE_REFERENCE =
-  'vcr.vercel.com/devbox-publisher/devbox-image/devbox@sha256:0000000000000000000000000000000000000000000000000000000000000000';
+  'vcr.vercel.com/astro-labs/devbox/devbox@sha256:a4aa03890d74f5251f3861c4f6e96afeab3d0b7881b8206fa0de4223bdf051f7';
 
 /** The exact audited mirror inputs copied from images/vercel/provenance.json. */
 export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = {
@@ -373,21 +383,25 @@ export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = {
 };
 
 /**
- * Bootstrap metadata is intentionally not release-valid until the secret-gated
- * candidate workflow has produced a real public digest and independent smoke
- * evidence. The workflow's promotion PR replaces these values atomically.
+ * Derived deterministically from the accepted run evidence with the promotion
+ * generator (scripts/vercel/promote-image.mjs): the reviewed public digest,
+ * the canonical provenance artifact, and the independent publisher/consumer
+ * smoke evidence recorded by the accepted credentialed run. The promotion job
+ * was skipped for that run, so this exact pin was not emitted by a workflow
+ * job. The workflow replaces these values atomically when a later candidate is
+ * approved.
  */
 export const VERCEL_IMAGE_PIN: VercelImagePin = {
   reference: VERCEL_IMAGE_REFERENCE,
   provenance: VERCEL_IMAGE_PROVENANCE,
-  provenanceDigest: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
-  sourceCommit: '0000000000000000000000000000000000000000',
-  publisherSmokeUrl: 'https://example.invalid/vercel-publisher-smoke',
-  consumerSmokeUrl: 'https://example.invalid/vercel-consumer-smoke',
-  publisher: { team: 'devbox-publisher', project: 'devbox-image' },
-  consumer: { team: 'devbox-consumer', project: 'devbox-consumer-image' },
+  provenanceDigest: 'sha256:56b660cafb8fef028df83c6ecec45ddeaee03496e70da02386d526c556b3092b',
+  sourceCommit: 'ebf9cb7e3072c7414952eaca034157cbbdb55449',
+  publisherSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/31905089142#publisher-smoke',
+  consumerSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/31905089142#consumer-smoke',
+  publisher: { team: 'astro-labs', project: 'devbox' },
+  consumer: { team: 'astro-labs', project: 'devbox-uat' },
   testedReference: VERCEL_IMAGE_REFERENCE,
-  publisherSmokeStatus: 'pending',
-  consumerSmokeStatus: 'pending',
-  crossProjectVerified: false,
+  publisherSmokeStatus: 'passed',
+  consumerSmokeStatus: 'passed',
+  crossProjectVerified: true,
 };

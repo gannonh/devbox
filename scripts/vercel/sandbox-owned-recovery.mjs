@@ -1,4 +1,5 @@
 import { boundedCall } from './sandbox-cleanup.mjs';
+import { sanitizeRecoveryEvidence } from './smoke-evidence.mjs';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 10_000;
@@ -46,28 +47,23 @@ function validateOptions({ timeoutMs, operationTimeoutMs, maxAttempts, backoffMs
  * Transient cleanup observations belong in recovery history; only errors that
  * survive the final reconciliation are copied into cleanup.errors.
  */
-export function applyOwnedRecoveryEvidence(report, recovery) {
+export function applyOwnedRecoveryEvidence(report, recovery, redact = (value) => String(value)) {
   if (!report || typeof report !== 'object' || !report.cleanup || typeof report.cleanup !== 'object') {
     throw new TypeError('smoke evidence report with cleanup is required');
   }
   if (!recovery || typeof recovery !== 'object') throw new TypeError('owned recovery result is required');
-  report.cleanup.ownedRecovery = recovery;
-  report.snapshots = Array.isArray(recovery.finalSnapshots)
-    ? recovery.finalSnapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status }))
-    : [];
-  report.cleanup.residualNonDeletedSnapshots = Array.isArray(recovery.residualSnapshots)
-    ? recovery.residualSnapshots
-    : [];
+  const safeRecovery = sanitizeRecoveryEvidence(recovery, redact);
+  report.cleanup.ownedRecovery = safeRecovery;
+  report.snapshots = safeRecovery.finalSnapshots;
+  report.cleanup.residualNonDeletedSnapshots = safeRecovery.residualSnapshots;
   report.cleanup.snapshotsCleaned = recovery.snapshotsCleaned === true;
   report.cleanup.discoveryConverged = recovery.discoveryConverged === true;
-  if (recovery.errors?.length === 0 && recovery.snapshotsCleaned === true && recovery.discoveryConverged === true && Array.isArray(report.cleanup.recovery)) {
-    const retainedRecoveryHistory = report.cleanup.recovery.filter((event) => event?.outcome !== 'pending-reconciliation');
-    if (retainedRecoveryHistory.length > 0) report.cleanup.recovery = retainedRecoveryHistory;
-    else delete report.cleanup.recovery;
-  }
+  report.cleanup.recoverySessionProof = recovery.sessionProof === true;
+  // Reconciliation history is evidence, not a transient cache. Never clear a
+  // prior failure merely because a later listing happens to converge.
   if (Array.isArray(recovery.errors) && recovery.errors.length > 0) {
     report.cleanup.errors ??= [];
-    report.cleanup.errors.push(...recovery.errors);
+    report.cleanup.errors.push(...recovery.errors.map((error) => redact(error)));
     report.failed = true;
   }
   return report;
@@ -110,6 +106,7 @@ export async function recoverOwnedResources({
   const sandboxOperationErrors = new Map();
   const snapshotOperationErrors = new Map();
   const recoveredSandboxes = [];
+  const sessionProofSandboxes = new Set();
   const deletedSnapshots = [];
   const discoveredSandboxNames = new Set();
   let lastSandboxes = [];
@@ -125,7 +122,7 @@ export async function recoverOwnedResources({
   const remaining = () => Math.max(0, deadline - Date.now());
   const recordError = (operation, error) => {
     const detail = `${operation}: ${errorMessage(error)}`.slice(0, 500);
-    permanentErrors.push(detail);
+    if (!permanentErrors.includes(detail)) permanentErrors.push(detail);
   };
   const recordOperationError = (map, id, operation, error) => {
     map.set(id, `${operation}: ${errorMessage(error)}`.slice(0, 500));
@@ -176,10 +173,11 @@ export async function recoverOwnedResources({
       }
       discoveredSandboxNames.add(sandbox.name);
       try {
-        await call(
+        const recoveryResult = await call(
           (requestSignal) => recoverSandbox(sandbox.name, { signal: requestSignal, attempt: attempts, sandbox }),
           `owned Sandbox ${sandbox.name} recovery`,
         );
+        if (recoveryResult?.sessionProof === true) sessionProofSandboxes.add(sandbox.name);
         sandboxOperationErrors.delete(sandbox.name);
         if (!recoveredSandboxes.includes(sandbox.name)) recoveredSandboxes.push(sandbox.name);
       } catch (error) {
@@ -292,6 +290,8 @@ export async function recoverOwnedResources({
     attempts,
     discoveryConverged: attempts > 0 && finalSandboxListingSucceeded && sandboxDiscoveryErrors === 0 && malformedFinalSandboxes.length === 0 && residualSandboxes.length === 0,
     recoveredSandboxes,
+    sessionProof: sessionProofSandboxes.size > 0,
+    sessionProofSandboxes: [...sessionProofSandboxes],
     discoveredSandboxes: [...discoveredSandboxNames],
     finalSandboxes,
     residualSandboxes,

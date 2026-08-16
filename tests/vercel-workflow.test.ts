@@ -49,6 +49,51 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain("github.event_name != 'pull_request'");
   });
 
+  it('authorizes provider smoke only from an owner exact-head label with explicit read-only secrets', async () => {
+    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
+    expect(ci).toContain('vercel-provider-smoke:');
+    expect(ci).toContain("github.event.action == 'labeled'");
+    expect(ci).toContain('github.actor == github.repository_owner');
+    expect(ci).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+    expect(ci).toContain("github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)");
+    expect(ci).toContain('uses: ./.github/workflows/vercel-provider-smoke.yml');
+    expect(ci).toContain('source_sha: ${{ github.event.pull_request.head.sha }}');
+    expect(ci).toContain('path: both');
+    expect(ci).not.toContain('secrets: inherit');
+    expect(ci).not.toContain('pull_request_target');
+    expect(ci).toMatch(/vercel-provider-smoke:[\s\S]*?permissions:\n\s+contents: read[\s\S]*?uses: \.\/\.github\/workflows\/vercel-provider-smoke\.yml/);
+    for (const secret of [
+      'VERCEL_CONSUMER_TOKEN',
+      'VERCEL_CONSUMER_TEAM_ID',
+      'VERCEL_CONSUMER_PROJECT_ID',
+      'DEVBOX_GITHUB_FIXTURE_TOKEN',
+      'DEVBOX_GITHUB_FIXTURE_REPOSITORY',
+      'DEVBOX_GITHUB_FIXTURE_BRANCH',
+      'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH',
+      'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
+      'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
+    ]) {
+      expect(ci).toContain(`${secret}: \${{ secrets.${secret} }}`);
+    }
+    // The generic Vercel triad secret names are absent from the repository and
+    // must never be referenced by the caller; the smoke script still receives
+    // the exact generic names in its environment from the consumer secrets.
+    expect(ci).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
+    expect(ci).not.toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}');
+    expect(ci).not.toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}');
+  });
+
+  it('documents exact provider-smoke authorization and stale-label behavior', async () => {
+    const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
+    expect(runbook).toContain('psmoke:<40-character-head-SHA>');
+    expect(runbook).toContain('psmoke:${head_sha}');
+    expect(runbook).toContain('gh pr edit <number> --add-label');
+    expect(runbook).toContain('synchronize');
+    expect(runbook).toContain('new exact-SHA label');
+    expect(runbook).toContain('authorization only');
+    expect(runbook).toContain('not a pass');
+  });
+
   it('builds an amd64 zstd immutable candidate and waits for readiness', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('docker/setup-buildx-action');
@@ -159,6 +204,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('id: redact_final');
     expect(workflow).toContain("if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}");
     expect(workflow).toContain('promote-image.mjs');
+    expect(workflow).toContain('PROVENANCE_FILE: ${{ runner.temp }}/vercel-image-evidence/provenance.json');
     expect(workflow).toContain('cross-project');
     expect(workflow).toContain('redacted');
     const publisherRedact = workflow.match(/- name: Redact publisher evidence[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
@@ -197,6 +243,15 @@ describe('Vercel image supply-chain workflow', () => {
     expect(runbook).toContain('UPSTREAM_COMMIT');
     expect(runbook).toContain('--scope');
     expect(runbook).toContain('--tag');
+    expect(runbook).toContain('job timeout is 45 minutes');
+    expect(runbook).toContain('six 2-minute cleanup phases');
+    expect(runbook).toContain('preflight list with a short smoke name prefix');
+    expect(runbook).toContain('all five identity tags are checked locally');
+    expect(runbook).toContain('existing revision may report detached `HEAD`');
+    expect(runbook).toContain('Returned Sandbox images are checked by exact manifest digest');
+    expect(runbook).toContain('production Ctrl-] escape byte');
+    expect(runbook).toContain('reason `escape`');
+    expect(runbook).toContain('does not use a remote shell exit');
     expect(runbook).toContain('sleep infinity');
     expect(imageReadme).toContain('sleep infinity');
   });
