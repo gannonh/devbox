@@ -9,8 +9,12 @@
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|FIXTURE)/i;
+// Field-name redaction targets exact raw sensitive fields only: a generic parent
+// key like `fixture` must be recursed (its fingerprint subtree is safe evidence),
+// and any *Fingerprint field is a non-reversible hash that must survive.
+const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)/i;
 const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^GITHUB_FIXTURE_/i;
+const isSensitiveField = (name) => !/Fingerprint/i.test(name) && sensitiveFieldName.test(name);
 const secrets = [...new Set(Object.entries(process.env)
   .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === 'string' && value.length > 0)
   .flatMap(([, value]) => [value, encodeURIComponent(value)]))]
@@ -34,7 +38,7 @@ function redactValue(value) {
     return Object.fromEntries(
       Object.entries(value).map(([name, item]) => [
         name,
-        sensitiveFieldName.test(name) ? '[REDACTED]' : redactValue(item),
+        isSensitiveField(name) ? '[REDACTED]' : redactValue(item),
       ]),
     );
   }

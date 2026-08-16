@@ -44,6 +44,8 @@ jobs:
           tests/cli-provider-routing.test.ts
           tests/vercel-auth.test.ts
           tests/vercel-provider-smoke.test.ts
+          tests/vercel-smoke-evidence.test.ts
+          tests/vercel-smoke-terminal.test.ts
           tests/vercel-workflow.test.ts
 
       - name: Build

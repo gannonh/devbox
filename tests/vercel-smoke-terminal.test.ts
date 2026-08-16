@@ -71,6 +71,38 @@ describe('provider smoke output waiting', () => {
     expect(stream.listenerCount('data')).toBe(0);
   });
 
+  it('merges a marker split across captured output and a chunk emitted during the check', async () => {
+    const stream = new PassThrough();
+
+    await expect(waitForOutput(stream, 'prefix-ready', 1_000, undefined, () => {
+      stream.emit('data', 'ready');
+      return 'prefix-';
+    })).resolves.toBe('prefix-ready');
+    expect(stream.listenerCount('data')).toBe(0);
+  });
+
+  it('keeps chunks emitted during the check when captured output is empty', async () => {
+    const stream = new PassThrough();
+
+    await expect(waitForOutput(stream, 'ready', 1_000, undefined, () => {
+      stream.emit('data', 'ready');
+      return '';
+    })).resolves.toBe('ready');
+    expect(stream.listenerCount('data')).toBe(0);
+  });
+
+  it('does not duplicate a chunk the captured snapshot already ends with', async () => {
+    const stream = new PassThrough();
+    const seen: string[] = [];
+    stream.on('data', (chunk: Buffer) => seen.push(chunk.toString()));
+
+    await expect(waitForOutput(stream, 'ready', 1_000, undefined, () => {
+      stream.emit('data', 'ready');
+      return seen.join('');
+    })).resolves.toBe('ready');
+    expect(stream.listenerCount('data')).toBe(1);
+  });
+
   it('handles a marker already present in the captured output after installing listeners', async () => {
     const stream = new PassThrough();
 

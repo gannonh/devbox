@@ -20,6 +20,7 @@ import {
   recoverOwnedResources,
 } from '../scripts/vercel/sandbox-owned-recovery.mjs';
 import { deleteListedSnapshot } from '../scripts/vercel/snapshot-cleanup.mjs';
+import { fingerprintEvidence } from '../scripts/vercel/smoke-evidence.mjs';
 
 const execFileAsync = promisify(execFile);
 const digest = 'sha256:' + 'a'.repeat(64);
@@ -820,6 +821,70 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(result.code).toBe(0);
       const redacted = await readFile(artifact, 'utf8');
       for (const value of Object.values(values)) expect(redacted).not.toContain(value);
+      expect(redacted).toContain('"redacted": true');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts raw fixture identities while preserving repository, branch, and scope fingerprints', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-redaction-fingerprints-'));
+    try {
+      const fixture = {
+        GITHUB_FIXTURE_TOKEN: 'g-token-fake',
+        GITHUB_FIXTURE_REPOSITORY: 'owner/private-fixture',
+        GITHUB_FIXTURE_BRANCH: 'branch-fake',
+        GITHUB_FIXTURE_DEFAULT_BRANCH: 'default-fake',
+        GITHUB_FIXTURE_EXPECTED_FILE: 'private/file.txt',
+        GITHUB_FIXTURE_EXPECTED_CONTENT: 'content-fake',
+      };
+      const fingerprints = {
+        repositoryFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_REPOSITORY),
+        branchFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_BRANCH),
+        defaultBranchFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_DEFAULT_BRANCH),
+        expectedFileFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_EXPECTED_FILE),
+        expectedContentFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_EXPECTED_CONTENT),
+        teamIdFingerprint: fingerprintEvidence('vercel-team-secret'),
+        projectIdFingerprint: fingerprintEvidence('vercel-project-secret'),
+        tokenFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_TOKEN),
+      };
+      const artifact = join(temp, 'evidence.json');
+      await writeFile(artifact, JSON.stringify({
+        redacted: false,
+        fixture: {
+          repositoryFingerprint: fingerprints.repositoryFingerprint,
+          branchFingerprint: fingerprints.branchFingerprint,
+          defaultBranchFingerprint: fingerprints.defaultBranchFingerprint,
+          expectedFileFingerprint: fingerprints.expectedFileFingerprint,
+          expectedContentFingerprint: fingerprints.expectedContentFingerprint,
+        },
+        scope: {
+          teamIdFingerprint: fingerprints.teamIdFingerprint,
+          projectIdFingerprint: fingerprints.projectIdFingerprint,
+        },
+        identityTagFingerprints: {
+          repository: fingerprints.tokenFingerprint,
+          branch: fingerprints.branchFingerprint,
+          identity: fingerprints.teamIdFingerprint,
+        },
+        raw: {
+          password: 'inline-raw-password',
+          notes: Object.values(fixture).join(' '),
+        },
+      }));
+      const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
+        ...process.env,
+        VERCEL_TEAM_ID: 'vercel-team-secret',
+        VERCEL_PROJECT_ID: 'vercel-project-secret',
+        ...fixture,
+      }, [artifact]);
+      expect(result.code, result.stderr).toBe(0);
+      const redacted = await readFile(artifact, 'utf8');
+      for (const value of Object.values(fixture)) expect(redacted).not.toContain(value);
+      expect(redacted).not.toContain('inline-raw-password');
+      for (const fingerprint of Object.values(fingerprints)) expect(redacted).toContain(fingerprint);
+      expect(redacted).toContain('"fixture": {');
+      expect(redacted).toContain('"password": "[REDACTED]"');
       expect(redacted).toContain('"redacted": true');
     } finally {
       await rm(temp, { recursive: true, force: true });

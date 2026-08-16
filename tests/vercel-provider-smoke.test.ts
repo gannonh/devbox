@@ -166,6 +166,8 @@ describe('Vercel provider smoke configuration', () => {
     expect(ci).toContain('tests/cli-provider-routing.test.ts');
     expect(ci).toContain('tests/vercel-auth.test.ts');
     expect(ci).toContain('tests/vercel-provider-smoke.test.ts');
+    expect(ci).toContain('tests/vercel-smoke-evidence.test.ts');
+    expect(ci).toContain('tests/vercel-smoke-terminal.test.ts');
     expect(ci).toContain('tests/vercel-workflow.test.ts');
     expect(ci).toContain("if: matrix.node-version == '24'");
     expect(ci).toContain("if: matrix.node-version == '20.18.1'");

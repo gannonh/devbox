@@ -54,7 +54,12 @@ export function waitForOutput(
     timer = scheduler.setTimeout(() => finish(new Error(`terminal output did not contain ${marker}`)), timeoutMs);
 
     try {
-      output = currentOutput();
+      // Chunks emitted while the snapshot was taken are already accumulated in
+      // `output`; merge them after the captured snapshot instead of overwriting
+      // them. When the snapshot already ends with those chunks (it was read
+      // after they were emitted), keep it as-is so nothing is duplicated.
+      const captured = currentOutput();
+      output = captured.endsWith(output) ? captured : captured + output;
     } catch (error) {
       finish(error);
       return;
