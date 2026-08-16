@@ -18,12 +18,15 @@ reviewed PR that replaces the bootstrap metadata.
 ## Issue #5: real provider terminal smoke
 
 Run **Actions → Vercel provider terminal smoke → Run workflow** manually from
-the repository owner's account, on the default branch. Select `both` for the
-normal gate, or select `existing`/`missing` while diagnosing one deterministic
-source path. This workflow is separate from the image candidate workflow and
-has no `pull_request` trigger. Its job guard rejects fork/untrusted or
-non-default-branch dispatches, grants only `contents: read`, serializes runs,
-and has a 30-minute job timeout.
+the default branch. Select `both` for the normal gate, or select
+`existing`/`missing` while diagnosing one deterministic source path. This
+workflow is separate from the image candidate workflow and has no
+`pull_request` trigger. Its job guard rejects fork/non-default-branch
+dispatches, grants only `contents: read`, serializes runs, and requires the
+protected `vercel-provider-smoke` GitHub environment. The job timeout is 35
+minutes; `both` has two sequential 12-minute path budgets, two 10-second
+branch-probe budgets, two 2-minute cleanup budgets, and a 30-second
+fixture-validation budget under a 29-minute-20-second outer smoke deadline.
 
 Create these exact repository secrets:
 
@@ -48,16 +51,24 @@ image promotion replaces the pin.
 
 After the pin is promoted, the gate validates that the fixture is private, the
 API `full_name` and default branch match, and the requested branch has the
-expected existence. It passes the private Git source to the stable
-`@vercel/sandbox` v3 production client; it does not invoke `vercel`, `gh`, or a
-host shell-out. The existing path clones `GITHUB_FIXTURE_BRANCH`. The missing
-path verifies a run-unique branch is absent, clones the expected default, and
-creates that branch inside the Sandbox without pushing it. Both paths assert
-`origin`, commit `HEAD`, checked-out branch, clean status, and configured file
-content. The production terminal adapter calls `openInteractive`, executes a
-command, sends Ctrl-C through the terminal protocol, exits, stops for snapshot
-completion, resumes/reconnects, and repeats terminal coverage. Final session
-listing must show every created VM as `stopped` or `aborted`.
+expected existence. It passes the private Git source to the pinned
+`@vercel/sandbox@3.0.0` production client; it does not invoke `vercel`, `gh`, or
+a host shell-out. The pinned SDK README seeds a Git source into a directory
+named for the repository (its create/resume examples run with
+`cwd: "sandbox-example-next"`), while the v3 declaration documents the session
+cwd as `/vercel/sandbox`. The client therefore sends the SDK object overload
+`{cmd, args, cwd, signal, timeoutMs}` and uses
+`/vercel/sandbox/<normalized-repository>` for branch setup, all clone
+assertions, and both fresh/resumed terminal sessions. The existing path clones
+`GITHUB_FIXTURE_BRANCH`. The missing path verifies a run-unique branch is
+absent, clones the expected default, and creates that branch inside the
+Sandbox without pushing it. Both paths assert `origin`, commit `HEAD`,
+checked-out branch, clean status, and configured file content. The production
+terminal adapter opens the interactive endpoint exactly once per terminal
+session, executes a command, sends Ctrl-C through the terminal protocol, exits,
+stops for snapshot completion, resumes/reconnects, and repeats terminal
+coverage. Final session listing must show every created VM as `stopped` or
+`aborted`.
 
 Cleanup is unconditional. The gate removes the run-unique Sandbox through the
 production cleanup adapter, resolves paginated snapshot metadata through
@@ -65,10 +76,16 @@ production cleanup adapter, resolves paginated snapshot metadata through
 absent or explicitly `deleted`, and rejects every non-deleted residual. It also
 runs the existing owned-resource recovery helper by exact name/tag/scope so a
 lost create response is not treated as success. Evidence records the run
-identity, scope IDs, statuses, timings, checks, recovery history, and final
-residuals; it never records either token, source password, interactive token,
-or expected secret values. The workflow redacts all files immediately before
-upload and withholds the directory if redaction itself fails.
+identity, path labels, non-reversible fingerprints for fixture/scope
+identities, statuses, timings, checks, recovery history, and final residuals;
+it never records either token, source password, interactive token, exact
+fixture repository/branch/default, expected file/content, or Vercel
+team/project IDs. A successful empty filtered recovery listing is not a session
+proof: functional flow or recovery must have listed and verified at least one
+terminal session. Prior cleanup errors and reconciliation history are
+retained. The standalone report starts with `redacted: false`; the workflow
+redactor flips it to `true` immediately before upload and withholds the
+directory if redaction itself fails.
 
 If cleanup reports an ambiguous duplicate, do not blindly retry `--rm` or
 choose a name from a broad list. Use the matching team/project in the Vercel

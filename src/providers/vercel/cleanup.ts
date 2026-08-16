@@ -221,7 +221,13 @@ export async function cleanupVercelSandbox(
       }
       return true;
     }
-    if (resolution.requiresAbsenceConfirmation) {
+    if (errors.length > 0) {
+      snapshotsCleaned = false;
+      absentRelistStreak = 0;
+      return false;
+    }
+    const requiresAbsenceConfirmation = resolution.requiresAbsenceConfirmation || knownSnapshotIds.size === 0;
+    if (requiresAbsenceConfirmation) {
       absentRelistStreak += 1;
       snapshotsCleaned = absentRelistStreak >= 2;
     } else {
@@ -360,6 +366,21 @@ export async function cleanupVercelSandbox(
     if (attempts < maxAttempts && remaining() > 0) {
       await sleep(Math.min(backoffMs * attempts, remaining()), options.signal);
     }
+  }
+
+  // A Sandbox can be reported missing before its orphan snapshot is visible.
+  // Take an independent delayed relist before accepting an empty collection,
+  // even when the normal retry budget ended on the first empty observation.
+  if (!snapshotsCleaned && (sandboxDeleted || sandboxMissing || staleSandbox) && remaining() > 0) {
+    const finalAttemptedSnapshotIds = new Set<string>();
+    await deleteKnownSnapshots(
+      knownSnapshotIds,
+      snapshotStatuses,
+      options,
+      recordError,
+      finalAttemptedSnapshotIds,
+    );
+    await processSnapshotRelist(finalAttemptedSnapshotIds);
   }
 
   if (!sandboxDeleted && (sandboxMissing || attempts >= maxAttempts || remaining() <= 0)) {

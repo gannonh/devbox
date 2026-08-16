@@ -4,6 +4,7 @@ import { normalizeGitHubRemote } from '../src/providers/vercel/identity.js';
 import {
   normalizeGitHubSourceRemote,
   resolveGitHubSource,
+  resolveVercelRepositoryCwd,
   resolveGitHubSourceOrigin,
   resolveGitHubToken,
   selectGitHubRevision,
@@ -15,6 +16,12 @@ const noOpShell = {
 };
 
 describe('Vercel GitHub source selection', () => {
+  it('derives the clone cwd from the SDK session cwd and normalized repository name', () => {
+    expect(resolveVercelRepositoryCwd('/vercel/sandbox', 'repo')).toBe('/vercel/sandbox/repo');
+    expect(resolveVercelRepositoryCwd(undefined, 'repo')).toBe('/vercel/sandbox/repo');
+    expect(() => resolveVercelRepositoryCwd('/vercel/sandbox', 'owner/repo')).toThrow(/normalized/i);
+  });
+
   it('resolves a local origin without querying remote branch state or credentials', async () => {
     const exec = vi.fn(async () => 'git@github.com:Acme/Repo.git');
     const execQuiet = vi.fn();

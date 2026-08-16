@@ -100,6 +100,7 @@ export type {
   SandboxSnapshotRecord,
   SandboxSnapshotStatus,
   VercelCommandResult,
+  VercelRunCommandRequest,
   VercelSandboxDeleteByNameRequest,
   VercelSandboxDeleteByNameResult,
   VercelSandboxApi,
@@ -131,6 +132,7 @@ export {
   redactedError,
 } from './vercel/redaction.js';
 export {
+  DEFAULT_VERCEL_SANDBOX_CWD,
   normalizeGitHubSourceRemote,
   normalizeRequestedSourceBranch,
   parseRemoteDefaultBranch,
@@ -139,6 +141,7 @@ export {
   resolveGitHubSource,
   resolveGitHubSourceOrigin,
   resolveGitHubToken,
+  resolveVercelRepositoryCwd,
   selectGitHubRevision,
 } from './vercel/source.js';
 export type {
@@ -150,15 +153,6 @@ export type {
   ResolveGitHubSourceOriginOptions,
   ResolveGitHubTokenOptions,
 } from './vercel/source.js';
-export {
-  assertPromotedVercelImagePin,
-  parseVercelProviderSmokeConfig,
-  REQUIRED_VERCEL_PROVIDER_SMOKE_ENV,
-} from './vercel/smoke-config.js';
-export type {
-  VercelProviderSmokeConfig,
-  VercelProviderSmokePath,
-} from './vercel/smoke-config.js';
 export {
   createVercelTerminalAdapter,
 } from './vercel/terminal.js';

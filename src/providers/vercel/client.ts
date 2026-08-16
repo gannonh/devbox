@@ -67,6 +67,15 @@ export interface VercelCommandResult {
   stderr?: (options?: { signal?: AbortSignal }) => Promise<string>;
 }
 
+/** The object overload supported by @vercel/sandbox v3. */
+export interface VercelRunCommandRequest {
+  cmd: string;
+  args?: string[];
+  cwd?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
 export interface VercelSandboxHandle {
   readonly id?: string;
   readonly name: string;
@@ -91,11 +100,7 @@ export interface VercelSandboxHandle {
   listSessions(params?: { signal?: AbortSignal }): Promise<unknown>;
   stop(params?: { signal?: AbortSignal }): Promise<VercelStopResult>;
   delete(params?: { signal?: AbortSignal }): Promise<void>;
-  runCommand(
-    command: string,
-    args?: string[],
-    options?: { signal?: AbortSignal; timeoutMs?: number },
-  ): Promise<VercelCommandResult>;
+  runCommand(params: VercelRunCommandRequest): Promise<VercelCommandResult>;
   domain(port: number): string;
 }
 
@@ -187,9 +192,7 @@ export interface VercelSandboxClient {
   deleteSandbox(sandbox: VercelSandboxHandle, options?: { signal?: AbortSignal }): Promise<void>;
   runCommand(
     sandbox: VercelSandboxHandle,
-    command: string,
-    args?: string[],
-    options?: { signal?: AbortSignal; timeoutMs?: number },
+    params: VercelRunCommandRequest,
   ): Promise<VercelCommandResult>;
   listSnapshots(request: {
     credentials: VercelCredentials;
@@ -342,10 +345,10 @@ export function createVercelSandboxClient(
     ),
     stopSandbox: async (sandbox, options) => call('Sandbox.stop', [], () => sandbox.stop(options)),
     deleteSandbox: async (sandbox, options) => call('Sandbox.delete', [], () => sandbox.delete(options)),
-    runCommand: async (sandbox, command, args, options) => call(
+    runCommand: async (sandbox, params) => call(
       'Sandbox.runCommand',
       [],
-      () => sandbox.runCommand(command, args, options),
+      () => sandbox.runCommand(params),
     ),
     listSnapshots: async (request) => {
       const { credentials, ...listRequest } = request;
@@ -431,14 +434,10 @@ function wrapSandboxHandle(
         );
       }
       if (property === 'runCommand') {
-        return (
-          command: string,
-          args?: string[],
-          options?: { signal?: AbortSignal; timeoutMs?: number },
-        ) => callWithSecrets(
+        return (params: VercelRunCommandRequest) => callWithSecrets(
           'Sandbox.runCommand',
           secrets,
-          () => target.runCommand(command, args, options),
+          () => target.runCommand(params),
         );
       }
       return Reflect.get(target, property, receiver);

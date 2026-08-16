@@ -33,6 +33,7 @@ import {
   normalizeRequestedSourceBranch,
   renderRemoteSourceNotice,
   resolveGitHubSource,
+  resolveVercelRepositoryCwd,
   type GitHubSourcePlan,
 } from './source.js';
 import { redactSecrets } from './redaction.js';
@@ -607,11 +608,11 @@ async function switchToRequestedBranch(
   context: PreparedContext,
 ): Promise<void> {
   const source = requireSource(context);
-  const result = await context.client.runCommand(
-    sandbox,
-    'git',
-    ['switch', '--create', source.requestedBranch, '--'],
-  );
+  const result = await context.client.runCommand(sandbox, {
+    cmd: 'git',
+    args: ['switch', '--create', source.requestedBranch, '--'],
+    cwd: resolveVercelRepositoryCwd(sandbox.cwd, source.remote.repository),
+  });
   if (result.exitCode === 0) return;
   const output = await commandOutput(result);
   throw new VercelLifecycleError(

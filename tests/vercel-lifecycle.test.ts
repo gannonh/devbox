@@ -52,6 +52,7 @@ function sandbox(): VercelSandboxHandle {
   return {
     name: identity.name,
     status: 'running',
+    cwd: '/vercel/sandbox',
     persistent: true,
     image: VERCEL_IMAGE_PIN.reference,
     tags: { ...identity.tags },
@@ -871,11 +872,11 @@ describe('Vercel lifecycle', () => {
 
     await expect(lifecycle.up()).resolves.toBe(handle);
     expect(notices).toEqual([source.warning]);
-    expect(client.runCommand).toHaveBeenCalledWith(
-      handle,
-      'git',
-      ['switch', '--create', source.requestedBranch, '--'],
-    );
+    expect(client.runCommand).toHaveBeenCalledWith(handle, {
+      cmd: 'git',
+      args: ['switch', '--create', source.requestedBranch, '--'],
+      cwd: '/vercel/sandbox/repo',
+    });
     expect(requests[0]).toMatchObject({
       name: handle.name,
       image: VERCEL_IMAGE_PIN.reference,

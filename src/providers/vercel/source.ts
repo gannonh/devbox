@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { chmod, mkdtemp, open, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { URL } from 'node:url';
 import { normalizeGitHubRemote, normalizeBranch, type GitHubRemoteIdentity } from './identity.js';
 import { shell, type ShellRunner } from '../../lib/shell.js';
@@ -11,6 +11,26 @@ const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 
 export interface GitHubSourceRemote extends GitHubRemoteIdentity {
   url: string;
+}
+
+export const DEFAULT_VERCEL_SANDBOX_CWD = '/vercel/sandbox';
+
+/**
+ * Git sources are seeded by @vercel/sandbox below the session's default cwd
+ * using the normalized repository name. Keep every command and terminal in
+ * that same directory, including after a resumed session.
+ */
+export function resolveVercelRepositoryCwd(
+  sandboxCwd: string | undefined,
+  normalizedRepository: string,
+): string {
+  const repository = normalizedRepository.trim();
+  if (!repository || repository.includes('/') || repository === '.' || repository === '..') {
+    throw new Error('Vercel clone repository name must be normalized');
+  }
+  const base = sandboxCwd?.trim() || DEFAULT_VERCEL_SANDBOX_CWD;
+  if (!base.startsWith('/')) throw new Error('Vercel Sandbox cwd must be absolute');
+  return posix.join(base, repository);
 }
 
 export type GitHubSourceErrorCode =

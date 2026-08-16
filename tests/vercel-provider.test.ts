@@ -53,7 +53,7 @@ function sandbox(): VercelSandboxHandle {
     id: 'sandbox-id',
     name: 'devbox-vercel-test',
     status: 'running',
-    cwd: '/vercel/sandbox/repo',
+    cwd: '/vercel/sandbox',
     tags: {},
     openInteractive: vi.fn(),
     extendTimeout: vi.fn(),
@@ -650,6 +650,10 @@ describe('Vercel provider', () => {
 
     expect(code).toEqual({ exitCode: 0 });
     expect(currentLifecycle.attach).toHaveBeenCalledOnce();
+    expect(terminal.attach).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '/vercel/sandbox' }),
+      expect.objectContaining({ cwd: '/vercel/sandbox/repo' }),
+    );
     expect(confirmation).not.toHaveBeenCalled();
     expect(execQuiet).not.toHaveBeenCalled();
   });
@@ -1120,7 +1124,7 @@ describe('Vercel provider', () => {
     );
     expect(currentLifecycle.up).toHaveBeenCalledOnce();
     expect(terminal.attach).toHaveBeenCalledWith(
-      expect.objectContaining({ cwd: '/vercel/sandbox/repo' }),
+      expect.objectContaining({ cwd: '/vercel/sandbox' }),
       expect.objectContaining({
         cwd: '/vercel/sandbox/repo',
         tty: true,

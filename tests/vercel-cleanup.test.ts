@@ -96,6 +96,41 @@ describe('Vercel sandbox cleanup', () => {
     expect(adapter.listSessions).not.toHaveBeenCalled();
   });
 
+  it('does not claim cleanup when an orphan snapshot appears after an empty missing-sandbox listing', async () => {
+    let snapshotListCalls = 0;
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('not found'), { notFound: true }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => {
+        snapshotListCalls += 1;
+        return snapshotListCalls === 1
+          ? []
+          : [{ id: 'delayed-orphan', sourceSessionId: 'session', status: 'created' as const }];
+      }),
+      getSnapshot: vi.fn(async () => ({
+        snapshotId: 'delayed-orphan',
+        status: 'created' as const,
+        delete: async () => {},
+      })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'missing-delayed-orphan',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(snapshotListCalls).toBeGreaterThanOrEqual(2);
+    expect(result.verified).toBe(false);
+    expect(result.residualSnapshotIds).toEqual(['delayed-orphan']);
+  });
+
   it('cleans matching snapshots even when the sandbox is already missing', async () => {
     let snapshots = [{ id: 'orphan-snapshot', sourceSessionId: 'session', status: 'created' as const }];
     const adapter: VercelCleanupAdapter = {
@@ -337,7 +372,7 @@ describe('Vercel sandbox cleanup', () => {
       sleep: async () => {},
     });
 
-    expect(listCalls).toBe(3);
+    expect(listCalls).toBeGreaterThanOrEqual(3);
     expect(result.verified).toBe(false);
     expect(result.residualSnapshotIds).toEqual(['snapshot-premature']);
   });
@@ -515,8 +550,8 @@ describe('Vercel sandbox cleanup', () => {
       sleep: async () => {},
     });
 
-    expect(listCalls).toBe(2);
-    expect(deleteCalls).toBe(2);
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    expect(deleteCalls).toBeGreaterThanOrEqual(2);
     expect(result.verified).toBe(false);
     expect(result.residualSnapshotIds).toEqual(['snapshot-failed', 'snapshot-created']);
   });

@@ -169,6 +169,42 @@ describe('Vercel Sandbox client adapter', () => {
     expect(JSON.stringify({ url: createRequest?.url, body })).not.toContain('vercel-token');
   });
 
+  it('passes an explicit cwd through the SDK object runCommand overload', async () => {
+    const runCommand = vi.fn(async (params: { cmd: string; args?: string[]; cwd?: string; signal?: AbortSignal; timeoutMs?: number }) => {
+      expect(params).toEqual({
+        cmd: 'git',
+        args: ['status', '--porcelain'],
+        cwd: '/vercel/sandbox/repo',
+        signal: expect.any(AbortSignal),
+        timeoutMs: 12_345,
+      });
+      return { exitCode: 0 };
+    });
+    const sandbox = {
+      name: 'object-command',
+      status: 'running' as const,
+      runCommand,
+    } as never;
+    const client = createVercelSandboxClient();
+    const controller = new AbortController();
+
+    await expect(client.runCommand(sandbox, {
+      cmd: 'git',
+      args: ['status', '--porcelain'],
+      cwd: '/vercel/sandbox/repo',
+      signal: controller.signal,
+      timeoutMs: 12_345,
+    })).resolves.toEqual({ exitCode: 0 });
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(runCommand.mock.calls[0]).toEqual([{
+      cmd: 'git',
+      args: ['status', '--porcelain'],
+      cwd: '/vercel/sandbox/repo',
+      signal: controller.signal,
+      timeoutMs: 12_345,
+    }]);
+  });
+
   it('passes resume=false in a real SDK GET request (mock omits the query)', async () => {
     const requests: string[] = [];
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -253,6 +289,8 @@ describe('Vercel Sandbox client adapter', () => {
     await expect(mockHandle.fs.readFile('/tmp/client.txt', 'utf8')).resolves.toBe('adapter');
     expect(handle.routes).toEqual(expect.arrayContaining([expect.objectContaining({ port: 3000 })]));
     expect(handle.domain(3000)).toMatch(/^https?:\/\//);
+    const command = await handle.runCommand({ cmd: 'pwd', cwd: '/tmp' });
+    await expect(command.stdout?.()).resolves.toContain('/tmp');
     await expect(client.listSandboxes({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       tags: { provider: 'vercel', repository: 'repo' },

@@ -9,10 +9,12 @@
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-const secretNames = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY)/i;
-const secrets = Object.entries(process.env)
-  .filter(([name, value]) => secretNames.test(name) && value && value.length >= 4)
-  .map(([, value]) => value);
+const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|FIXTURE)/i;
+const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^GITHUB_FIXTURE_/i;
+const secrets = [...new Set(Object.entries(process.env)
+  .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === 'string' && value.length > 0)
+  .flatMap(([, value]) => [value, encodeURIComponent(value)]))]
+  .sort((left, right) => right.length - left.length);
 
 function redactText(input) {
   let output = input;
@@ -32,7 +34,7 @@ function redactValue(value) {
     return Object.fromEntries(
       Object.entries(value).map(([name, item]) => [
         name,
-        secretNames.test(name) ? '[REDACTED]' : redactValue(item),
+        sensitiveFieldName.test(name) ? '[REDACTED]' : redactValue(item),
       ]),
     );
   }
@@ -47,14 +49,19 @@ async function redactFile(path) {
     if (redactText(input) !== input) throw new Error('raw OCI manifest contained credential material');
     return;
   }
+  let parsed;
   try {
-    const parsed = JSON.parse(input);
-    const redacted = redactValue(parsed);
-    if (redacted && typeof redacted === 'object' && !Array.isArray(redacted)) redacted.redacted = true;
-    await writeFile(path, `${JSON.stringify(redacted, null, 2)}\n`);
-  } catch {
+    parsed = JSON.parse(input);
+  } catch (error) {
+    if (path.toLowerCase().endsWith('.json')) {
+      throw new Error(`cannot redact malformed JSON evidence ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
     await writeFile(path, redactText(input));
+    return;
   }
+  const redacted = redactValue(parsed);
+  if (redacted && typeof redacted === 'object' && !Array.isArray(redacted)) redacted.redacted = true;
+  await writeFile(path, `${JSON.stringify(redacted, null, 2)}\n`);
 }
 
 async function walk(path) {

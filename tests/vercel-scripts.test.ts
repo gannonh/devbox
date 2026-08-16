@@ -235,6 +235,7 @@ describe('Vercel supply-chain script boundaries', () => {
       recoverSandbox: async (name: string) => {
         recovered.push(name);
         sandboxPresent = false;
+        return { sessionProof: true };
       },
       listSnapshots: async () => {
         snapshotListCalls += 1;
@@ -249,6 +250,21 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(deletedSnapshots).toEqual(['owned-snapshot']);
     expect(result.finalSandboxes).toEqual([]);
     expect(result.discoveryConverged).toBe(true);
+    expect(result.sessionProof).toBe(true);
+  });
+
+  it('does not infer a session proof from empty owned discovery', async () => {
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 1,
+      backoffMs: 0,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => [],
+      deleteSnapshot: async () => {},
+    });
+    expect(result.discoveryConverged).toBe(true);
+    expect(result.sessionProof).toBe(false);
   });
 
   it('fails closed when owned collection discovery returns a broad 404', async () => {
@@ -489,7 +505,11 @@ describe('Vercel supply-chain script boundaries', () => {
       publisher.cleanup.recovery = [{ operation: 'snapshot cleanup', outcome: 'pending-reconciliation', detail: 'initial residual' }];
       applyOwnedRecoveryEvidence(publisher, recovery);
       applyOwnedRecoveryEvidence(consumer, recovery);
-      expect(publisher.cleanup.recovery).toBeUndefined();
+      expect(publisher.cleanup.recovery).toEqual([{
+        operation: 'snapshot cleanup',
+        outcome: 'pending-reconciliation',
+        detail: 'initial residual',
+      }]);
       for (const evidence of [publisher, consumer]) {
         evidence.cleanup.stopped = true;
         evidence.cleanup.deleted = true;
@@ -768,6 +788,51 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(redacted).not.toContain(publisherToken);
       expect(redacted).not.toContain(consumerToken);
       expect(redacted).toContain('[REDACTED]');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts fixture identities, scope IDs, URL-encoded values, and short secrets', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-redaction-identities-'));
+    try {
+      const values = {
+        VERCEL_TOKEN: 'v-token-fake',
+        VERCEL_TEAM_ID: 't1',
+        VERCEL_PROJECT_ID: 'p2',
+        GITHUB_FIXTURE_TOKEN: 'g-token-fake',
+        GITHUB_FIXTURE_REPOSITORY: 'owner/private-fixture',
+        GITHUB_FIXTURE_BRANCH: 'branch-fake',
+        GITHUB_FIXTURE_DEFAULT_BRANCH: 'default-fake',
+        GITHUB_FIXTURE_EXPECTED_FILE: 'private/file.txt',
+        GITHUB_FIXTURE_EXPECTED_CONTENT: 'content-fake',
+      };
+      const artifact = join(temp, 'evidence.json');
+      await writeFile(artifact, JSON.stringify({
+        nested: values,
+        text: `${values.GITHUB_FIXTURE_REPOSITORY} ${encodeURIComponent(values.GITHUB_FIXTURE_EXPECTED_CONTENT)}`,
+        redacted: false,
+      }));
+      const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
+        ...process.env,
+        ...values,
+      }, [artifact]);
+      expect(result.code).toBe(0);
+      const redacted = await readFile(artifact, 'utf8');
+      for (const value of Object.values(values)) expect(redacted).not.toContain(value);
+      expect(redacted).toContain('"redacted": true');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed instead of rewriting malformed JSON evidence as text', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-redaction-malformed-'));
+    try {
+      const artifact = join(temp, 'evidence.json');
+      await writeFile(artifact, '{not-json');
+      const result = await runNode('scripts/vercel/redact-artifacts.mjs', process.env, [artifact]);
+      expect(result.code).not.toBe(0);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

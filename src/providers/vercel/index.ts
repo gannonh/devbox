@@ -8,6 +8,5 @@ export * from './lifecycle.js';
 export * from './metadata.js';
 export * from './redaction.js';
 export * from './source.js';
-export * from './smoke-config.js';
 export * from './provider.js';
 export * from './terminal.js';

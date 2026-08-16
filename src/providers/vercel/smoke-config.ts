@@ -7,6 +7,51 @@ import { normalizeRequestedSourceBranch } from './source.js';
 
 export type VercelProviderSmokePath = 'existing' | 'missing' | 'both';
 
+export interface VercelProviderSmokeBudget {
+  pathCount: number;
+  pathTimeoutMs: number;
+  cleanupTimeoutMs: number;
+  fixtureTimeoutMs: number;
+  pathProbeTimeoutMs: number;
+  outerTimeoutMs: number;
+}
+
+/**
+ * Return the minimum wall-clock budget for sequential smoke execution. The
+ * `both` path runs two complete path budgets, each followed by independent
+ * cleanup, before the outer controller may expire.
+ */
+export function calculateVercelProviderSmokeBudget(
+  path: VercelProviderSmokePath,
+  pathTimeoutMs: number,
+  cleanupTimeoutMs: number,
+  fixtureTimeoutMs: number,
+  pathProbeTimeoutMs: number,
+): VercelProviderSmokeBudget {
+  if (path !== 'existing' && path !== 'missing' && path !== 'both') {
+    throw new TypeError('Vercel provider smoke path is invalid');
+  }
+  for (const [name, value] of [
+    ['pathTimeoutMs', pathTimeoutMs],
+    ['cleanupTimeoutMs', cleanupTimeoutMs],
+    ['fixtureTimeoutMs', fixtureTimeoutMs],
+    ['pathProbeTimeoutMs', pathProbeTimeoutMs],
+  ] as const) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new TypeError(`${name} must be finite and positive`);
+    }
+  }
+  const pathCount = path === 'both' ? 2 : 1;
+  return {
+    pathCount,
+    pathTimeoutMs,
+    cleanupTimeoutMs,
+    fixtureTimeoutMs,
+    pathProbeTimeoutMs,
+    outerTimeoutMs: pathCount * (pathTimeoutMs + cleanupTimeoutMs + pathProbeTimeoutMs) + fixtureTimeoutMs,
+  };
+}
+
 export const REQUIRED_VERCEL_PROVIDER_SMOKE_ENV = Object.freeze([
   'VERCEL_TOKEN',
   'VERCEL_TEAM_ID',

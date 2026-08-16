@@ -103,10 +103,11 @@ The live image workflow is secret-gated and never auto-promotes upstream drift.
 ## Real Vercel provider smoke
 
 The secret-gated provider terminal smoke is a separate manual workflow. Run
-**Actions → Vercel provider terminal smoke → Run workflow** from the repository
-owner account on the default branch, then choose `both`, `existing`, or
-`missing`. It has no pull-request trigger and rejects non-owner or non-default-
-branch dispatches.
+**Actions → Vercel provider terminal smoke → Run workflow** on the default
+branch, then choose `both`, `existing`, or `missing`. It has no pull-request
+trigger, rejects non-default-branch or fork dispatches, and requires approval
+from the protected `vercel-provider-smoke` GitHub environment (so org-owned
+repositories do not depend on an impossible actor/owner equality).
 
 Configure these repository secrets exactly:
 
@@ -120,15 +121,22 @@ Configure these repository secrets exactly:
   file/content assertion shared by the clone paths.
 
 The smoke validates the private repository and default/branch expectations,
-then uses the production `@vercel/sandbox` v3 client and terminal adapter (not
-CLI shell-out). The existing path clones the requested branch; the missing path
-clones the default and creates a run-unique branch locally. It asserts the
-remote, `HEAD`, branch, clean worktree, and fixture content, exercises
-`openInteractive`, Ctrl-C, stop/snapshot completion, resume/attach, and every
-created VM session. `finally` cleanup stops/removes the owned Sandbox, paginates
-snapshot cleanup, re-lists until every item is absent or `deleted`, and fails on
-any residual or running session. The run-unique name/tags and Vercel
-team/project scope are preserved in the redacted evidence artifact.
+then uses the pinned `@vercel/sandbox@3.0.0` client and terminal adapter (not a
+CLI shell-out). Its Git-source examples prove the repository is seeded under a
+repository-name subdirectory, and the SDK session declaration documents
+`/vercel/sandbox` as the default cwd. The production client uses the object
+command overload with an explicit cwd, so the existing path clones the
+requested branch and the missing path clones the default, creates a run-unique
+branch locally, and runs every Git assertion and terminal session in
+`/vercel/sandbox/<normalized-repository>`, including resume/attach. It asserts
+the remote, `HEAD`, branch, clean worktree, and fixture content, exercises
+`openInteractive` once per adapter session, Ctrl-C, stop/snapshot completion,
+and every created VM session. `finally` cleanup stops/removes the owned
+Sandbox, paginates snapshot cleanup, re-lists until every item is absent or
+`deleted`, and fails on any residual or unproven running-session state. Evidence
+stores path labels and non-reversible fingerprints rather than fixture
+repository/branch/file/content or Vercel team/project IDs; the workflow
+redactor marks the final artifact redacted.
 
 Artifacts are uploaded after a final redaction step, even for a normal failed
 smoke. A redaction failure withholds the directory rather than risk a secret

@@ -6,14 +6,12 @@
  * production terminal adapter. It never invokes the Vercel CLI, never places a
  * credential in argv, and writes only redaction-safe evidence.
  */
-import { randomUUID } from 'node:crypto';
 import { Sandbox, Snapshot } from '@vercel/sandbox';
-import { EventEmitter } from 'node:events';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { PassThrough } from 'node:stream';
 import { dirname } from 'node:path';
 import {
   assertPromotedVercelImagePin,
+  calculateVercelProviderSmokeBudget,
   parseVercelProviderSmokeConfig,
 } from '../../dist/providers/vercel/smoke-config.js';
 import {
@@ -26,7 +24,10 @@ import {
   createVercelIdentity,
 } from '../../dist/providers/vercel/identity.js';
 import { VERCEL_IMAGE_PIN } from '../../dist/providers/vercel/image.js';
-import { normalizeGitHubSourceRemote } from '../../dist/providers/vercel/source.js';
+import {
+  normalizeGitHubSourceRemote,
+  resolveVercelRepositoryCwd,
+} from '../../dist/providers/vercel/source.js';
 import { createVercelTerminalAdapter } from '../../dist/providers/vercel/terminal.js';
 import { boundedCall } from './sandbox-cleanup.mjs';
 import {
@@ -35,6 +36,18 @@ import {
 } from './sandbox-owned-recovery.mjs';
 import { deleteListedSnapshot } from './snapshot-cleanup.mjs';
 import { fetchWithTimeout } from './http-probe.mjs';
+import { runInteractiveTerminal } from './smoke-terminal.mjs';
+import {
+  aggregateCleanupEvidence,
+  createConfigurationEvidence,
+  createEmptyCleanupEvidence,
+  createFixtureEvidence,
+  createPathReport,
+  createRunIdentity,
+  fingerprintEvidence,
+  hasTerminalSessionProof,
+  safeIdentityPart,
+} from './smoke-evidence.mjs';
 
 const startedAt = Date.now();
 const reportPath = process.env.SMOKE_REPORT;
@@ -45,19 +58,9 @@ const report = {
   redacted: false,
   failed: false,
   runIdentity,
-  imageReference: VERCEL_IMAGE_PIN.reference,
+  imageDigest: VERCEL_IMAGE_PIN.reference.split('@').at(-1),
   paths: [],
-  cleanup: {
-    stopped: false,
-    deleted: false,
-    deletionVerified: false,
-    noRunningSessionAfterDelete: false,
-    discoveryConverged: false,
-    snapshotsCleaned: false,
-    finalSessionStatesTerminal: false,
-    residualNonDeletedSnapshots: [],
-    errors: [],
-  },
+  cleanup: createEmptyCleanupEvidence(),
   startedAt: new Date(startedAt).toISOString(),
 };
 
@@ -67,24 +70,20 @@ const commandTimeoutMs = positiveTimeout('SMOKE_COMMAND_TIMEOUT_MS', 60_000);
 const cleanupTimeoutMs = positiveTimeout('SMOKE_CLEANUP_TIMEOUT_MS', 120_000);
 const terminalTimeoutMs = positiveTimeout('SMOKE_TERMINAL_TIMEOUT_MS', 90_000);
 const githubTimeoutMs = positiveTimeout('SMOKE_GITHUB_TIMEOUT_MS', 10_000);
-
-function createRunIdentity() {
-  const workflowRun = process.env.GITHUB_RUN_ID ?? 'local';
-  const attempt = process.env.GITHUB_RUN_ATTEMPT ?? '1';
-  const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
-  return `run-${safeIdentityPart(workflowRun)}-${safeIdentityPart(attempt)}-${suffix}`;
-}
-
-function safeIdentityPart(value) {
-  const sanitized = String(value).replace(/[^a-zA-Z0-9-]/g, '-');
-  return sanitized.slice(0, 32) || 'local';
-}
+const fixtureValidationTimeoutMs = githubTimeoutMs * 3;
 
 function initializeSecretValues() {
-  secretValues = [
-    process.env.VERCEL_TOKEN,
-    process.env.GITHUB_FIXTURE_TOKEN,
-  ].filter((value) => typeof value === 'string' && value.length > 0);
+  const sensitiveNames = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^GITHUB_FIXTURE_/i;
+  addSensitiveValues(Object.entries(process.env)
+    .filter(([name, value]) => sensitiveNames.test(name) && typeof value === 'string' && value.length > 0)
+    .map(([, value]) => value));
+}
+
+function addSensitiveValues(values) {
+  secretValues = [...new Set([
+    ...secretValues,
+    ...values.filter((value) => typeof value === 'string' && value.length > 0),
+  ])];
 }
 
 function positiveTimeout(name, fallback) {
@@ -225,33 +224,11 @@ function buildSource(config, remote, requestedBranch, revision, requestedBranchE
   };
 }
 
-function createPathReport(label, requestedBranch, sourceRevision, identity) {
-  return {
-    label,
-    requestedBranch,
-    sourceRevision,
-    sandboxName: identity.name,
-    tags: { ...identity.tags },
-    checks: [],
-    timings: {},
-    sessions: [],
-    snapshots: [],
-    cleanup: {
-      stopped: false,
-      deleted: false,
-      deletionVerified: false,
-      noRunningSessionAfterDelete: false,
-      discoveryConverged: false,
-      snapshotsCleaned: false,
-      finalSessionStatesTerminal: false,
-      residualNonDeletedSnapshots: [],
-      errors: [],
-    },
-  };
-}
-
-async function runCommand(client, sandbox, command, args, signal) {
-  const result = await client.runCommand(sandbox, command, args, {
+async function runCommand(client, sandbox, command, args, cwd, signal) {
+  const result = await client.runCommand(sandbox, {
+    cmd: command,
+    args,
+    cwd,
     signal,
     timeoutMs: commandTimeoutMs,
   });
@@ -262,103 +239,21 @@ async function runCommand(client, sandbox, command, args, signal) {
   return { exitCode: result.exitCode, stdout, stderr };
 }
 
-async function assertRepository(client, sandbox, config, pathReport, expected, signal) {
-  const remote = await runCommand(client, sandbox, 'git', ['remote', 'get-url', 'origin'], signal);
+async function assertRepository(client, sandbox, config, pathReport, expected, cwd, signal) {
+  const remote = await runCommand(client, sandbox, 'git', ['remote', 'get-url', 'origin'], cwd, signal);
   recordCheck(pathReport, 'private clone remote', remote.exitCode === 0 && remote.stdout.trim() === expected.remoteUrl, `exitCode=${remote.exitCode}`);
 
-  const head = await runCommand(client, sandbox, 'git', ['rev-parse', 'HEAD'], signal);
+  const head = await runCommand(client, sandbox, 'git', ['rev-parse', 'HEAD'], cwd, signal);
   recordCheck(pathReport, 'private clone HEAD', head.exitCode === 0 && /^[a-f0-9]{40}$/.test(head.stdout.trim()) && head.stdout.trim() === expected.sha, `exitCode=${head.exitCode}`);
 
-  const branch = await runCommand(client, sandbox, 'git', ['branch', '--show-current'], signal);
+  const branch = await runCommand(client, sandbox, 'git', ['branch', '--show-current'], cwd, signal);
   recordCheck(pathReport, 'private clone requested branch', branch.exitCode === 0 && branch.stdout.trim() === expected.branch, `exitCode=${branch.exitCode}`);
 
-  const content = await runCommand(client, sandbox, 'cat', ['--', config.fixture.expectedFile], signal);
+  const content = await runCommand(client, sandbox, 'cat', ['--', config.fixture.expectedFile], cwd, signal);
   recordCheck(pathReport, 'private clone expected content', content.exitCode === 0 && content.stdout === config.fixture.expectedContent, `exitCode=${content.exitCode}`);
 
-  const status = await runCommand(client, sandbox, 'git', ['status', '--porcelain'], signal);
+  const status = await runCommand(client, sandbox, 'git', ['status', '--porcelain'], cwd, signal);
   recordCheck(pathReport, 'private clone clean worktree', status.exitCode === 0 && status.stdout.trim() === '', `exitCode=${status.exitCode}`);
-}
-
-function waitForOutput(stream, marker, timeoutMs, signal, currentOutput = () => '') {
-  return new Promise((resolve, reject) => {
-    let output = currentOutput();
-    if (output.includes(marker)) {
-      resolve(output);
-      return;
-    }
-    let timer;
-    const onData = (chunk) => {
-      output += chunk.toString();
-      if (output.includes(marker)) finish();
-    };
-    const onAbort = () => finish(signal.reason ?? new Error('terminal output wait aborted'));
-    const finish = (error) => {
-      stream.removeListener('data', onData);
-      signal?.removeEventListener('abort', onAbort);
-      if (timer) clearTimeout(timer);
-      if (error instanceof Error) reject(error);
-      else resolve(output);
-    };
-    stream.on('data', onData);
-    if (signal?.aborted) return onAbort();
-    signal?.addEventListener('abort', onAbort, { once: true });
-    timer = setTimeout(() => finish(new Error(`terminal output did not contain ${marker}`)), timeoutMs);
-  });
-}
-
-async function runInteractiveTerminal(sandbox, pathReport, signal, terminalAdapter) {
-  const stdin = new PassThrough();
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  const signalSource = new EventEmitter();
-  let terminalError;
-  const output = [];
-  stdout.on('data', (chunk) => output.push(chunk.toString()));
-  stderr.on('data', (chunk) => output.push(chunk.toString()));
-
-  // Call the production SDK method explicitly before the adapter owns the
-  // protocol. The adapter calls it again to obtain the actual PTY token.
-  await sandbox.openInteractive({ signal });
-  const attach = terminalAdapter.attach(sandbox, {
-    streams: { stdin, stdout, stderr },
-    tty: false,
-    signal,
-    signalSource,
-    timeoutExtension: false,
-    getSize: () => ({ cols: 100, rows: 30 }),
-    onError: (failure) => {
-      terminalError = failure.message;
-      return true;
-    },
-  });
-  const capturedOutput = () => output.join('');
-  const readyMarker = `provider-smoke-ready-${pathReport.label}`;
-  const encodedReadyMarker = Buffer.from(readyMarker).toString('base64');
-  stdin.write(`printf "%s\\n" "$(printf "%s" "${encodedReadyMarker}" | base64 -d)"\n`);
-  await waitForOutput(stdout, readyMarker, terminalTimeoutMs, signal, capturedOutput);
-  const interruptMarker = `provider-smoke-interrupted-${pathReport.label}`;
-  const encodedInterruptMarker = Buffer.from(interruptMarker).toString('base64');
-  const sleepMarker = `provider-smoke-sleeping-${pathReport.label}`;
-  const encodedSleepMarker = Buffer.from(sleepMarker).toString('base64');
-  stdin.write(`trap 'printf "%s\\n" "$(printf "%s" "${encodedInterruptMarker}" | base64 -d)"' INT; printf "%s\\n" "$(printf "%s" "${encodedSleepMarker}" | base64 -d)"; sleep 30\n`);
-  await waitForOutput(stdout, sleepMarker, terminalTimeoutMs, signal, capturedOutput);
-  const outputBeforeInterrupt = capturedOutput();
-  signalSource.emit('SIGINT');
-  await waitForOutput(stdout, interruptMarker, terminalTimeoutMs, signal, capturedOutput);
-  const outputAfterInterrupt = capturedOutput().slice(outputBeforeInterrupt.length);
-  stdin.write(`printf 'provider-smoke-after-interrupt-${pathReport.label}\\n'\nexit\n`);
-  const result = await boundedCall(
-    () => attach,
-    'interactive terminal completion',
-    { signal, timeoutMs: terminalTimeoutMs },
-  );
-  recordCheck(pathReport, 'openInteractive terminal', result.status === 'exited' && result.code === 0, terminalError ?? 'terminal completed');
-  recordCheck(pathReport, 'Ctrl-C terminal protocol', outputAfterInterrupt.includes(interruptMarker), 'remote trap observed SIGINT after it was sent through the terminal adapter');
-  pathReport.terminal = {
-    status: result.status,
-    ...(result.status === 'exited' ? { exitCode: result.code } : { reason: result.reason }),
-    outputMarkers: output.filter((value) => value.includes('provider-smoke-')).length,
-  };
 }
 
 function cleanupAdapter(client) {
@@ -395,11 +290,15 @@ async function recoverOwned(client, credentials, identity, pathReport, signal) {
         maxAttempts: 4,
         signal: requestSignal,
       });
-      pathReport.sessions.push({ phase: `recovery-${name}`, states: result.finalSessions.map(sessionState) });
-      if (result.finalSessions.length > 0) {
-        pathReport.cleanup.finalSessionStatesTerminal = result.finalSessions.every((session) => ['stopped', 'aborted'].includes(session.status));
-      }
+      pathReport.sessions.push({
+        phase: 'recovery',
+        sandboxNameFingerprint: fingerprintEvidence(name),
+        states: result.finalSessions.map(sessionState),
+      });
+      const sessionProof = hasTerminalSessionProof(result.finalSessions);
+      if (sessionProof) pathReport.cleanup.finalSessionStatesTerminal = true;
       if (!result.verified) throw new Error(`owned Sandbox ${name} cleanup did not converge`);
+      return { sessionProof };
     },
     listSnapshots: ({ signal: requestSignal }) => client.listSnapshots({
       credentials,
@@ -419,7 +318,7 @@ async function recoverOwned(client, credentials, identity, pathReport, signal) {
     }),
     isNotFound: isVercelNotFound,
   });
-  applyOwnedRecoveryEvidence(pathReport, recovery);
+  applyOwnedRecoveryEvidence(pathReport, recovery, errorMessage);
   return recovery;
 }
 
@@ -453,12 +352,21 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
     packageVersion: `provider-smoke-${runIdentity}-${label}`,
     scope: config.credentials,
   });
-  const pathReport = createPathReport(label, requestedBranch, sourceRevision, identity);
-  pathReport.fixtureRepository = remote.canonical;
-  pathReport.scope = {
-    teamId: config.credentials.teamId,
-    projectId: config.credentials.projectId,
-  };
+  addSensitiveValues([
+    remote.canonical,
+    remote.url,
+    requestedBranch,
+    sourceRevision,
+    identity.name,
+    ...Object.values(identity.tags),
+  ]);
+  const pathReport = createPathReport({
+    label,
+    requestedBranch,
+    sourceRevision,
+    identity,
+    credentials: config.credentials,
+  });
   report.paths.push(pathReport);
 
   const smokeController = new AbortController();
@@ -477,7 +385,10 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       onCreate: requestedBranchExists
         ? undefined
         : async (created) => {
-          const switched = await client.runCommand(created, 'git', ['switch', '--create', requestedBranch, '--'], {
+          const switched = await client.runCommand(created, {
+            cmd: 'git',
+            args: ['switch', '--create', requestedBranch, '--'],
+            cwd: resolveVercelRepositoryCwd(created.cwd, remote.repository),
             signal,
             timeoutMs: commandTimeoutMs,
           });
@@ -489,11 +400,12 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       'create',
       (requestSignal) => client.getOrCreate({ credentials, ...createRequest, signal: requestSignal }),
       signal,
-      Math.min(operationTimeoutMs, smokeTimeoutMs),
+      smokeTimeoutMs,
     );
     recordCheck(pathReport, 'Sandbox image pin', sandbox.image === VERCEL_IMAGE_PIN.reference, 'created Sandbox reports the promoted image reference');
     recordCheck(pathReport, 'Sandbox scope identity', sandbox.tags?.identity === identity.tags.identity, 'created Sandbox returned the run-unique identity tags');
 
+    const cloneCwd = resolveVercelRepositoryCwd(sandbox.cwd, remote.repository);
     await timed(
       pathReport,
       'clone',
@@ -501,11 +413,25 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
         remoteUrl: remote.url,
         sha: expectedSha,
         branch: requestedBranch,
-      }, requestSignal),
+      }, cloneCwd, requestSignal),
       signal,
       Math.min(operationTimeoutMs * 2, smokeTimeoutMs),
     );
-    await timed(pathReport, 'terminal-initial', (requestSignal) => runInteractiveTerminal(sandbox, pathReport, requestSignal, terminalAdapter), signal, terminalTimeoutMs);
+    await timed(
+      pathReport,
+      'terminal-initial',
+      (requestSignal) => runInteractiveTerminal({
+        sandbox,
+        pathReport,
+        signal: requestSignal,
+        terminalAdapter,
+        cloneCwd,
+        terminalTimeoutMs,
+        recordCheck,
+      }),
+      signal,
+      terminalTimeoutMs,
+    );
 
     const initialStop = await timed(pathReport, 'stop-initial', (requestSignal) => client.stopSandbox(sandbox, { signal: requestSignal }), signal, operationTimeoutMs);
     recordCheck(pathReport, 'initial stop snapshot', Boolean(initialStop.snapshot?.id) && ['created', 'deleted'].includes(initialStop.snapshot.status), `snapshot status=${initialStop.snapshot?.status ?? 'missing'}`);
@@ -514,7 +440,22 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
 
     const resumed = await timed(pathReport, 'resume-attach', (requestSignal) => attachResumedSandbox(client, credentials, identity.name, requestSignal), signal, operationTimeoutMs);
     recordCheck(pathReport, 'resume/reconnect attach', resumed.status === 'running' || resumed.status === 'pending', `status=${resumed.status}`);
-    await timed(pathReport, 'terminal-resumed', (requestSignal) => runInteractiveTerminal(resumed, pathReport, requestSignal, terminalAdapter), signal, terminalTimeoutMs);
+    const resumedCloneCwd = resolveVercelRepositoryCwd(resumed.cwd, remote.repository);
+    await timed(
+      pathReport,
+      'terminal-resumed',
+      (requestSignal) => runInteractiveTerminal({
+        sandbox: resumed,
+        pathReport,
+        signal: requestSignal,
+        terminalAdapter,
+        cloneCwd: resumedCloneCwd,
+        terminalTimeoutMs,
+        recordCheck,
+      }),
+      signal,
+      terminalTimeoutMs,
+    );
 
     const finalStop = await timed(pathReport, 'stop-final', (requestSignal) => client.stopSandbox(resumed, { signal: requestSignal }), signal, operationTimeoutMs);
     recordCheck(pathReport, 'final stop snapshot', Boolean(finalStop.snapshot?.id) && ['created', 'deleted'].includes(finalStop.snapshot.status), `snapshot status=${finalStop.snapshot?.status ?? 'missing'}`);
@@ -551,16 +492,22 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
         cleanupController.signal,
         cleanupTimeoutMs,
       );
+      const sessionProof = pathReport.cleanup.finalSessionStatesTerminal === true || recovery.sessionProof === true;
       if (recovery.errors.length > 0) pathReport.cleanupFailed = true;
-      if (recovery.errors.length === 0 && recovery.discoveryConverged && recovery.snapshotsCleaned) {
-        pathReport.cleanup.stopped = pathReport.cleanup.stopped || pathReport.cleanup.finalSessionStatesTerminal;
+      if (recovery.errors.length === 0 && recovery.discoveryConverged && recovery.snapshotsCleaned && sessionProof) {
+        pathReport.cleanup.stopped = true;
         pathReport.cleanup.deleted = true;
         pathReport.cleanup.deletionVerified = true;
         pathReport.cleanup.noRunningSessionAfterDelete = true;
         pathReport.cleanup.discoveryConverged = true;
         pathReport.cleanup.snapshotsCleaned = true;
-        pathReport.cleanup.errors = [];
-        pathReport.cleanupFailed = false;
+        // Do not clear cleanup.errors or cleanupFailed: prior failures remain
+        // part of the reconciliation history and still fail the aggregate.
+      } else {
+        pathReport.cleanupFailed = true;
+        if (!sessionProof) {
+          pathReport.cleanup.errors.push('cleanup session proof was not observed; empty discovery is insufficient');
+        }
       }
     } catch (error) {
       pathReport.cleanup.errors.push(errorMessage(error));
@@ -599,10 +546,12 @@ function sessionState(session) {
 }
 
 function applyCleanupResult(pathReport, result) {
-  pathReport.cleanup.stopped = pathReport.cleanup.stopped || result.finalSessions.length > 0 && result.finalSessions.every((session) => ['stopped', 'aborted'].includes(session.status));
+  const sessionProof = pathReport.cleanup.finalSessionStatesTerminal === true || hasTerminalSessionProof(result.finalSessions);
+  pathReport.cleanup.finalSessionStatesTerminal = sessionProof;
+  pathReport.cleanup.stopped = pathReport.cleanup.stopped || sessionProof;
   pathReport.cleanup.deleted = result.sandboxDeleted;
   pathReport.cleanup.deletionVerified = result.verified;
-  pathReport.cleanup.noRunningSessionAfterDelete = result.finalSessions.every((session) => ['stopped', 'aborted'].includes(session.status));
+  pathReport.cleanup.noRunningSessionAfterDelete = sessionProof && result.sandboxDeleted;
   pathReport.cleanup.snapshotsCleaned = result.snapshotsCleaned;
   pathReport.cleanup.residualNonDeletedSnapshots = result.residualSnapshotIds.map((id) => ({ id, status: 'residual' }));
   pathReport.snapshots.push(...result.snapshotIds.map((id) => ({ id, status: result.residualSnapshotIds.includes(id) ? 'created' : 'deleted' })));
@@ -611,10 +560,10 @@ function applyCleanupResult(pathReport, result) {
     pathReport.cleanup.recovery.push(...result.errors.map((detail) => ({
       operation: 'cleanup',
       outcome: 'pending-reconciliation',
-      detail,
+      detail: errorMessage(detail),
     })));
   }
-  if (!result.verified || result.errors.length > 0) pathReport.cleanupFailed = true;
+  if (!result.verified || result.errors.length > 0 || !sessionProof) pathReport.cleanupFailed = true;
 }
 
 async function writeReport() {
@@ -632,32 +581,27 @@ async function main() {
     // pending pin must fail before credentials or a cloud API are touched.
     const image = assertPromotedVercelImagePin(VERCEL_IMAGE_PIN);
     initializeSecretValues();
-    report.image = {
-      registry: image.registry,
-      team: image.team,
-      project: image.project,
-      repository: image.repository,
-      digest: image.digest,
-    };
+    report.image = { digest: image.digest };
     config = parseVercelProviderSmokeConfig(process.env);
-    report.configuration = {
-      path: config.path,
-      fixtureRepository: config.fixture.repository,
-      fixtureBranch: config.fixture.branch,
-      fixtureDefaultBranch: config.fixture.defaultBranch,
-      expectedFile: config.fixture.expectedFile,
-      scope: {
-        teamId: config.credentials.teamId,
-        projectId: config.credentials.projectId,
-      },
-    };
+    const smokeBudget = calculateVercelProviderSmokeBudget(
+      config.path,
+      smokeTimeoutMs,
+      cleanupTimeoutMs,
+      fixtureValidationTimeoutMs,
+      githubTimeoutMs,
+    );
+    const outerTimeoutMs = positiveTimeout('SMOKE_TOTAL_TIMEOUT_MS', smokeBudget.outerTimeoutMs);
+    if (outerTimeoutMs < smokeBudget.outerTimeoutMs) {
+      throw new Error(`SMOKE_TOTAL_TIMEOUT_MS must cover the configured sequential smoke budget (${smokeBudget.outerTimeoutMs}ms)`);
+    }
+    report.configuration = createConfigurationEvidence(config, smokeBudget);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`provider smoke exceeded ${smokeTimeoutMs}ms`)), smokeTimeoutMs);
+    const timer = setTimeout(() => controller.abort(new Error(`provider smoke exceeded ${outerTimeoutMs}ms`)), outerTimeoutMs);
     const client = createVercelSandboxClient({ sandbox: Sandbox, snapshot: Snapshot });
     const terminalAdapter = createVercelTerminalAdapter();
     try {
-      const fixture = await timed(report, 'fixture-validation', (signal) => inspectFixture(config, signal), controller.signal, githubTimeoutMs * 3);
-      report.fixture = fixture;
+      const fixture = await timed(report, 'fixture-validation', (signal) => inspectFixture(config, signal), controller.signal, smokeBudget.fixtureTimeoutMs);
+      report.fixture = createFixtureEvidence(config, fixture);
       const labels = config.path === 'both' ? ['existing', 'missing'] : [config.path];
       for (const label of labels) {
         try {
@@ -677,17 +621,8 @@ async function main() {
     report.error = errorMessage(error);
   } finally {
     if (report.paths.length > 0) {
-      report.cleanup = {
-        stopped: report.paths.every((path) => path.cleanup.stopped),
-        deleted: report.paths.every((path) => path.cleanup.deleted),
-        deletionVerified: report.paths.every((path) => path.cleanup.deletionVerified),
-        noRunningSessionAfterDelete: report.paths.every((path) => path.cleanup.noRunningSessionAfterDelete),
-        discoveryConverged: report.paths.every((path) => path.cleanup.discoveryConverged),
-        snapshotsCleaned: report.paths.every((path) => path.cleanup.snapshotsCleaned),
-        finalSessionStatesTerminal: report.paths.every((path) => path.cleanup.finalSessionStatesTerminal),
-        residualNonDeletedSnapshots: report.paths.flatMap((path) => path.cleanup.residualNonDeletedSnapshots),
-        errors: report.paths.flatMap((path) => path.cleanup.errors),
-      };
+      report.cleanup = aggregateCleanupEvidence(report.paths);
+      if (!report.cleanup.processSuccess) report.failed = true;
     }
     await writeReport();
   }

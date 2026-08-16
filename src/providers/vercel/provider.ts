@@ -43,6 +43,7 @@ import { mapVercelError } from './errors.js';
 import {
   normalizeRequestedSourceBranch,
   resolveGitHubSource,
+  resolveVercelRepositoryCwd,
   resolveGitHubSourceOrigin,
   type GitHubSourcePlan,
   type GitHubSourceRemote,
@@ -144,12 +145,28 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         prepared.metadata,
       );
       const sandbox = await lifecycle.up();
-      return terminalResult(request, terminal, options.signalSource, sandbox, 'up');
+      return terminalResult(
+        request,
+        terminal,
+        options.signalSource,
+        sandbox,
+        'up',
+        prepared.source.remote.repository,
+      );
     }),
     attach: (request) => withProviderErrors(request, 'attach', async () => {
       const prepared = await prepareStored(request, 'attach', runner, options, makeLifecycle, injectedLifecycle, client);
       const sandbox = await prepared.lifecycle.attach();
-      return terminalResult(request, terminal, options.signalSource, sandbox, 'attach');
+      const repository = prepared.source?.remote.repository;
+      if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
+      return terminalResult(
+        request,
+        terminal,
+        options.signalSource,
+        sandbox,
+        'attach',
+        repository,
+      );
     }),
     stop: (request) => withProviderErrors(request, 'stop', async () => {
       const prepared = await prepareStored(request, 'stop', runner, options, makeLifecycle, injectedLifecycle, client);
@@ -509,8 +526,9 @@ async function terminalResult(
   signalSource: EventEmitter | undefined,
   sandbox: VercelSandboxHandle,
   action: 'up' | 'attach',
+  repository: string,
 ): Promise<ProviderActionResult> {
-  const cwd = sandbox.cwd?.trim() || '/vercel/sandbox';
+  const cwd = resolveVercelRepositoryCwd(sandbox.cwd, repository);
   const streams: VercelTerminalStreams = {
     stdin: request.stdin,
     stdout: request.stdout,
