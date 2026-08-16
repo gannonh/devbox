@@ -587,13 +587,113 @@ describe('Vercel sandbox cleanup', () => {
       sleep: async () => {},
     });
 
-    expect(getCalls).toBe(2);
+    expect(getCalls).toBe(1);
     expect(result).toMatchObject({
       verified: true,
       snapshotsCleaned: true,
       residualSnapshotIds: [],
       errors: [],
     });
+  });
+
+  it('clears transient snapshot operation errors after an authoritative deleted relist', async () => {
+    let listCalls = 0;
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('not found'), { notFound: true }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => {
+        listCalls += 1;
+        return [{
+          id: 'transient-get-failure',
+          sourceSessionId: 'session',
+          status: listCalls === 1 ? 'created' as const : 'deleted' as const,
+        }];
+      }),
+      getSnapshot: vi.fn(async () => { throw new Error('snapshot API 500'); }),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'transient-get-failure-recovery',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      verified: true,
+      snapshotsCleaned: true,
+      residualSnapshotIds: [],
+      errors: [],
+    });
+  });
+
+  it('clears transient snapshot operation errors after an authoritative absent relist', async () => {
+    let listCalls = 0;
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('not found'), { notFound: true }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => {
+        listCalls += 1;
+        return listCalls === 1
+          ? [{ id: 'transient-absent', sourceSessionId: 'session', status: 'created' as const }]
+          : [];
+      }),
+      getSnapshot: vi.fn(async () => { throw new Error('snapshot API 500'); }),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'transient-absent-recovery',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      verified: true,
+      snapshotsCleaned: true,
+      residualSnapshotIds: [],
+      errors: [],
+    });
+  });
+
+  it('fails closed when a persistent snapshot operation error remains created', async () => {
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('not found'), { notFound: true }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => [{
+        id: 'persistent-get-failure',
+        sourceSessionId: 'session',
+        status: 'created' as const,
+      }]),
+      getSnapshot: vi.fn(async () => { throw new Error('snapshot API 500'); }),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'persistent-get-failure',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 2,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(false);
+    expect(result.snapshotsCleaned).toBe(false);
+    expect(result.residualSnapshotIds).toEqual(['persistent-get-failure']);
+    expect(result.errors.join(' ')).toContain('snapshot delete persistent-get-failure');
   });
 
   it('recovers from a transient snapshot list error after authoritative empty relists', async () => {

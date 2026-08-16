@@ -455,6 +455,7 @@ export function normalizeRequestedSourceBranch(branch: string): string {
   });
   if (
     normalized.startsWith('-') ||
+    normalized === 'HEAD' ||
     normalized === '@' ||
     hasForbiddenCharacter ||
     normalized.includes('..') ||

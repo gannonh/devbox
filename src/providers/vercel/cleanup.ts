@@ -217,6 +217,7 @@ export async function cleanupVercelSandbox(
       knownSnapshotIds,
       residualSnapshotIds,
       snapshotStatuses,
+      snapshotOperationErrors,
     );
     if (!resolution.allResolved) {
       snapshotsCleaned = false;
@@ -566,6 +567,7 @@ function resolveSnapshotRelist(
   knownSnapshotIds: Set<string>,
   residualSnapshotIds: Set<string>,
   snapshotStatuses: Map<string, SandboxSnapshotRecord['status']>,
+  snapshotOperationErrors: Map<string, string>,
 ): SnapshotRelistResolution {
   const listed = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
   let allResolved = true;
@@ -575,10 +577,12 @@ function resolveSnapshotRelist(
     if (!snapshot) {
       residualSnapshotIds.delete(snapshotId);
       snapshotStatuses.set(snapshotId, 'deleted');
+      snapshotOperationErrors.delete(snapshotId);
       requiresAbsenceConfirmation = true;
     } else if (snapshot.status === 'deleted') {
       residualSnapshotIds.delete(snapshotId);
       snapshotStatuses.set(snapshotId, 'deleted');
+      snapshotOperationErrors.delete(snapshotId);
     } else {
       residualSnapshotIds.add(snapshotId);
       allResolved = false;

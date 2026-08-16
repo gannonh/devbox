@@ -3,6 +3,7 @@ import { access, readFile, stat } from 'node:fs/promises';
 import { normalizeGitHubRemote } from '../src/providers/vercel/identity.js';
 import {
   normalizeGitHubSourceRemote,
+  normalizeRequestedSourceBranch,
   resolveGitHubSource,
   resolveVercelRepositoryCwd,
   resolveGitHubSourceOrigin,
@@ -225,6 +226,10 @@ describe('Vercel GitHub source selection', () => {
       .toBe('https://github.com/acme/repo.git');
     expect(normalizeGitHubSourceRemote('SsH://git@github.com/acme/repo.git').url)
       .toBe('https://github.com/acme/repo.git');
+  });
+
+  it('rejects literal HEAD in pure branch normalization', () => {
+    expect(() => normalizeRequestedSourceBranch('HEAD')).toThrow(/branch/i);
   });
 
   it('rejects non-canonical GitHub origins and unsafe branch names', () => {

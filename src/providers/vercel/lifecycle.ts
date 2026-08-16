@@ -224,12 +224,13 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             if (source.needsBranchSetup) await switchToRequestedBranch(sandbox, context);
           },
         });
-        const sandbox = await context.client.getOrCreate({
-          credentials: context.credentials,
-          ...createRequest,
-        });
-        validateSandboxIdentity(sandbox, context, effectiveIdentity);
+        let sandbox: VercelSandboxHandle;
         try {
+          sandbox = await context.client.getOrCreate({
+            credentials: context.credentials,
+            ...createRequest,
+          });
+          validateSandboxIdentity(sandbox, context, effectiveIdentity);
           await writeBranchMetadata(context, {
             identity: effectiveIdentity,
             sandboxId: sandboxIdentifier(sandbox),
@@ -239,30 +240,15 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           });
         } catch (error) {
           if (createdSandbox === undefined) throw error;
-          const compensation = await compensateCreatedSandbox(
+          return handleCreatedSandboxFailure(
             context,
+            metadataStore,
             effectiveIdentity,
             createdSandbox,
             existing,
             configuration,
             error,
             options.cleanup,
-          );
-          if (compensation.result.verified) {
-            if (!existing) {
-              try {
-                await metadataStore.remove();
-              } catch {
-                // The resource is already verified absent; retain the original
-                // persistence failure and let the next up repair metadata.
-              }
-            }
-            throw error;
-          }
-          throw new VercelCreationCompensationError(
-            compensation.result,
-            compensation.creationFailure,
-            compensation.recoveryMetadataFailure,
           );
         }
         return sandbox;
@@ -461,6 +447,43 @@ interface CreatedSandboxCompensation {
   result: VercelCleanupResult;
   creationFailure: string;
   recoveryMetadataFailure?: string;
+}
+
+async function handleCreatedSandboxFailure(
+  context: PreparedContext,
+  metadataStore: VercelBranchMetadataStore,
+  identity: VercelMetadataIdentity,
+  createdSandbox: VercelSandboxHandle,
+  existing: VercelMetadata | VercelBranchMetadata | null,
+  configuration: VercelCreateConfiguration,
+  creationError: unknown,
+  cleanupOptions: VercelLifecycleOptions['cleanup'],
+): Promise<never> {
+  const compensation = await compensateCreatedSandbox(
+    context,
+    identity,
+    createdSandbox,
+    existing,
+    configuration,
+    creationError,
+    cleanupOptions,
+  );
+  if (compensation.result.verified) {
+    if (!existing) {
+      try {
+        await metadataStore.remove();
+      } catch {
+        // The resource is already verified absent; retain the original
+        // persistence failure and let the next up repair metadata.
+      }
+    }
+    throw creationError;
+  }
+  throw new VercelCreationCompensationError(
+    compensation.result,
+    compensation.creationFailure,
+    compensation.recoveryMetadataFailure,
+  );
 }
 
 async function compensateCreatedSandbox(
