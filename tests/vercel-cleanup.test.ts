@@ -17,6 +17,59 @@ const identityTags = {
 };
 
 describe('Vercel sandbox cleanup', () => {
+  it('deletes a stale named sandbox without resuming it before snapshot proof', async () => {
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('snapshot_not_found'), { status: 410 }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'stale-sandbox',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(true);
+    expect(adapter.deleteByName).toHaveBeenCalledWith(expect.objectContaining({ name: 'stale-sandbox' }));
+    expect(adapter.stop).not.toHaveBeenCalled();
+    expect(adapter.delete).not.toHaveBeenCalled();
+  });
+
+  it('retains stale sandbox metadata when name deletion cannot be verified', async () => {
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('snapshot_not_found'), { status: 410 }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => { throw new Error('delete unavailable'); }),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'stale-delete-failure',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(false);
+    expect(result.residualSandboxIds).toEqual(['stale-delete-failure']);
+    expect(adapter.stop).not.toHaveBeenCalled();
+    expect(adapter.delete).not.toHaveBeenCalled();
+    expect(result.errors.join(' ')).toContain('stale sandbox delete');
+  });
+
   it('cleans matching snapshots even when the sandbox is already missing', async () => {
     let snapshots = [{ id: 'orphan-snapshot', sourceSessionId: 'session', status: 'created' as const }];
     const adapter: VercelCleanupAdapter = {
@@ -29,6 +82,7 @@ describe('Vercel sandbox cleanup', () => {
         status: 'created' as const,
         delete: async () => { snapshots = []; },
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => {}),
     };
 
@@ -54,6 +108,7 @@ describe('Vercel sandbox cleanup', () => {
       stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
       listSnapshots: vi.fn(async () => []),
       getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => {}),
     };
 
@@ -71,6 +126,66 @@ describe('Vercel sandbox cleanup', () => {
     expect(result.errors.join(' ')).toContain('session listing');
   });
 
+  it('stops failed sessions before deletion when they converge', async () => {
+    let sessionReads = 0;
+    let deleted = false;
+    const sandbox = { name: 'failed-session-converges', status: 'stopped' as const, tags: identityTags };
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => sandbox),
+      listSessions: vi.fn(async () => {
+        sessionReads += 1;
+        return [{ id: 'failed-session', status: sessionReads === 1 ? 'failed' as const : 'stopped' as const }];
+      }),
+      stop: vi.fn(async () => ({ id: 'failed-session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => { deleted = true; }),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: sandbox.name,
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(true);
+    expect(adapter.stop).toHaveBeenCalledOnce();
+    expect(adapter.delete).toHaveBeenCalledOnce();
+    expect(deleted).toBe(true);
+  });
+
+  it('fails closed when a failed session cannot converge', async () => {
+    const sandbox = { name: 'failed-session-stuck', status: 'stopped' as const, tags: identityTags };
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => sandbox),
+      listSessions: vi.fn(async () => [{ id: 'failed-session', status: 'failed' as const }]),
+      stop: vi.fn(async () => ({ id: 'failed-session', status: 'failed' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: sandbox.name,
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(false);
+    expect(adapter.stop).toHaveBeenCalledOnce();
+    expect(adapter.delete).not.toHaveBeenCalled();
+    expect(result.residualSandboxIds).toEqual([sandbox.name]);
+    expect(result.errors.join(' ')).toContain('session verification');
+  });
+
   it('reports non-deleted snapshots as residual cleanup instead of claiming success', async () => {
     let deleted = false;
     const adapter: VercelCleanupAdapter = {
@@ -86,6 +201,7 @@ describe('Vercel sandbox cleanup', () => {
         status: 'failed' as const,
         delete: async () => { throw new Error('snapshot delete rejected'); },
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => { deleted = true; }),
     };
 
@@ -135,6 +251,7 @@ describe('Vercel sandbox cleanup', () => {
         status: 'created' as const,
         delete: async () => { calls.push('snapshot-delete'); },
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => { calls.push('sandbox-delete'); deleted = true; }),
     };
 
@@ -181,6 +298,7 @@ describe('Vercel sandbox cleanup', () => {
         status: 'created' as const,
         delete: async () => {},
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => { deleted = true; }),
     };
 
@@ -232,6 +350,7 @@ describe('Vercel sandbox cleanup', () => {
         status: 'created' as const,
         delete: async () => { calls.push('snapshot-delete'); snapshotDeleted = true; },
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => { calls.push('sandbox-delete'); deleted = true; }),
     };
 
@@ -276,6 +395,7 @@ describe('Vercel sandbox cleanup', () => {
         status: 'created' as const,
         delete: async () => { deleteCalls += 1; },
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => { deleted = true; }),
     };
 
@@ -318,6 +438,7 @@ describe('Vercel sandbox cleanup', () => {
         status: 'created' as const,
         delete: async () => {},
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => { deleted = true; }),
     };
 
@@ -355,6 +476,7 @@ describe('Vercel sandbox cleanup', () => {
         status: snapshotId === 'snapshot-failed' ? 'failed' as const : 'created' as const,
         delete: async () => { deleteCalls += 1; },
       })),
+      deleteByName: vi.fn(async () => ({ missing: false })),
       delete: vi.fn(async () => {}),
     };
 

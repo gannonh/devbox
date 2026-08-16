@@ -184,7 +184,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           projectId: context.credentials.projectId,
           identity: toMetadataIdentity(context.identity),
           sandboxId: sandboxIdentifier(sandbox),
-          configuration: context.configuration,
+          configuration: existing?.configuration ?? context.configuration,
         });
         return sandbox;
       });
@@ -254,6 +254,8 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         const metadata = await context.metadataStore.read();
         const identity = requireStoredIdentity(metadata, context);
         const credentials = credentialsForStoredScope(context.credentials, metadata);
+        if (metadata?.configuration) assertConfiguration(metadata.configuration, context.configuration);
+        const configuration = metadata?.configuration ?? context.configuration;
         const sandbox = await getExistingSandbox(context, credentials, identity.name, false);
         validateSandboxIdentity(sandbox, context, identity);
         let sessions = await context.client.listSessions(sandbox);
@@ -280,9 +282,9 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           sandboxId: sandboxIdentifier(sandbox),
           ...(knownSnapshotIds.length === 0 ? {} : { snapshotIds: knownSnapshotIds }),
           ...(metadata?.residual === undefined ? {} : { residual: metadata.residual }),
-          configuration: context.configuration,
+          configuration,
         });
-        const finalSession = sessions.at(-1);
+        const finalSession = selectNewestSession(sessions);
         const activeCpuUsageMs = finalStop?.activeCpuDurationMs
           ?? finalSession?.activeCpuDurationMs
           ?? sandbox.activeCpuUsageMs;
@@ -468,9 +470,6 @@ function assertConfiguration(
   if (
     actual.imageReference !== expected.imageReference ||
     actual.sourceUrl !== expected.sourceUrl ||
-    actual.sourceRevision !== expected.sourceRevision ||
-    actual.requestedBranch !== expected.requestedBranch ||
-    actual.needsBranchSetup !== expected.needsBranchSetup ||
     actual.persistent !== expected.persistent ||
     actual.keepLastSnapshots !== expected.keepLastSnapshots ||
     actual.timeoutMs !== expected.timeoutMs
@@ -533,6 +532,7 @@ async function commandOutput(result: VercelCommandResult): Promise<string> {
 function createCleanupAdapter(client: VercelSandboxClient): VercelCleanupAdapter {
   return {
     get: (request) => client.get(request),
+    deleteByName: (request) => client.deleteSandboxByName(request),
     listSessions: (sandbox, options) => client.listSessions(sandbox as VercelSandboxHandle, options),
     stop: (sandbox, options) => client.stopSandbox(sandbox as VercelSandboxHandle, options),
     listSnapshots: (request) => client.listSnapshots(request),
@@ -613,6 +613,31 @@ function sameTags(actual: Record<string, string> | TagSet, expected: Readonly<Re
 function sandboxIdentifier(sandbox: VercelSandboxHandle): string {
   const candidate = sandbox as VercelSandboxHandle & { id?: unknown };
   return typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id : sandbox.name;
+}
+
+function selectNewestSession(sessions: SandboxSessionRecord[]): SandboxSessionRecord | undefined {
+  return sessions.reduce<SandboxSessionRecord | undefined>((newest, session) => {
+    if (!newest) return session;
+    const comparison = compareSessionOrder(session, newest);
+    return comparison > 0 ? session : newest;
+  }, undefined);
+}
+
+function compareSessionOrder(left: SandboxSessionRecord, right: SandboxSessionRecord): number {
+  for (const field of ['requestedAt', 'createdAt', 'updatedAt'] as const) {
+    const leftValue = numericSessionField(left, field);
+    const rightValue = numericSessionField(right, field);
+    if (leftValue !== rightValue) return leftValue - rightValue;
+  }
+  return left.id.localeCompare(right.id);
+}
+
+function numericSessionField(
+  session: SandboxSessionRecord,
+  field: 'requestedAt' | 'createdAt' | 'updatedAt',
+): number {
+  const value = session[field];
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
 }
 
 function allTerminal(sessions: SandboxSessionRecord[]): boolean {

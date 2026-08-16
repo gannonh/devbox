@@ -89,6 +89,8 @@ describe('Vercel GitHub source selection', () => {
     });
     expect(calls.every(({ args }) => !args.includes(token))).toBe(true);
     expect(calls.every(({ cwd }) => cwd === '/repo')).toBe(true);
+    expect(calls.find(({ command, args }) => command === 'git' && args[0] === 'ls-remote' && args.includes('--heads'))?.args)
+      .toEqual(['ls-remote', '--heads', 'origin', '--', 'refs/heads/feature/ui']);
   });
 
   it('accepts case-insensitive HTTPS and SSH schemes', () => {

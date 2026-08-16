@@ -59,6 +59,7 @@ export {
   buildVercelSandboxCreateRequest,
   createVercelSandboxClient,
   isVercelNotFound,
+  isVercelStale,
   VercelSdkError,
 } from './vercel/client.js';
 export type {
@@ -69,6 +70,8 @@ export type {
   SandboxSnapshotRecord,
   SandboxSnapshotStatus,
   VercelCommandResult,
+  VercelSandboxDeleteByNameRequest,
+  VercelSandboxDeleteByNameResult,
   VercelSandboxApi,
   VercelSandboxClient,
   VercelSandboxCreateRequest,

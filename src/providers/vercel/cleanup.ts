@@ -3,9 +3,11 @@ import type { VercelIdentityTags } from './metadata-schema.js';
 import {
   collectPaginated,
   isVercelNotFound,
+  isVercelStale,
   type SandboxSessionRecord,
   type SandboxSnapshotRecord,
   type SandboxSessionStatus,
+  type VercelSandboxDeleteByNameResult,
   type VercelStopResult,
 } from './client.js';
 import { redactSecrets } from './redaction.js';
@@ -59,6 +61,11 @@ export interface VercelCleanupAdapter {
     signal?: AbortSignal;
   }): Promise<VercelCleanupSnapshot>;
   delete(sandbox: VercelCleanupSandbox, options?: { signal?: AbortSignal }): Promise<void>;
+  deleteByName(request: {
+    credentials: VercelCredentials;
+    name: string;
+    signal?: AbortSignal;
+  }): Promise<VercelSandboxDeleteByNameResult>;
 }
 
 export interface VercelCleanupResult {
@@ -122,6 +129,7 @@ export async function cleanupVercelSandbox(
   let snapshotsCleaned = false;
   let sandboxLookupOk = true;
   let sandboxIdentityVerified = true;
+  let staleSandbox = false;
   let sessionObservationOk = false;
   let absentRelistStreak = 0;
 
@@ -149,6 +157,9 @@ export async function cleanupVercelSandbox(
     if (isVercelNotFound(error)) {
       sandboxMissing = true;
       sandboxDeleted = true;
+      sessionObservationOk = true;
+    } else if (isVercelStale(error)) {
+      staleSandbox = true;
       sessionObservationOk = true;
     } else {
       sandboxLookupOk = false;
@@ -225,7 +236,21 @@ export async function cleanupVercelSandbox(
     if (!sandboxLookupOk || !sandboxIdentityVerified) break;
     attempts += 1;
 
-    if (!sandboxMissing && !sandboxDeleted) {
+    if (staleSandbox && !sandboxDeleted) {
+      try {
+        const deletion = await options.adapter.deleteByName({
+          credentials: options.credentials,
+          name: options.name,
+          signal: options.signal,
+        });
+        sandboxDeleted = true;
+        sandboxMissing = deletion.missing;
+      } catch (error) {
+        recordError('stale sandbox delete', error);
+      }
+    }
+
+    if (!staleSandbox && !sandboxMissing && !sandboxDeleted) {
       if (!firstSandboxObservation) {
         try {
           sandbox = await options.adapter.get({
@@ -266,6 +291,12 @@ export async function cleanupVercelSandbox(
         );
         sessionObservationOk = observation.ok;
         finalSessions = observation.sessions;
+        if (!sessionObservationOk || hasNonTerminalSessions(finalSessions)) {
+          residualSandboxIds.add(sandboxIdentifier(sandbox) ?? options.name);
+          if (sessionObservationOk) {
+            recordError('session verification', new Error('not every Sandbox session is stopped or aborted'));
+          }
+        }
         if (observation.stop !== undefined) {
           finalStop = observation.stop;
           rememberSnapshotId(
@@ -308,7 +339,7 @@ export async function cleanupVercelSandbox(
       }
     }
 
-    if (sandboxDeleted || sandboxMissing) {
+    if (sandboxDeleted || sandboxMissing || staleSandbox) {
       const attemptedSnapshotIds = new Set<string>();
       await deleteKnownSnapshots(
         knownSnapshotIds,
@@ -379,7 +410,7 @@ async function stopAndVerifySessions(
   if (!first.ok) return first;
   const needsStop =
     STOPPABLE_SESSION_STATES.has(sandbox.status) ||
-    first.sessions.some((session) => STOPPABLE_SESSION_STATES.has(session.status));
+    first.sessions.some((session) => !TERMINAL_SESSION_STATES.has(session.status));
   if (!needsStop) return first;
 
   let stop: VercelStopResult | undefined;

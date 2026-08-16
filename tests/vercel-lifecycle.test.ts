@@ -83,6 +83,61 @@ describe('Vercel lifecycle', () => {
     expect(client.runCommand).toHaveBeenCalledOnce();
   });
 
+  it('resumes after remote branch state changes without changing bootstrap configuration', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    const laterSource: GitHubSourcePlan = {
+      ...source,
+      requestedBranchExists: true,
+      needsBranchSetup: false,
+      source: { ...source.source, revision: source.requestedBranch },
+    };
+    let creates = 0;
+    const client = {
+      getOrCreate: vi.fn(async (request) => {
+        creates += 1;
+        if (creates === 1) await request.onCreate?.(handle);
+        return handle;
+      }),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+    } as unknown as VercelSandboxClient;
+    await createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+    }).up();
+
+    const laterLifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: laterSource.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: laterSource,
+      metadataStore: metadata,
+      client,
+    });
+    await expect(laterLifecycle.up()).resolves.toBe(handle);
+    await laterLifecycle.stop();
+
+    expect(client.getOrCreate).toHaveBeenCalledTimes(2);
+    expect(client.runCommand).toHaveBeenCalledOnce();
+    await expect(metadata.read()).resolves.toMatchObject({
+      configuration: {
+        sourceRevision: 'main',
+        needsBranchSetup: true,
+      },
+    });
+
+  });
+
   it('serializes concurrent up calls through the metadata lease', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
     const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
@@ -176,6 +231,48 @@ describe('Vercel lifecycle', () => {
     await expect(lifecycle.remove()).rejects.toMatchObject({ code: 'identity_conflict' });
     expect(client.listSandboxes).not.toHaveBeenCalled();
     expect(client.get).not.toHaveBeenCalled();
+  });
+
+  it('retains metadata until a stale named sandbox deletion is verified', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    let deleteAttempts = 0;
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      get: vi.fn(async () => { throw Object.assign(new Error('snapshot_not_found'), { status: 410 }); }),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteSandboxByName: vi.fn(async () => {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error('delete unavailable');
+        return { missing: false };
+      }),
+      listSessions: vi.fn(async () => []),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+    await lifecycle.up();
+
+    await expect(lifecycle.remove()).rejects.toMatchObject({ code: 'cleanup_incomplete' });
+    await expect(metadata.read()).resolves.toMatchObject({
+      residual: { sandboxIds: [handle.name] },
+    });
+    expect(client.stopSandbox).not.toHaveBeenCalled();
+    expect(client.deleteSandbox).not.toHaveBeenCalled();
+
+    await expect(lifecycle.remove()).resolves.toMatchObject({ verified: true });
+    await expect(metadata.read()).resolves.toBeNull();
   });
 
   it('retains metadata and performs no destructive action when remove finds mismatched tags', async () => {
@@ -446,12 +543,18 @@ describe('Vercel lifecycle', () => {
       get: vi.fn(async () => handle),
       listSessions: vi.fn(async () => {
         sessionsRead += 1;
-        return [{
-          id: 'session-1',
-          status: sessionsRead === 1 ? 'running' as const : 'stopped' as const,
-          activeCpuDurationMs: 123,
-          networkTransfer: { ingress: 4, egress: 5 },
-        }];
+        if (sessionsRead === 1) {
+          return [{
+            id: 'session-1',
+            status: 'running' as const,
+            activeCpuDurationMs: 123,
+            networkTransfer: { ingress: 4, egress: 5 },
+          }];
+        }
+        return [
+          { id: 'newest-session', status: 'stopped' as const, requestedAt: 200, createdAt: 200 },
+          { id: 'older-session', status: 'stopped' as const, requestedAt: 100, createdAt: 100 },
+        ];
       }),
       stopSandbox: vi.fn(async () => ({
         id: 'session-1',
@@ -482,6 +585,7 @@ describe('Vercel lifecycle', () => {
     expect(client.stopSandbox).toHaveBeenCalledOnce();
     expect(report).toMatchObject({
       name: handle.name,
+      finalSession: { id: 'newest-session' },
       snapshot: { id: 'snapshot-1', status: 'created' },
       activeCpuUsageMs: 123,
       networkTransfer: { ingress: 4, egress: 5 },

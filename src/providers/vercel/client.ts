@@ -2,7 +2,7 @@ import { Sandbox, Snapshot } from '@vercel/sandbox';
 import type { VercelCredentials } from './auth.js';
 import { VERCEL_IMAGE_PIN } from './image.js';
 import type { GitSource } from './source.js';
-import { redactedError, redactSecrets } from './redaction.js';
+import { redactSecrets } from './redaction.js';
 
 export type SandboxSessionStatus =
   | 'pending'
@@ -120,6 +120,16 @@ export interface VercelSandboxGetRequest {
   signal?: AbortSignal;
 }
 
+export interface VercelSandboxDeleteByNameRequest {
+  credentials: VercelCredentials;
+  name: string;
+  signal?: AbortSignal;
+}
+
+export interface VercelSandboxDeleteByNameResult {
+  missing: boolean;
+}
+
 export interface VercelSandboxCreateInput {
   name: string;
   source: GitSource;
@@ -154,6 +164,7 @@ export function buildVercelSandboxCreateRequest(
 export interface VercelSandboxClient {
   getOrCreate(request: VercelSandboxCreateRequest & { credentials: VercelCredentials }): Promise<VercelSandboxHandle>;
   get(request: VercelSandboxGetRequest): Promise<VercelSandboxHandle>;
+  deleteSandboxByName(request: VercelSandboxDeleteByNameRequest): Promise<VercelSandboxDeleteByNameResult>;
   listSandboxes(request: {
     credentials: VercelCredentials;
     tags?: Record<string, string>;
@@ -216,14 +227,21 @@ export class VercelSdkError extends Error {
     this.name = 'VercelSdkError';
     this.operation = operation;
     this.status = status;
-    this.notFound = status === 404 || status === 410;
+    this.notFound = status === 404;
   }
 }
 
 export function isVercelNotFound(error: unknown): boolean {
+  if (error instanceof VercelSdkError) return error.notFound;
+  const status = getStatus(error);
+  if (status === 410) return false;
+  return status === 404 || Boolean((error as { notFound?: unknown })?.notFound);
+}
+
+export function isVercelStale(error: unknown): boolean {
   return error instanceof VercelSdkError
-    ? error.notFound
-    : getStatus(error) === 404 || getStatus(error) === 410 || Boolean((error as { notFound?: unknown })?.notFound);
+    ? error.status === 410
+    : getStatus(error) === 410;
 }
 
 export function createVercelSandboxClient(
@@ -270,6 +288,30 @@ export function createVercelSandboxClient(
           ...credentials,
         })), [credentials.token]),
       );
+    },
+    deleteSandboxByName: async (request) => {
+      const { credentials, name, signal } = request;
+      return call('Sandbox.deleteByName', [credentials.token], async () => {
+        const fetcher = options.fetch ?? globalThis.fetch;
+        const url = `https://vercel.com/api/v2/sandboxes/${encodeURIComponent(name)}?teamId=${encodeURIComponent(credentials.teamId)}&projectId=${encodeURIComponent(credentials.projectId)}`;
+        const response = await fetcher(url, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${credentials.token}`,
+            'content-type': 'application/json',
+          },
+          signal,
+        });
+        if (response.status === 404) return { missing: true };
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          throw Object.assign(
+            new Error(body || `Vercel Sandbox delete failed with status ${response.status}`),
+            { status: response.status },
+          );
+        }
+        return { missing: false };
+      });
     },
     listSandboxes: async (request) => {
       const { credentials, ...listRequest } = request;
@@ -432,10 +474,4 @@ function getStatus(error: unknown): number | undefined {
   if (typeof candidate?.status === 'number') return candidate.status;
   if (typeof candidate?.response?.status === 'number') return candidate.response.status;
   return undefined;
-}
-
-// Keep the redaction import exercised at the adapter boundary for errors that
-// are constructed by callers before the SDK wraps them.
-export function redactVercelError(error: unknown, token: string): Error {
-  return redactedError(error, [token]);
 }
