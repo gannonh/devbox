@@ -13,7 +13,7 @@ import { basename, join } from 'node:path';
 // key like `fixture` must be recursed (its fingerprint subtree is safe evidence),
 // and any *Fingerprint field is a non-reversible hash that must survive.
 const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)/i;
-const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^GITHUB_FIXTURE_/i;
+const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^DEVBOX_GITHUB_FIXTURE_/i;
 const isSensitiveField = (name) => !/Fingerprint/i.test(name) && sensitiveFieldName.test(name);
 const secrets = [...new Set(Object.entries(process.env)
   .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === 'string' && value.length > 0)

@@ -73,7 +73,7 @@ const githubTimeoutMs = positiveTimeout('SMOKE_GITHUB_TIMEOUT_MS', 10_000);
 const fixtureValidationTimeoutMs = githubTimeoutMs * 3;
 
 function initializeSecretValues() {
-  const sensitiveNames = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^GITHUB_FIXTURE_/i;
+  const sensitiveNames = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^DEVBOX_GITHUB_FIXTURE_/i;
   addSensitiveValues(Object.entries(process.env)
     .filter(([name, value]) => sensitiveNames.test(name) && typeof value === 'string' && value.length > 0)
     .map(([, value]) => value));
@@ -168,7 +168,7 @@ async function githubJson(config, endpoint, signal, allowNotFound = false) {
 async function inspectFixture(config, signal) {
   const repositoryResponse = await githubJson(config, '', signal);
   const repository = repositoryResponse.value;
-  if (repository.private !== true) throw new Error('GITHUB_FIXTURE_REPOSITORY must be private');
+  if (repository.private !== true) throw new Error('DEVBOX_GITHUB_FIXTURE_REPOSITORY must be private');
   if (String(repository.full_name ?? '').toLowerCase() !== config.fixture.repository.toLowerCase()) {
     throw new Error('GitHub fixture API returned a different repository than configured');
   }

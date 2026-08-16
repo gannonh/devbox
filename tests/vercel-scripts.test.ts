@@ -810,17 +810,17 @@ describe('Vercel supply-chain script boundaries', () => {
         VERCEL_TOKEN: 'v-token-fake',
         VERCEL_TEAM_ID: 't1',
         VERCEL_PROJECT_ID: 'p2',
-        GITHUB_FIXTURE_TOKEN: 'g-token-fake',
-        GITHUB_FIXTURE_REPOSITORY: 'owner/private-fixture',
-        GITHUB_FIXTURE_BRANCH: 'branch-fake',
-        GITHUB_FIXTURE_DEFAULT_BRANCH: 'default-fake',
-        GITHUB_FIXTURE_EXPECTED_FILE: 'private/file.txt',
-        GITHUB_FIXTURE_EXPECTED_CONTENT: 'content-fake',
+        DEVBOX_GITHUB_FIXTURE_TOKEN: 'g-token-fake',
+        DEVBOX_GITHUB_FIXTURE_REPOSITORY: 'owner/private-fixture',
+        DEVBOX_GITHUB_FIXTURE_BRANCH: 'branch-fake',
+        DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: 'default-fake',
+        DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: 'private/file.txt',
+        DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: 'content-fake',
       };
       const artifact = join(temp, 'evidence.json');
       await writeFile(artifact, JSON.stringify({
         nested: values,
-        text: `${values.GITHUB_FIXTURE_REPOSITORY} ${encodeURIComponent(values.GITHUB_FIXTURE_EXPECTED_CONTENT)}`,
+        text: `${values.DEVBOX_GITHUB_FIXTURE_REPOSITORY} ${encodeURIComponent(values.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT)}`,
         redacted: false,
       }));
       const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
@@ -840,22 +840,22 @@ describe('Vercel supply-chain script boundaries', () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-redaction-fingerprints-'));
     try {
       const fixture = {
-        GITHUB_FIXTURE_TOKEN: 'g-token-fake',
-        GITHUB_FIXTURE_REPOSITORY: 'owner/private-fixture',
-        GITHUB_FIXTURE_BRANCH: 'branch-fake',
-        GITHUB_FIXTURE_DEFAULT_BRANCH: 'default-fake',
-        GITHUB_FIXTURE_EXPECTED_FILE: 'private/file.txt',
-        GITHUB_FIXTURE_EXPECTED_CONTENT: 'content-fake',
+        DEVBOX_GITHUB_FIXTURE_TOKEN: 'g-token-fake',
+        DEVBOX_GITHUB_FIXTURE_REPOSITORY: 'owner/private-fixture',
+        DEVBOX_GITHUB_FIXTURE_BRANCH: 'branch-fake',
+        DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: 'default-fake',
+        DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: 'private/file.txt',
+        DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: 'content-fake',
       };
       const fingerprints = {
-        repositoryFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_REPOSITORY),
-        branchFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_BRANCH),
-        defaultBranchFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_DEFAULT_BRANCH),
-        expectedFileFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_EXPECTED_FILE),
-        expectedContentFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_EXPECTED_CONTENT),
+        repositoryFingerprint: fingerprintEvidence(fixture.DEVBOX_GITHUB_FIXTURE_REPOSITORY),
+        branchFingerprint: fingerprintEvidence(fixture.DEVBOX_GITHUB_FIXTURE_BRANCH),
+        defaultBranchFingerprint: fingerprintEvidence(fixture.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH),
+        expectedFileFingerprint: fingerprintEvidence(fixture.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE),
+        expectedContentFingerprint: fingerprintEvidence(fixture.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT),
         teamIdFingerprint: fingerprintEvidence('vercel-team-secret'),
         projectIdFingerprint: fingerprintEvidence('vercel-project-secret'),
-        tokenFingerprint: fingerprintEvidence(fixture.GITHUB_FIXTURE_TOKEN),
+        tokenFingerprint: fingerprintEvidence(fixture.DEVBOX_GITHUB_FIXTURE_TOKEN),
       };
       const artifact = join(temp, 'evidence.json');
       await writeFile(artifact, JSON.stringify({

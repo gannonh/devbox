@@ -122,11 +122,11 @@ Configure these repository secrets exactly:
   generic `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` names the smoke
   script requires; nothing is inherited or re-exported. Generic
   `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` secrets are not used.
-- `GITHUB_FIXTURE_TOKEN` — a read-only token that can clone the private fixture.
-- `GITHUB_FIXTURE_REPOSITORY` — exact `owner/repository`.
-- `GITHUB_FIXTURE_BRANCH` — the branch expected to exist for the `existing` path.
-- `GITHUB_FIXTURE_DEFAULT_BRANCH` — the GitHub API default branch expectation.
-- `GITHUB_FIXTURE_EXPECTED_FILE` and `GITHUB_FIXTURE_EXPECTED_CONTENT` — the
+- `DEVBOX_GITHUB_FIXTURE_TOKEN` — a read-only token that can clone the private fixture.
+- `DEVBOX_GITHUB_FIXTURE_REPOSITORY` — exact `owner/repository`.
+- `DEVBOX_GITHUB_FIXTURE_BRANCH` — the branch expected to exist for the `existing` path.
+- `DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH` — the GitHub API default branch expectation.
+- `DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE` and `DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT` — the
   file/content assertion shared by the clone paths.
 
 The smoke validates the private repository and default/branch expectations,

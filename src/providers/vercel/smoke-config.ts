@@ -56,12 +56,12 @@ export const REQUIRED_VERCEL_PROVIDER_SMOKE_ENV = Object.freeze([
   'VERCEL_TOKEN',
   'VERCEL_TEAM_ID',
   'VERCEL_PROJECT_ID',
-  'GITHUB_FIXTURE_TOKEN',
-  'GITHUB_FIXTURE_REPOSITORY',
-  'GITHUB_FIXTURE_BRANCH',
-  'GITHUB_FIXTURE_DEFAULT_BRANCH',
-  'GITHUB_FIXTURE_EXPECTED_FILE',
-  'GITHUB_FIXTURE_EXPECTED_CONTENT',
+  'DEVBOX_GITHUB_FIXTURE_TOKEN',
+  'DEVBOX_GITHUB_FIXTURE_REPOSITORY',
+  'DEVBOX_GITHUB_FIXTURE_BRANCH',
+  'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH',
+  'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
+  'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
   'SMOKE_REPORT',
 ] as const);
 
@@ -104,7 +104,7 @@ export function parseVercelProviderSmokeConfig(
   const values = Object.fromEntries(
     REQUIRED_VERCEL_PROVIDER_SMOKE_ENV.map((name) => [name, env[name]]),
   ) as Record<typeof REQUIRED_VERCEL_PROVIDER_SMOKE_ENV[number], string | undefined>;
-  const missing = REQUIRED_VERCEL_PROVIDER_SMOKE_ENV.filter((name) => name === 'GITHUB_FIXTURE_EXPECTED_CONTENT'
+  const missing = REQUIRED_VERCEL_PROVIDER_SMOKE_ENV.filter((name) => name === 'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT'
     ? !isNonEmptyString(values[name])
     : !isNonEmptySingleLine(values[name]));
   if (missing.length > 0) {
@@ -116,15 +116,15 @@ export function parseVercelProviderSmokeConfig(
     throw new Error('SMOKE_PATH must be existing, missing, or both');
   }
 
-  const repository = values.GITHUB_FIXTURE_REPOSITORY!.trim();
+  const repository = values.DEVBOX_GITHUB_FIXTURE_REPOSITORY!.trim();
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/.test(repository)) {
-    throw new Error('GITHUB_FIXTURE_REPOSITORY must be an exact owner/repository pair');
+    throw new Error('DEVBOX_GITHUB_FIXTURE_REPOSITORY must be an exact owner/repository pair');
   }
 
-  const branch = normalizeSmokeBranch(values.GITHUB_FIXTURE_BRANCH!, 'GITHUB_FIXTURE_BRANCH');
-  const defaultBranch = normalizeSmokeBranch(values.GITHUB_FIXTURE_DEFAULT_BRANCH!, 'GITHUB_FIXTURE_DEFAULT_BRANCH');
-  const expectedFile = validateExpectedFile(values.GITHUB_FIXTURE_EXPECTED_FILE!);
-  const expectedContent = values.GITHUB_FIXTURE_EXPECTED_CONTENT!;
+  const branch = normalizeSmokeBranch(values.DEVBOX_GITHUB_FIXTURE_BRANCH!, 'DEVBOX_GITHUB_FIXTURE_BRANCH');
+  const defaultBranch = normalizeSmokeBranch(values.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH!, 'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH');
+  const expectedFile = validateExpectedFile(values.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE!);
+  const expectedContent = values.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT!;
 
   return {
     credentials: {
@@ -133,7 +133,7 @@ export function parseVercelProviderSmokeConfig(
       projectId: requireScopeValue(values.VERCEL_PROJECT_ID!, 'VERCEL_PROJECT_ID'),
     },
     fixture: {
-      token: values.GITHUB_FIXTURE_TOKEN!.trim(),
+      token: values.DEVBOX_GITHUB_FIXTURE_TOKEN!.trim(),
       repository,
       branch,
       defaultBranch,
@@ -156,11 +156,11 @@ function normalizeSmokeBranch(value: string, name: string): string {
 function validateExpectedFile(value: string): string {
   const file = value.trim();
   if (!file || file.startsWith('/') || file.includes('\\') || file.includes('\0')) {
-    throw new Error('GITHUB_FIXTURE_EXPECTED_FILE must be a non-empty relative POSIX path');
+    throw new Error('DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE must be a non-empty relative POSIX path');
   }
   const segments = file.split('/');
   if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
-    throw new Error('GITHUB_FIXTURE_EXPECTED_FILE must not contain empty, dot, or parent path segments');
+    throw new Error('DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE must not contain empty, dot, or parent path segments');
   }
   return file;
 }

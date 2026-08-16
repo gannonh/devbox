@@ -77,12 +77,12 @@ Create these exact repository secrets:
 | `VERCEL_CONSUMER_TOKEN` | Verified Issue #4 consumer token for the `devbox-uat` Sandbox project |
 | `VERCEL_CONSUMER_TEAM_ID` | Exact Vercel team/account ID for that consumer token |
 | `VERCEL_CONSUMER_PROJECT_ID` | Exact Vercel project ID for that consumer token |
-| `GITHUB_FIXTURE_TOKEN` | Read-only token able to clone the private fixture |
-| `GITHUB_FIXTURE_REPOSITORY` | Exact `owner/repository` pair |
-| `GITHUB_FIXTURE_BRANCH` | Branch expected to exist for the existing path |
-| `GITHUB_FIXTURE_DEFAULT_BRANCH` | Expected GitHub API default branch |
-| `GITHUB_FIXTURE_EXPECTED_FILE` | Safe relative POSIX path to assert after clone |
-| `GITHUB_FIXTURE_EXPECTED_CONTENT` | Exact expected file bytes (multiline allowed) |
+| `DEVBOX_GITHUB_FIXTURE_TOKEN` | Read-only token able to clone the private fixture |
+| `DEVBOX_GITHUB_FIXTURE_REPOSITORY` | Exact `owner/repository` pair |
+| `DEVBOX_GITHUB_FIXTURE_BRANCH` | Branch expected to exist for the existing path |
+| `DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH` | Expected GitHub API default branch |
+| `DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE` | Safe relative POSIX path to assert after clone |
+| `DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT` | Exact expected file bytes (multiline allowed) |
 
 The Vercel credential source is the same `VERCEL_CONSUMER_*` triad verified by
 Issue #4 for the `devbox-uat` Sandbox project (shared with the image supply
@@ -117,7 +117,7 @@ cwd as `/vercel/sandbox`. The client therefore sends the SDK object overload
 `{cmd, args, cwd, signal, timeoutMs}` and uses
 `/vercel/sandbox/<normalized-repository>` for branch setup, all clone
 assertions, and both fresh/resumed terminal sessions. The existing path clones
-`GITHUB_FIXTURE_BRANCH`. The missing path verifies a run-unique branch is
+`DEVBOX_GITHUB_FIXTURE_BRANCH`. The missing path verifies a run-unique branch is
 absent, clones the expected default, and creates that branch inside the
 Sandbox without pushing it. Both paths assert `origin`, commit `HEAD`,
 checked-out branch, clean status, and configured file content. The production

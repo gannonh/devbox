@@ -13,12 +13,12 @@ function environment(overrides: Record<string, string | undefined> = {}): Record
     VERCEL_TOKEN: 'vercel-token',
     VERCEL_TEAM_ID: 'team-id',
     VERCEL_PROJECT_ID: 'project-id',
-    GITHUB_FIXTURE_TOKEN: 'github-token',
-    GITHUB_FIXTURE_REPOSITORY: 'acme/private-fixture',
-    GITHUB_FIXTURE_BRANCH: 'fixture-existing',
-    GITHUB_FIXTURE_DEFAULT_BRANCH: 'main',
-    GITHUB_FIXTURE_EXPECTED_FILE: 'fixture.txt',
-    GITHUB_FIXTURE_EXPECTED_CONTENT: 'private fixture content',
+    DEVBOX_GITHUB_FIXTURE_TOKEN: 'github-token',
+    DEVBOX_GITHUB_FIXTURE_REPOSITORY: 'acme/private-fixture',
+    DEVBOX_GITHUB_FIXTURE_BRANCH: 'fixture-existing',
+    DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: 'main',
+    DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: 'fixture.txt',
+    DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: 'private fixture content',
     SMOKE_PATH: 'both',
     SMOKE_REPORT: '/tmp/provider-smoke.json',
     ...overrides,
@@ -30,16 +30,25 @@ function environment(overrides: Record<string, string | undefined> = {}): Record
 // Issue #4 VERCEL_CONSUMER_* secrets; the script environment keeps the exact
 // generic VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID names through
 // PROVIDER_SMOKE_SECRET_TO_ENV.
+const VALID_FIXTURE_SECRET_NAMES = [
+  'DEVBOX_GITHUB_FIXTURE_TOKEN',
+  'DEVBOX_GITHUB_FIXTURE_REPOSITORY',
+  'DEVBOX_GITHUB_FIXTURE_BRANCH',
+  'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH',
+  'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
+  'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
+] as const;
+
 const PROVIDER_SMOKE_SECRETS = [
   'VERCEL_CONSUMER_TOKEN',
   'VERCEL_CONSUMER_TEAM_ID',
   'VERCEL_CONSUMER_PROJECT_ID',
-  'GITHUB_FIXTURE_TOKEN',
-  'GITHUB_FIXTURE_REPOSITORY',
-  'GITHUB_FIXTURE_BRANCH',
-  'GITHUB_FIXTURE_DEFAULT_BRANCH',
-  'GITHUB_FIXTURE_EXPECTED_FILE',
-  'GITHUB_FIXTURE_EXPECTED_CONTENT',
+  'DEVBOX_GITHUB_FIXTURE_TOKEN',
+  'DEVBOX_GITHUB_FIXTURE_REPOSITORY',
+  'DEVBOX_GITHUB_FIXTURE_BRANCH',
+  'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH',
+  'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
+  'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
 ] as const;
 
 // Exact mapping from each workflow secret interface name to the script
@@ -48,12 +57,12 @@ const PROVIDER_SMOKE_SECRET_TO_ENV: Record<string, string> = {
   VERCEL_CONSUMER_TOKEN: 'VERCEL_TOKEN',
   VERCEL_CONSUMER_TEAM_ID: 'VERCEL_TEAM_ID',
   VERCEL_CONSUMER_PROJECT_ID: 'VERCEL_PROJECT_ID',
-  GITHUB_FIXTURE_TOKEN: 'GITHUB_FIXTURE_TOKEN',
-  GITHUB_FIXTURE_REPOSITORY: 'GITHUB_FIXTURE_REPOSITORY',
-  GITHUB_FIXTURE_BRANCH: 'GITHUB_FIXTURE_BRANCH',
-  GITHUB_FIXTURE_DEFAULT_BRANCH: 'GITHUB_FIXTURE_DEFAULT_BRANCH',
-  GITHUB_FIXTURE_EXPECTED_FILE: 'GITHUB_FIXTURE_EXPECTED_FILE',
-  GITHUB_FIXTURE_EXPECTED_CONTENT: 'GITHUB_FIXTURE_EXPECTED_CONTENT',
+  DEVBOX_GITHUB_FIXTURE_TOKEN: 'DEVBOX_GITHUB_FIXTURE_TOKEN',
+  DEVBOX_GITHUB_FIXTURE_REPOSITORY: 'DEVBOX_GITHUB_FIXTURE_REPOSITORY',
+  DEVBOX_GITHUB_FIXTURE_BRANCH: 'DEVBOX_GITHUB_FIXTURE_BRANCH',
+  DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: 'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH',
+  DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: 'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
+  DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: 'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
 };
 
 // Parse a workflow YAML structurally (js-yaml is a transitive dep via
@@ -91,7 +100,7 @@ describe('Vercel provider smoke configuration', () => {
 
   it('preserves multiline expected fixture content without treating it as a credential', () => {
     const expectedContent = ['first line', 'second line', ''].join('\n');
-    const config = parseVercelProviderSmokeConfig(environment({ GITHUB_FIXTURE_EXPECTED_CONTENT: expectedContent }));
+    const config = parseVercelProviderSmokeConfig(environment({ DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: expectedContent }));
     expect(config.fixture.expectedContent).toBe(expectedContent);
   });
 
@@ -104,9 +113,9 @@ describe('Vercel provider smoke configuration', () => {
   });
 
   it('rejects fixture values that could escape the cloned repository', () => {
-    expect(() => parseVercelProviderSmokeConfig(environment({ GITHUB_FIXTURE_EXPECTED_FILE: '../secret.txt' })))
+    expect(() => parseVercelProviderSmokeConfig(environment({ DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: '../secret.txt' })))
       .toThrow(/relative|parent/i);
-    expect(() => parseVercelProviderSmokeConfig(environment({ GITHUB_FIXTURE_REPOSITORY: 'https://github.com/acme/private-fixture.git' })))
+    expect(() => parseVercelProviderSmokeConfig(environment({ DEVBOX_GITHUB_FIXTURE_REPOSITORY: 'https://github.com/acme/private-fixture.git' })))
       .toThrow(/owner\/repository/i);
   });
 
@@ -161,6 +170,19 @@ describe('Vercel provider smoke configuration', () => {
     expect(source.indexOf('const image = assertPromotedVercelImagePin'))
       .toBeLessThan(source.indexOf('initializeSecretValues();'));
     expect(source).not.toContain('vercel sandbox');
+  });
+
+  it('uses valid GitHub fixture secret names in both workflow interfaces', async () => {
+    const caller = await readFile('.github/workflows/ci.yml', 'utf8');
+    const callee = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
+    for (const workflow of [caller, callee]) {
+      expect(workflow).not.toMatch(/secrets\.GITHUB_/);
+      for (const name of VALID_FIXTURE_SECRET_NAMES) expect(workflow).toContain(name);
+    }
+    for (const name of VALID_FIXTURE_SECRET_NAMES) {
+      expect(caller).toContain(`${name}: \${{ secrets.${name} }}`);
+      expect(callee).toMatch(new RegExp(`${name}:[\\s\\S]*?required: true`));
+    }
   });
 
   it('defines a reusable exact-source smoke contract with explicit private secrets', async () => {
@@ -343,7 +365,7 @@ describe('Vercel provider smoke configuration', () => {
     expect(smokeStep).toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}');
     expect(smokeStep).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
     expect(redactStep).toContain("if: always() && steps.guard.outcome == 'success'");
-    expect(redactStep).toContain('GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.GITHUB_FIXTURE_EXPECTED_CONTENT }}');
+    expect(redactStep).toContain('DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}');
     expect(smokeStep).not.toContain('steps.pin.outcome');
   });
 
@@ -375,12 +397,12 @@ describe('Vercel provider smoke configuration', () => {
       'VERCEL_TOKEN',
       'VERCEL_TEAM_ID',
       'VERCEL_PROJECT_ID',
-      'GITHUB_FIXTURE_TOKEN',
-      'GITHUB_FIXTURE_REPOSITORY',
-      'GITHUB_FIXTURE_BRANCH',
-      'GITHUB_FIXTURE_DEFAULT_BRANCH',
-      'GITHUB_FIXTURE_EXPECTED_FILE',
-      'GITHUB_FIXTURE_EXPECTED_CONTENT',
+      'DEVBOX_GITHUB_FIXTURE_TOKEN',
+      'DEVBOX_GITHUB_FIXTURE_REPOSITORY',
+      'DEVBOX_GITHUB_FIXTURE_BRANCH',
+      'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH',
+      'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
+      'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
       'SMOKE_REPORT',
     ]);
   });
