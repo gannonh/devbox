@@ -13,7 +13,7 @@ import {
 import { redactSecrets } from './redaction.js';
 
 export const TERMINAL_SESSION_STATES = new Set<SandboxSessionStatus>(['stopped', 'aborted']);
-const STOPPABLE_SESSION_STATES = new Set<SandboxSessionStatus>([
+export const STOPPABLE_SESSION_STATES = new Set<SandboxSessionStatus>([
   'pending',
   'running',
   'stopping',
@@ -163,6 +163,7 @@ export async function cleanupVercelSandbox(
       sessionObservationOk = true;
     } else {
       sandboxLookupOk = false;
+      residualSandboxIds.add(options.name);
       recordError('sandbox lookup', error);
     }
   }

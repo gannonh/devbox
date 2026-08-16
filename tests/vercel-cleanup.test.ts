@@ -70,6 +70,32 @@ describe('Vercel sandbox cleanup', () => {
     expect(result.errors.join(' ')).toContain('stale sandbox delete');
   });
 
+  it('retains the requested sandbox name when the initial lookup fails', async () => {
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('Vercel unavailable'), { status: 503 }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'lookup-failure',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(false);
+    expect(result.residualSandboxIds).toEqual(['lookup-failure']);
+    expect(result.errors.join(' ')).toContain('sandbox lookup');
+    expect(adapter.listSessions).not.toHaveBeenCalled();
+  });
+
   it('cleans matching snapshots even when the sandbox is already missing', async () => {
     let snapshots = [{ id: 'orphan-snapshot', sourceSessionId: 'session', status: 'created' as const }];
     const adapter: VercelCleanupAdapter = {

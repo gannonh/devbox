@@ -4,10 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
-import { createVercelLifecycle } from '../src/providers/vercel/lifecycle.js';
+import {
+  createVercelLifecycle,
+  VercelLifecycleError,
+} from '../src/providers/vercel/lifecycle.js';
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
-import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
+import {
+  createVercelSandboxClient,
+  VercelSdkError,
+  type VercelSandboxClient,
+  type VercelSandboxHandle,
+} from '../src/providers/vercel/client.js';
 
 const credentials = { token: 'vercel-token', teamId: 'team', projectId: 'project' };
 const source: GitHubSourcePlan = {
@@ -81,6 +89,159 @@ describe('Vercel lifecycle', () => {
 
     expect(client.getOrCreate).toHaveBeenCalledTimes(2);
     expect(client.runCommand).toHaveBeenCalledOnce();
+  });
+
+  it('preserves snapshot retry seeds and residual audit state after partial cleanup', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(async ({ snapshotId }) => { throw new Error(`delete blocked for ${snapshotId}`); }),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    await lifecycle.up();
+    const stored = (await metadata.read())!;
+    await metadata.write({
+      teamId: stored.teamId,
+      projectId: stored.projectId,
+      identity: stored.identity,
+      sandboxId: stored.sandboxId,
+      snapshotIds: ['retry-seed'],
+      configuration: stored.configuration,
+    });
+
+    await expect(lifecycle.remove()).rejects.toMatchObject({ code: 'cleanup_incomplete' });
+    const partial = (await metadata.read())!;
+    expect(partial.snapshotIds).toEqual(['retry-seed']);
+    expect(partial.residual).toEqual(expect.objectContaining({
+      snapshotIds: ['retry-seed'],
+    }));
+
+    await lifecycle.up();
+    const resumed = (await metadata.read())!;
+    expect(resumed.snapshotIds).toEqual(partial.snapshotIds);
+    expect(resumed.residual).toEqual(partial.residual);
+  });
+
+  it('preserves branch setup lifecycle errors through the SDK adapter', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const target = sandbox();
+    target.runCommand = async () => ({
+      exitCode: 1,
+      stderr: async () => 'branch setup failed with github-token',
+    });
+    const sandboxApi = {
+      getOrCreate: vi.fn(async (params: Record<string, unknown>) => {
+        await (params.onCreate as ((sandbox: VercelSandboxHandle) => Promise<void>))(target);
+        return target;
+      }),
+      get: vi.fn(),
+      list: vi.fn(),
+    };
+    const client = createVercelSandboxClient({ sandbox: sandboxApi });
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+    });
+
+    let caught: unknown;
+    try {
+      await lifecycle.up();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(VercelLifecycleError);
+    expect(caught).not.toBeInstanceOf(VercelSdkError);
+    expect(caught).toMatchObject({
+      name: 'VercelLifecycleError',
+      code: 'branch_setup_failed',
+    });
+    expect((caught as Error).message).toContain('Unable to create requested Git branch');
+    expect((caught as Error).message).not.toContain('github-token');
+  });
+
+  it('records a possible sandbox residual when the initial lookup fails', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      get: vi.fn(async () => { throw Object.assign(new Error('Vercel unavailable'), { status: 503 }); }),
+      listSessions: vi.fn(),
+      stopSandbox: vi.fn(),
+      listSnapshots: vi.fn(),
+      getSnapshot: vi.fn(),
+      deleteSandbox: vi.fn(),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+    await lifecycle.up();
+
+    await expect(lifecycle.remove()).rejects.toMatchObject({ code: 'cleanup_incomplete' });
+    await expect(metadata.read()).resolves.toMatchObject({
+      residual: { sandboxIds: [handle.name] },
+    });
+    expect(client.listSessions).not.toHaveBeenCalled();
+    expect(client.deleteSandbox).not.toHaveBeenCalled();
+  });
+
+  it.each(['failed', 'running'] as const)('fails stop_incomplete for a non-converging %s session', async (status) => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => [{ id: 'stuck-session', status }]),
+      stopSandbox: vi.fn(async () => ({ id: 'stuck-session', status })),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+    });
+    await lifecycle.up();
+
+    await expect(lifecycle.stop()).rejects.toMatchObject({
+      name: 'VercelLifecycleError',
+      code: 'stop_incomplete',
+    });
+    expect(client.stopSandbox).toHaveBeenCalledOnce();
+    await expect(metadata.read()).resolves.toMatchObject({ identity: expect.any(Object) });
   });
 
   it('resumes after remote branch state changes without changing bootstrap configuration', async () => {

@@ -258,6 +258,7 @@ export function createVercelSandboxClient(
     try {
       return await action();
     } catch (error) {
+      if (isVercelLifecycleError(error)) throw error;
       throw new VercelSdkError(operation, error, secrets);
     }
   }
@@ -434,8 +435,15 @@ async function callWithSecrets<T>(
   try {
     return await action();
   } catch (error) {
+    if (isVercelLifecycleError(error)) throw error;
     throw new VercelSdkError(operation, error, secrets);
   }
+}
+
+function isVercelLifecycleError(error: unknown): boolean {
+  return error instanceof Error &&
+    error.name === 'VercelLifecycleError' &&
+    typeof (error as { code?: unknown }).code === 'string';
 }
 
 export async function collectPaginated<T>(value: unknown, key: string): Promise<T[]> {

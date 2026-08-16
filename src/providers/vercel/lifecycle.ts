@@ -2,6 +2,8 @@ import type { CredentialResolutionOptions, VercelCredentials } from './auth.js';
 import { resolveVercelCredentials } from './auth.js';
 import {
   cleanupVercelSandbox,
+  STOPPABLE_SESSION_STATES,
+  TERMINAL_SESSION_STATES,
   type VercelCleanupAdapter,
   type VercelCleanupOptions,
   type VercelCleanupResult,
@@ -33,8 +35,6 @@ import {
 import { redactSecrets } from './redaction.js';
 
 export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 30 * 60 * 1000;
-const TERMINAL_STATES = new Set(['stopped', 'aborted']);
-
 export class VercelLifecycleError extends Error {
   readonly code: string;
 
@@ -184,6 +184,8 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           projectId: context.credentials.projectId,
           identity: toMetadataIdentity(context.identity),
           sandboxId: sandboxIdentifier(sandbox),
+          ...(existing?.snapshotIds === undefined ? {} : { snapshotIds: existing.snapshotIds }),
+          ...(existing?.residual === undefined ? {} : { residual: existing.residual }),
           configuration: existing?.configuration ?? context.configuration,
         });
         return sandbox;
@@ -260,7 +262,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         validateSandboxIdentity(sandbox, context, identity);
         let sessions = await context.client.listSessions(sandbox);
         let finalStop: VercelStopResult | undefined;
-        if (!allTerminal(sessions) || isStoppableStatus(sandbox.status)) {
+        if (!allTerminal(sessions) || STOPPABLE_SESSION_STATES.has(sandbox.status)) {
           finalStop = await context.client.stopSandbox(sandbox);
           sessions = await context.client.listSessions(sandbox);
         }
@@ -641,9 +643,5 @@ function numericSessionField(
 }
 
 function allTerminal(sessions: SandboxSessionRecord[]): boolean {
-  return sessions.every((session) => TERMINAL_STATES.has(session.status));
-}
-
-function isStoppableStatus(status: string): boolean {
-  return ['pending', 'running', 'stopping', 'snapshotting'].includes(status);
+  return sessions.every((session) => TERMINAL_SESSION_STATES.has(session.status));
 }

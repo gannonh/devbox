@@ -48,6 +48,7 @@ export type {
 } from './vercel/identity.js';
 export {
   cleanupVercelSandbox,
+  STOPPABLE_SESSION_STATES,
   TERMINAL_SESSION_STATES,
 } from './vercel/cleanup.js';
 export type {
