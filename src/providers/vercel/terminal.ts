@@ -162,6 +162,25 @@ async function attachTerminal(input: {
   } satisfies VercelTerminalTimeoutScheduler;
 
   let socket: VercelTerminalWebSocket | undefined;
+  let removeEarlyMessageListener = () => {};
+  let removeSocketErrorGuard = () => {};
+  const earlyMessages: Array<{ data: unknown; isBinary: boolean }> = [];
+  let earlyMessageBytes = 0;
+  let earlyMessageOverflow = false;
+  const onEarlyMessage = (data: unknown, isBinary: boolean) => {
+    let size: number;
+    try {
+      size = toBuffer(data).length;
+    } catch {
+      size = 0;
+    }
+    if (earlyMessageBytes + size > MAX_BUFFER_LIMIT_BYTES) {
+      earlyMessageOverflow = true;
+      return;
+    }
+    earlyMessageBytes += size;
+    earlyMessages.push({ data, isBinary });
+  };
   try {
     const socketUrl = new URL(interactive.url);
     const tokenQuery = `token=${encodeURIComponent(interactive.token)}`;
@@ -169,17 +188,23 @@ async function attachTerminal(input: {
       ? `${socketUrl.search}&${tokenQuery}`
       : `?${tokenQuery}`;
     socket = createWebSocket(socketUrl.toString(), { maxPayload: MAX_BUFFER_LIMIT_BYTES });
-    await waitForOpen(socket, options.signal, {
+    removeSocketErrorGuard = installCloseErrorGuard(socket);
+    socket.on('message', onEarlyMessage);
+    removeEarlyMessageListener = () => socket?.removeListener('message', onEarlyMessage);
+    removeSocketErrorGuard = await waitForOpen(socket, options.signal, {
+      errorGuard: removeSocketErrorGuard,
       timeoutMs: connectionTimeoutMs,
       scheduler: connectionTimeoutScheduler,
     });
   } catch (error) {
+    removeEarlyMessageListener();
     closeSocket(socket);
     if (options.signal?.aborted) return { status: 'detached', reason: 'abort' };
     writeError(streams.stderr, error, [interactive.token]);
     return { status: 'detached', reason: 'error' };
   }
   if (options.signal?.aborted) {
+    removeEarlyMessageListener();
     closeSocket(socket);
     return { status: 'detached', reason: 'abort' };
   }
@@ -208,6 +233,7 @@ async function attachTerminal(input: {
     });
   } catch (error) {
     writeError(streams.stderr, error, [interactive.token]);
+    removeEarlyMessageListener();
     closeSocket(socket);
     return { status: 'detached', reason: 'error' };
   }
@@ -229,12 +255,14 @@ async function attachTerminal(input: {
     );
   } catch (error) {
     writeError(streams.stderr, error, [interactive.token]);
+    removeEarlyMessageListener();
     closeSocket(socket);
     return { status: 'detached', reason: 'error' };
   }
   const detachSignals = options.detachSignals ?? DEFAULT_DETACH_SIGNALS;
   if (Buffer.byteLength(startFrame) > MAX_CONTROL_FRAME_BYTES) {
     writeError(streams.stderr, new Error('Terminal start frame exceeds control frame limit'), [interactive.token]);
+    removeEarlyMessageListener();
     closeSocket(socket);
     return { status: 'detached', reason: 'error' };
   }
@@ -590,6 +618,9 @@ async function attachTerminal(input: {
     socket.on('message', onMessage);
     socket.on('error', onSocketError);
     socket.on('close', onClose);
+    // The connecting guard stays until all session transport listeners own the socket.
+    removeEarlyMessageListener();
+    removeSocketErrorGuard();
     streams.stdout.on('error', onStdoutError);
     streams.stdin.on('data', onStdin);
     streams.stdin.on('end', onEof);
@@ -649,6 +680,16 @@ async function attachTerminal(input: {
         reportError(error);
         finish({ status: 'detached', reason: 'error' });
       }
+    }
+    if (settled) return;
+    if (earlyMessageOverflow) {
+      reportError(new Error('Terminal early message buffer limit exceeded'));
+      finish({ status: 'detached', reason: 'error' });
+      return;
+    }
+    for (const message of earlyMessages) {
+      if (settled) break;
+      onMessage(message.data, message.isBinary);
     }
   });
 }
@@ -726,11 +767,12 @@ async function waitForOpen(
   socket: VercelTerminalWebSocket,
   signal: AbortSignal | undefined,
   options: {
+    errorGuard: () => void;
     timeoutMs: number;
     scheduler: VercelTerminalTimeoutScheduler;
   },
-): Promise<void> {
-  const removeCloseErrorGuard = installCloseErrorGuard(socket);
+): Promise<() => void> {
+  if (socket.readyState === OPEN) return options.errorGuard;
   if (socket.readyState === 3) {
     return Promise.reject(new Error('WebSocket is already closed'));
   }
@@ -741,7 +783,7 @@ async function waitForOpen(
     closeSocket(socket);
     return Promise.reject(signal.reason ?? new Error('Terminal connection aborted'));
   }
-  await new Promise<void>((resolve, reject) => {
+  return await new Promise<() => void>((resolve, reject) => {
     let settled = false;
     let timer: unknown;
     const cleanup = () => {
@@ -763,8 +805,7 @@ async function waitForOpen(
       if (settled) return;
       settled = true;
       cleanup();
-      removeCloseErrorGuard();
-      resolve();
+      resolve(options.errorGuard);
     };
     const onError = (error: unknown) => {
       settleReject(error instanceof Error ? error : new Error('WebSocket connection failed'), false);

@@ -14,6 +14,8 @@ class FakeWebSocket extends EventEmitter implements VercelTerminalWebSocket {
   bufferedAmount = 0;
   blockSends = false;
   deferErrorAfterClose = false;
+  deferErrorAfterOpen = false;
+  deferMessageAfterOpen?: Buffer;
   pauseCount = 0;
   resumeCount = 0;
   private paused = false;
@@ -54,6 +56,12 @@ class FakeWebSocket extends EventEmitter implements VercelTerminalWebSocket {
   open(): void {
     this.readyState = 1;
     this.emit('open');
+    if (this.deferErrorAfterOpen || this.deferMessageAfterOpen) {
+      process.nextTick(() => {
+        if (this.deferMessageAfterOpen) this.emit('message', this.deferMessageAfterOpen, true);
+        if (this.deferErrorAfterOpen) this.emit('error', new Error('early post-open error'));
+      });
+    }
   }
 
   emitMessage(data: Buffer | string, isBinary: boolean): void {
@@ -230,6 +238,35 @@ describe('Vercel terminal adapter', () => {
 
     await expect(resultPromise).resolves.toEqual({ status: 'detached', reason: 'abort' });
     await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
+  it('hands off post-open nextTick messages and errors without an uncaught event', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const output: Buffer[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        socket.deferMessageAfterOpen = Buffer.from('early output');
+        socket.deferErrorAfterOpen = true;
+        sockets.push(socket);
+        setImmediate(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams();
+    terminalStreams.output.on('data', (chunk) => output.push(Buffer.from(chunk)));
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+    await vi.waitFor(() => expect(Buffer.concat(output)).toEqual(Buffer.from('early output')));
+
+    sockets[0].emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false);
+    await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
   });
 
   it('times out a connecting socket with a redacted actionable error', async () => {
