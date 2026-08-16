@@ -104,7 +104,7 @@ export function createVercelIdentity(input: VercelIdentityInput): VercelSandboxI
   if (!packageVersion.trim()) throw new Error('Package version must not be empty');
 
   const identitySource = input.scope
-    ? [repository.canonical, branch, packageVersion, input.scope.teamId, input.scope.projectId].join('\0')
+    ? [repository.canonical, branch, input.scope.teamId, input.scope.projectId].join('\0')
     : [repository.canonical, branch, packageVersion].join('\0');
   const versionSlug = sanitizeVercelName(`v-${packageVersion}`);
   const humanName = [

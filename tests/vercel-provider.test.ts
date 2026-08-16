@@ -1060,6 +1060,75 @@ describe('Vercel provider', () => {
     await expect(metadata.read()).resolves.toBeNull();
   });
 
+  it('does not recover or delete a same-branch sandbox from another Vercel scope', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-recovery-foreign-scope-'));
+    const remote = 'github.com/acme/repo';
+    const env = { VERCEL_TOKEN: 'vercel-secret', VERCEL_TEAM_ID: 'team-1', VERCEL_PROJECT_ID: 'project-1' };
+    const foreign = createVercelIdentity({
+      remote,
+      branch: 'feature/recover',
+      scope: { teamId: 'team-other', projectId: 'project-other' },
+    });
+    const client = {
+      listSandboxes: vi.fn(async () => [{
+        name: foreign.name,
+        status: 'running' as const,
+        persistent: true,
+        tags: { ...foreign.tags },
+      }]),
+      get: vi.fn(),
+      deleteSandbox: vi.fn(),
+    } as unknown as VercelSandboxClient;
+    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+
+    await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
+    expect(client.get).not.toHaveBeenCalled();
+    expect(client.deleteSandbox).not.toHaveBeenCalled();
+  });
+
+  it('recovers the scoped sandbox and ignores a foreign-scope record for the same branch', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-recovery-scoped-own-'));
+    const remote = 'github.com/acme/repo';
+    const env = { VERCEL_TOKEN: 'vercel-secret', VERCEL_TEAM_ID: 'team-1', VERCEL_PROJECT_ID: 'project-1' };
+    const own = createVercelIdentity({
+      remote,
+      branch: 'feature/recover',
+      scope: { teamId: env.VERCEL_TEAM_ID, projectId: env.VERCEL_PROJECT_ID },
+    });
+    const foreign = createVercelIdentity({
+      remote,
+      branch: 'feature/recover',
+      scope: { teamId: 'team-other', projectId: 'project-other' },
+    });
+    const handle = {
+      ...sandbox(),
+      name: own.name,
+      status: 'stopped' as const,
+      tags: { ...own.tags },
+    };
+    let deleted = false;
+    const client = {
+      listSandboxes: vi.fn(async () => [
+        { name: foreign.name, status: 'running' as const, persistent: true, tags: { ...foreign.tags } },
+        { name: own.name, status: 'stopped' as const, persistent: true, tags: { ...own.tags } },
+      ]),
+      get: vi.fn(async ({ name }: { name: string }) => {
+        if (name !== own.name || deleted) {
+          throw Object.assign(new Error('sandbox not found'), { status: 404 });
+        }
+        return handle;
+      }),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => { deleted = true; }),
+    } as unknown as VercelSandboxClient;
+    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+
+    await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
+    expect(client.get).toHaveBeenCalledWith(expect.objectContaining({ name: own.name }));
+    expect(client.deleteSandbox).toHaveBeenCalledOnce();
+  });
+
   it('routes terminal transport failures through centralized redacted errors without duplicate output', async () => {
     const token = 'terminal-transport-secret';
     const stderr = new PassThrough();

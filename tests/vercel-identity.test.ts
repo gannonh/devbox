@@ -83,4 +83,29 @@ describe('Vercel identity', () => {
     expect(first.name).not.toBe(second.name);
     expect(first.tags.identity).not.toBe(second.tags.identity);
   });
+
+  it('binds scoped identity to Vercel team and project rather than package version', () => {
+    const input = { remote: 'https://github.com/acme/repo', branch: 'feature/ui' };
+    const current = createVercelIdentity({
+      ...input,
+      packageVersion: '0.1.2',
+      scope: { teamId: 'team-1', projectId: 'project-1' },
+    });
+    const upgraded = createVercelIdentity({
+      ...input,
+      packageVersion: '0.2.0',
+      scope: { teamId: 'team-1', projectId: 'project-1' },
+    });
+    const foreign = createVercelIdentity({
+      ...input,
+      packageVersion: '0.1.2',
+      scope: { teamId: 'team-other', projectId: 'project-other' },
+    });
+
+    expect(current.tags.identity).toBe(upgraded.tags.identity);
+    expect(current.name).not.toBe(upgraded.name);
+    expect(current.tags.version).not.toBe(upgraded.tags.version);
+    expect(current.tags.identity).not.toBe(foreign.tags.identity);
+    expect(current.name).not.toBe(foreign.name);
+  });
 });

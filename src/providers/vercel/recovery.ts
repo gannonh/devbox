@@ -1,7 +1,7 @@
 import type { VercelCredentials } from './auth.js';
 import type { SandboxListRecord, VercelSandboxClient } from './client.js';
 import { VercelLifecycleError } from './lifecycle.js';
-import { createVercelBranchTag, createVercelRepositoryTag } from './identity.js';
+import { createVercelIdentity, type VercelSandboxIdentity } from './identity.js';
 import type { VercelMetadataIdentity } from './metadata.js';
 import type { GitHubSourceRemote } from './source.js';
 
@@ -16,13 +16,16 @@ export async function recoverMissingBranchSandbox(
   branch: string,
   credentials: VercelCredentials,
 ): Promise<RecoveredBranchSandbox | undefined> {
-  const repositoryTag = createVercelRepositoryTag(origin.canonical);
-  const branchTag = createVercelBranchTag(branch);
+  const expected = createVercelIdentity({
+    remote: origin.canonical,
+    branch,
+    scope: { teamId: credentials.teamId, projectId: credentials.projectId },
+  });
   const records = await client.listSandboxes({
     credentials,
-    tags: { provider: 'vercel', repository: repositoryTag },
+    tags: { provider: 'vercel', repository: expected.tags.repository },
   });
-  const matches = records.filter((record) => isRecoveryCandidate(record, repositoryTag, branchTag));
+  const matches = records.filter((record) => isRecoveryCandidate(record, expected));
   if (matches.length > 1) {
     throw new VercelLifecycleError(
       'identity_conflict',
@@ -52,11 +55,7 @@ export async function recoverMissingBranchSandbox(
   };
 }
 
-function isRecoveryCandidate(
-  record: SandboxListRecord,
-  repositoryTag: string,
-  branchTag: string,
-): boolean {
+function isRecoveryCandidate(record: SandboxListRecord, expected: VercelSandboxIdentity): boolean {
   const tags = record.tags;
   if (!record.name.trim() || !tags) return false;
   const expectedKeys = ['provider', 'repository', 'branch', 'version', 'identity'];
@@ -64,7 +63,8 @@ function isRecoveryCandidate(
   if (actualKeys.length !== expectedKeys.length ||
       !actualKeys.every((key, index) => key === [...expectedKeys].sort()[index])) return false;
   return tags.provider === 'vercel'
-    && tags.repository === repositoryTag
-    && tags.branch === branchTag
+    && tags.repository === expected.tags.repository
+    && tags.branch === expected.tags.branch
+    && tags.identity === expected.tags.identity
     && Object.values(tags).every((value) => value.trim().length > 0);
 }
