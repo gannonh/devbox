@@ -84,6 +84,8 @@ export interface VercelTerminalOptions {
   args?: readonly string[];
   env?: Readonly<Record<string, string>>;
   streams?: VercelTerminalStreams;
+  /** Provider-neutral TTY fact; avoids consulting a global process stream. */
+  tty?: boolean;
   signal?: AbortSignal;
   signalSource?: EventEmitter;
   detachSignals?: readonly ('SIGTERM' | 'SIGHUP')[];
@@ -114,17 +116,21 @@ export function createVercelTerminalAdapter(
 ): VercelTerminalAdapter {
   const createWebSocket = dependencies.createWebSocket ?? ((url: string, options: { maxPayload: number }) =>
     new WebSocket(url, options) as unknown as VercelTerminalWebSocket);
-  const defaultStreams = dependencies.streams ?? processStreams();
+  const defaultStreams = dependencies.streams;
   const defaultSignalSource = dependencies.signalSource ?? process;
 
   return {
-    attach: (sandbox, options = {}) => attachTerminal({
-      sandbox,
-      options,
-      createWebSocket,
-      streams: options.streams ?? defaultStreams,
-      signalSource: options.signalSource ?? defaultSignalSource,
-    }),
+    attach: (sandbox, options = {}) => {
+      const streams = options.streams ?? defaultStreams;
+      if (!streams) return Promise.resolve({ status: 'detached', reason: 'error' as const });
+      return attachTerminal({
+        sandbox,
+        options,
+        createWebSocket,
+        streams,
+        signalSource: options.signalSource ?? defaultSignalSource,
+      });
+    },
   };
 }
 
@@ -277,6 +283,7 @@ async function attachTerminal(input: {
     let inputFlowPaused = false;
     const sessionController = new AbortController();
     const reportError = (error: unknown) => writeError(streams.stderr, error, [interactive.token]);
+    const stdinIsTTY = options.tty ?? Boolean(streams.stdin.isTTY);
     const wasRaw = streams.stdin.isRaw;
     const wasFlowing = streams.stdin.readableFlowing;
     const wasPaused = streams.stdin.isPaused();
@@ -312,7 +319,7 @@ async function attachTerminal(input: {
       inputFlowPaused = false;
       stopTimeoutExtension();
       sessionController.abort();
-      if (streams.stdin.isTTY && streams.stdin.setRawMode && wasRaw !== undefined) {
+      if (stdinIsTTY && streams.stdin.setRawMode && wasRaw !== undefined) {
         try {
           streams.stdin.setRawMode(wasRaw);
         } catch {
@@ -631,7 +638,7 @@ async function attachTerminal(input: {
     for (const signal of detachSignals) {
       signalSource.on(signal, onTermination);
     }
-    if (streams.stdin.isTTY && streams.stdin.setRawMode) {
+    if (stdinIsTTY && streams.stdin.setRawMode) {
       try {
         streams.stdin.setRawMode(true);
       } catch (error) {
@@ -725,14 +732,6 @@ function installCloseErrorGuard(socket: VercelTerminalWebSocket): () => void {
 
 function ignoreSocketError(): void {
   // A WebSocket may report a late close error after the session is detached.
-}
-
-function processStreams(): VercelTerminalStreams {
-  return {
-    stdin: process.stdin,
-    stdout: process.stdout,
-    stderr: process.stderr,
-  };
 }
 
 function validateSize(size: VercelTerminalSize): void {

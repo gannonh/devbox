@@ -47,15 +47,21 @@ npx @gannonh/devbox <branch>                          # boot a local box (defaul
 npx @gannonh/devbox <branch> --attach                # re-enter a running box
 npx @gannonh/devbox <branch> --stop                  # stop (keeps worktree + container)
 npx @gannonh/devbox <branch> --rm                    # remove container + worktree + branch
-npx @gannonh/devbox <branch> --url                   # print the noVNC URL
-npx @gannonh/devbox <branch> --open                  # open the noVNC URL in a browser
-npx @gannonh/devbox <branch> --password              # unsupported by the local provider
+npx @gannonh/devbox <branch> --url                   # print current provider routes
+npx @gannonh/devbox <branch> --open                  # open the first route in a browser
+npx @gannonh/devbox <branch> --password              # retrieve credentials when supported
 npx @gannonh/devbox --list                           # list local devbox containers
 npx @gannonh/devbox --provider local --list          # filter list by provider
 
-# `--password` is unsupported by the local provider and returns a concise error.
-# `vercel` is reserved for a future release; local is the only implemented provider.
+# Vercel is core support and uses only the authenticated GitHub origin.
+# Dirty files and unpushed commits are not copied. First use displays the
+# Vercel team/project and requires explicit confirmation in a TTY.
 npx @gannonh/devbox --provider vercel <branch>
+
+# In a Vercel terminal, Ctrl-C reaches the remote process and Ctrl-] detaches
+# without stopping the sandbox. Core URL output lists current routes; noVNC
+# and password generation/parity are not included in this phase.
+# `--password` remains explicitly unsupported by the Vercel core provider.
 ```
 
 ## What `init` creates

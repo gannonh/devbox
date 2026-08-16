@@ -1,6 +1,6 @@
 import { RealShellRunner } from '../lib/shell.js';
 import { createLocalProvider } from './local/provider.js';
-import { createUnavailableProvider } from './unavailable.js';
+import { createVercelProvider } from './vercel/provider.js';
 import type { DevboxProvider, ProviderName } from './types.js';
 import { ProviderUsageError } from './types.js';
 
@@ -17,7 +17,7 @@ export function createProviderRegistry(providers: ProviderRegistry): ProviderReg
 /** Registry used by the executable CLI. */
 export const defaultProviderRegistry: ProviderRegistry = createProviderRegistry({
   local: createLocalProvider(new RealShellRunner()),
-  vercel: createUnavailableProvider('vercel'),
+  vercel: createVercelProvider(),
 });
 
 /** Resolve a provider name, preserving local as the CLI default. */

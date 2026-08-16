@@ -4,19 +4,17 @@
 import type { LauncherContext } from './context.js';
 import { hyperlink } from '../../lib/display.js';
 import { info, setLogStreams } from '../../lib/log.js';
-import type { Writable } from 'node:stream';
-
 interface ContainerRow {
   branch: string;
   name: string;
   state: string;
 }
 
-export async function list(ctx: LauncherContext, stderr?: Writable): Promise<number> {
-  const { repoName, runner } = ctx;
+export async function list(ctx: LauncherContext): Promise<number> {
+  const { repoName, runner, stderr } = ctx;
 
-  const output = stderr ?? process.stderr;
-  if (stderr) setLogStreams({ stderr });
+  const output = stderr;
+  setLogStreams({ stderr });
 
   info('devbox containers:');
 

@@ -5,11 +5,23 @@ export {
   resolveProvider,
 } from './registry.js';
 export { createLocalProvider } from './local/provider.js';
-export { createUnavailableProvider } from './unavailable.js';
+export {
+  createVercelProvider,
+  createVercelProviderConfirmation,
+  mapVercelTerminalResult,
+} from './vercel/provider.js';
+export type {
+  VercelConfirmation,
+  VercelConfirmationBoundary,
+  VercelLifecycleFactory,
+  VercelOpener,
+  VercelProviderOptions,
+} from './vercel/provider.js';
 export {
   confirmVercelScope,
   renderVercelScope,
   resolveVercelCredentials,
+  resolveVercelCredentialsForScope,
 } from './vercel/auth.js';
 export type {
   CredentialResolutionOptions,
@@ -17,9 +29,18 @@ export type {
   DeviceAuthPrimitives,
   DeviceAuthResult,
   ScopeConfirmationBoundary,
+  StoredScopeCredentialResolutionOptions,
   VercelCredentials,
   VercelScope,
 } from './vercel/auth.js';
+export {
+  mapVercelError,
+  VercelProviderError,
+} from './vercel/errors.js';
+export type {
+  VercelErrorContext,
+  VercelProviderErrorCode,
+} from './vercel/errors.js';
 export {
   createVercelMetadataStore,
 } from './vercel/metadata.js';
@@ -108,6 +129,7 @@ export {
   remoteBranchOutputContains,
   renderRemoteSourceNotice,
   resolveGitHubSource,
+  resolveGitHubSourceOrigin,
   resolveGitHubToken,
   selectGitHubRevision,
 } from './vercel/source.js';
@@ -117,6 +139,7 @@ export type {
   GitHubSourceRemote,
   GitSource,
   ResolveGitHubSourceOptions,
+  ResolveGitHubSourceOriginOptions,
   ResolveGitHubTokenOptions,
 } from './vercel/source.js';
 export {
@@ -142,7 +165,9 @@ export type {
   ProviderActionResult,
   ProviderBranchRequest,
   ProviderListRequest,
+  ProviderInput,
   ProviderName,
+  ProviderOutput,
   ProviderRequestContext,
   ProviderUrlRequest,
   SupportedDisplayCredentials,

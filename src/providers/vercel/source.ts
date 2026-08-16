@@ -38,6 +38,35 @@ export interface ResolveGitHubTokenOptions {
   shellRunner?: ShellRunner;
 }
 
+export interface ResolveGitHubSourceOriginOptions {
+  repoRoot: string;
+  env?: Record<string, string | undefined>;
+  shellRunner?: ShellRunner;
+}
+
+/** Resolve only the local canonical GitHub origin; no remote branch or token query is made. */
+export async function resolveGitHubSourceOrigin(
+  options: ResolveGitHubSourceOriginOptions,
+): Promise<GitHubSourceRemote> {
+  const runner = options.shellRunner ?? shell;
+  const knownSecrets = configuredTokenSecrets(options.env);
+  let origin: string;
+  try {
+    origin = await runner.exec('git', ['remote', 'get-url', 'origin'], {
+      cwd: options.repoRoot,
+      silentStderr: true,
+    });
+  } catch (error) {
+    throw redactedError(new Error(`Unable to resolve GitHub origin: ${errorMessage(error)}`), knownSecrets);
+  }
+
+  try {
+    return normalizeGitHubSourceRemote(origin);
+  } catch (error) {
+    throw redactedError(error, knownSecrets);
+  }
+}
+
 /** Normalize an origin accepted by the remote-first GitHub provider. */
 export function normalizeGitHubSourceRemote(remote: string): GitHubSourceRemote {
   const value = remote.trim();
@@ -146,7 +175,7 @@ export async function resolveGitHubSource(
   try {
     remote = normalizeGitHubSourceRemote(origin);
   } catch (error) {
-    throw redactedError(error);
+    throw redactedError(error, knownSecrets);
   }
 
   let defaultOutput: string;
@@ -263,6 +292,7 @@ export function normalizeRequestedSourceBranch(branch: string): string {
     normalized.includes(']') ||
     normalized.includes('\\') ||
     normalized.includes('..') ||
+    normalized.split('/').some((segment) => segment === '.' || segment === '..' || segment.startsWith('.') || segment.endsWith('.')) ||
     normalized.includes('@{') ||
     normalized.startsWith('/') ||
     normalized.endsWith('/') ||

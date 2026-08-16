@@ -63,6 +63,10 @@ export interface CredentialResolutionOptions {
   deadline?: number;
 }
 
+export interface StoredScopeCredentialResolutionOptions extends CredentialResolutionOptions {
+  scope: VercelScope;
+}
+
 /** Resolve Vercel credentials without relying on SDK lazy authentication. */
 export async function resolveVercelCredentials(
   options: CredentialResolutionOptions,
@@ -79,7 +83,7 @@ export async function resolveVercelCredentials(
     const hasExplicitValue = Object.values(explicitValues).some((value) => value !== undefined);
 
     if (isNonEmptyString(token) && isNonEmptyString(teamId) && isNonEmptyString(projectId)) {
-      return { token, teamId, projectId };
+      return { token: requireVercelToken(token), teamId, projectId };
     }
 
     if (hasExplicitValue) {
@@ -92,31 +96,7 @@ export async function resolveVercelCredentials(
 
     const oidcToken = env.VERCEL_OIDC_TOKEN;
     if (isNonEmptyString(oidcToken)) {
-      const segments = oidcToken.split('.');
-      if (segments.length !== 3 || segments.some((segment) => !isBase64UrlSegment(segment))) {
-        throw new Error('Invalid Vercel OIDC token: JWT segments contain invalid characters');
-      }
-      const payloadSegment = segments[1];
-
-      let payload: unknown;
-      try {
-        payload = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8'));
-      } catch (error) {
-        throw new Error(
-          `Invalid Vercel OIDC token: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      if (
-        !isRecord(payload) ||
-        !isNonEmptyString(payload.owner_id) ||
-        !isNonEmptyString(payload.project_id)
-      ) {
-        throw new Error('Invalid Vercel OIDC token: OIDC payload must contain string owner_id and project_id');
-      }
-      const oidcScope = {
-        teamId: payload.owner_id.trim(),
-        projectId: payload.project_id.trim(),
-      };
+      const oidcScope = parseVercelOidcScope(oidcToken);
       const linkedScope = await readLinkedScope(options.repoRoot, false, cancellation.signal);
       if (
         linkedScope &&
@@ -143,6 +123,32 @@ export async function resolveVercelCredentials(
   } finally {
     cancellation.dispose();
   }
+}
+
+/** Resolve credentials for an existing record without requiring GitHub credentials. */
+export async function resolveVercelCredentialsForScope(
+  options: StoredScopeCredentialResolutionOptions,
+): Promise<VercelCredentials> {
+  const env = options.env ?? process.env;
+  const token = env.VERCEL_TOKEN;
+  const teamId = env.VERCEL_TEAM_ID;
+  const projectId = env.VERCEL_PROJECT_ID;
+  const oidcToken = env.VERCEL_OIDC_TOKEN;
+  const hasExplicitTriadValue = [token, teamId, projectId].some((value) => value !== undefined);
+
+  if (isNonEmptyString(token) && teamId === undefined && projectId === undefined && oidcToken === undefined) {
+    return { token: requireVercelToken(token), ...options.scope };
+  }
+
+  if (isNonEmptyString(oidcToken) && !hasExplicitTriadValue) {
+    const oidcScope = parseVercelOidcScope(oidcToken);
+    assertCredentialScope(options.scope, oidcScope);
+    return { token: requireVercelToken(oidcToken), ...options.scope };
+  }
+
+  const credentials = await resolveVercelCredentials(options);
+  assertCredentialScope(options.scope, credentials);
+  return { ...credentials, ...options.scope };
 }
 
 async function authenticateWithDeviceAuth(
@@ -236,6 +242,13 @@ function normalizeInjectedDeviceAuth(
 function requireAuthToken(value: unknown): string {
   if (!isNonEmptyString(value)) {
     throw new Error('Injected device authentication returned a non-empty token');
+  }
+  return value.trim();
+}
+
+function requireVercelToken(value: string): string {
+  if (value.includes('\n') || value.includes('\r')) {
+    throw new Error('Vercel token environment value must be single-line');
   }
   return value.trim();
 }
@@ -334,6 +347,39 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isBase64UrlSegment(value: string): boolean {
   return value.length > 0 && value.length % 4 !== 1 && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function parseVercelOidcScope(oidcToken: string): VercelScope {
+  const segments = oidcToken.split('.');
+  if (segments.length !== 3 || segments.some((segment) => !isBase64UrlSegment(segment))) {
+    throw new Error('Invalid Vercel OIDC token: JWT segments contain invalid characters');
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(Buffer.from(segments[1], 'base64url').toString('utf8'));
+  } catch (error) {
+    throw new Error(
+      `Invalid Vercel OIDC token: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (
+    !isRecord(payload) ||
+    !isNonEmptyString(payload.owner_id) ||
+    !isNonEmptyString(payload.project_id)
+  ) {
+    throw new Error('Invalid Vercel OIDC token: OIDC payload must contain string owner_id and project_id');
+  }
+  return {
+    teamId: payload.owner_id.trim(),
+    projectId: payload.project_id.trim(),
+  };
+}
+
+function assertCredentialScope(expected: VercelScope, actual: VercelScope): void {
+  if (expected.teamId !== actual.teamId || expected.projectId !== actual.projectId) {
+    throw new Error('Stored Vercel team/project does not match resolved credentials');
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

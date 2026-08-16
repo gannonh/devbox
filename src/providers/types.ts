@@ -1,5 +1,20 @@
 import type { Writable } from 'node:stream';
 
+/** Caller-owned input stream used by interactive providers. */
+export interface ProviderInput extends NodeJS.ReadableStream {
+  readonly isTTY?: boolean;
+  isRaw?: boolean;
+  setRawMode?: (mode: boolean) => unknown;
+  readonly readableFlowing?: boolean | null;
+}
+
+/** Caller-owned output stream with optional terminal dimensions. */
+export interface ProviderOutput extends Writable {
+  readonly isTTY?: boolean;
+  readonly columns?: number;
+  readonly rows?: number;
+}
+
 /** Providers currently understood by the CLI. */
 export type ProviderName = 'local' | 'vercel';
 
@@ -9,7 +24,8 @@ export interface ProviderRequestContext {
   repoName: string;
   env: Record<string, string | undefined>;
   tty: boolean;
-  stdout: Writable;
+  stdin: ProviderInput;
+  stdout: ProviderOutput;
   stderr: Writable;
 }
 

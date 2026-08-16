@@ -24,17 +24,29 @@ function provider(name: 'local' | 'vercel'): DevboxProvider {
   };
 }
 
-function streams(): { stdout: PassThrough; stderr: PassThrough; output: () => { stdout: string; stderr: string } } {
+function streams(): { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; output: () => { stdout: string; stderr: string } } {
+  const stdin = new PassThrough();
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   let stdoutText = '';
   let stderrText = '';
   stdout.on('data', (chunk) => { stdoutText += chunk.toString(); });
   stderr.on('data', (chunk) => { stderrText += chunk.toString(); });
-  return { stdout, stderr, output: () => ({ stdout: stdoutText, stderr: stderrText }) };
+  return { stdin, stdout, stderr, output: () => ({ stdout: stdoutText, stderr: stderrText }) };
 }
 
 describe('CLI provider routing', () => {
+  it('keeps the default local password path independent of Vercel auth', async () => {
+    const io = streams();
+    const code = await dispatch(['feature', '--password'], io, {
+      repoRoot: '/repo',
+      tty: false,
+    });
+
+    expect(code).toBe(2);
+    expect(io.output().stderr).toContain('local provider');
+  });
+
   it('selects the local provider when --provider is omitted', async () => {
     const local = provider('local');
     const vercel = provider('vercel');
@@ -46,6 +58,20 @@ describe('CLI provider routing', () => {
     expect(code).toBe(0);
     expect(local.up).toHaveBeenCalledWith(expect.objectContaining({ branch: 'feature' }));
     expect(vercel.up).not.toHaveBeenCalled();
+  });
+
+  it('passes the caller-owned stdin to the selected provider', async () => {
+    const local = provider('local');
+    const input = new PassThrough();
+    const io = { ...streams(), stdin: input };
+    const code = await dispatch(['feature'], io, {
+      repoRoot: '/repo',
+      registry: { local, vercel: provider('vercel') },
+      tty: true,
+    });
+
+    expect(code).toBe(0);
+    expect(local.up).toHaveBeenCalledWith(expect.objectContaining({ stdin: input, tty: true }));
   });
 
   it('routes an explicit provider for branch lifecycle actions', async () => {

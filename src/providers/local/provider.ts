@@ -27,6 +27,7 @@ function launcherContext(
     runner,
     env: request.env,
     tty: request.tty,
+    stdin: request.stdin,
     stdout: request.stdout,
     stderr: request.stderr,
   };
@@ -53,7 +54,7 @@ export function createLocalProvider(runner: ShellRunner): DevboxProvider {
       return action(await rm(launcherContext(request, runner), request.branch));
     },
     async list(request: ProviderListRequest): Promise<ProviderActionResult> {
-      return action(await list(launcherContext(request, runner), request.stderr));
+      return action(await list(launcherContext(request, runner)));
     },
     async url(request: ProviderUrlRequest): Promise<ProviderActionResult> {
       return action(await url(launcherContext(request, runner), request.branch, request.open));

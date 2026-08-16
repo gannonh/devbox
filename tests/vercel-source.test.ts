@@ -3,6 +3,7 @@ import { normalizeGitHubRemote } from '../src/providers/vercel/identity.js';
 import {
   normalizeGitHubSourceRemote,
   resolveGitHubSource,
+  resolveGitHubSourceOrigin,
   resolveGitHubToken,
   selectGitHubRevision,
 } from '../src/providers/vercel/source.js';
@@ -13,6 +14,45 @@ const noOpShell = {
 };
 
 describe('Vercel GitHub source selection', () => {
+  it('resolves a local origin without querying remote branch state or credentials', async () => {
+    const exec = vi.fn(async () => 'git@github.com:Acme/Repo.git');
+    const execQuiet = vi.fn();
+    const origin = await resolveGitHubSourceOrigin({
+      repoRoot: '/repo',
+      shellRunner: { ...noOpShell, exec, execQuiet },
+    });
+
+    expect(origin).toMatchObject({
+      canonical: 'github.com/acme/repo',
+      url: 'https://github.com/acme/repo.git',
+    });
+    expect(exec).toHaveBeenCalledWith('git', ['remote', 'get-url', 'origin'], expect.objectContaining({ cwd: '/repo' }));
+    expect(execQuiet).not.toHaveBeenCalled();
+  });
+
+  it('redacts configured credentials from invalid-origin errors', async () => {
+    const token = 'github-origin-secret';
+    const shellRunner = {
+      ...noOpShell,
+      exec: vi.fn(async () => `https://github.com/acme/repo?token=${token}`),
+      execQuiet: vi.fn(),
+    };
+
+    let caught: unknown;
+    try {
+      await resolveGitHubSource({
+        repoRoot: '/repo',
+        branch: 'feature/ui',
+        env: { GH_TOKEN: token },
+        shellRunner,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain(token);
+  });
+
   it('rejects multiline environment credentials before source creation', async () => {
     await expect(resolveGitHubToken({
       repoRoot: '/repo',
@@ -116,6 +156,13 @@ describe('Vercel GitHub source selection', () => {
       defaultBranch: 'main',
       requestedBranchExists: false,
     })).toThrow(/branch/i);
+    for (const branch of ['feature/./x', '.hidden']) {
+      expect(() => selectGitHubRevision({
+        requestedBranch: branch,
+        defaultBranch: 'main',
+        requestedBranchExists: false,
+      })).toThrow(/branch/i);
+    }
   });
 
   it('uses the remote default and requests a post-create branch switch when missing', () => {

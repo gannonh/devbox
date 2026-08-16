@@ -5,9 +5,22 @@ import { join } from 'node:path';
 import {
   confirmVercelScope,
   resolveVercelCredentials,
+  resolveVercelCredentialsForScope,
 } from '../src/providers/vercel/auth.js';
 
 describe('Vercel credential resolution', () => {
+  it('reuses stored scope with a token-only environment for existing operations', async () => {
+    await expect(resolveVercelCredentialsForScope({
+      repoRoot: '/repo',
+      env: { VERCEL_TOKEN: 'new-vercel-token' },
+      scope: { teamId: 'stored-team', projectId: 'stored-project' },
+    })).resolves.toEqual({
+      token: 'new-vercel-token',
+      teamId: 'stored-team',
+      projectId: 'stored-project',
+    });
+  });
+
   it('uses a complete explicit credential triad without invoking device auth', async () => {
     const deviceAuth = vi.fn();
 

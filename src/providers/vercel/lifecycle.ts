@@ -33,6 +33,7 @@ import {
   type GitHubSourcePlan,
 } from './source.js';
 import { redactSecrets } from './redaction.js';
+import type { ShellRunner } from '../../lib/shell.js';
 
 export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 30 * 60 * 1000;
 export class VercelLifecycleError extends Error {
@@ -100,6 +101,7 @@ export interface VercelLifecycleOptions {
   credentialOptions?: Omit<CredentialResolutionOptions, 'repoRoot' | 'env'>;
   source?: GitHubSourcePlan;
   sourceResolver?: () => Promise<GitHubSourcePlan>;
+  shellRunner?: ShellRunner;
   metadataStore?: VercelMetadataStore;
   stateHome?: string;
   repoKey?: string;
@@ -159,9 +161,9 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
   return {
     up: async () => {
       const context = await getContext();
-      await options.onNotice?.(context.source.warning || renderRemoteSourceNotice());
       return context.metadataStore.withLock(async () => {
         const existing = await context.metadataStore.read();
+        if (!existing) await options.onNotice?.(context.source.warning || renderRemoteSourceNotice());
         assertScopeAndIdentity(existing, context);
         if (existing?.configuration) assertConfiguration(existing.configuration, context.configuration);
 
@@ -355,6 +357,7 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
       repoRoot: options.repoRoot,
       branch: options.branch,
       env: options.env,
+      shellRunner: options.shellRunner,
     }));
   const packageVersion = options.packageVersion ?? undefined;
   const identity = createVercelIdentity({
