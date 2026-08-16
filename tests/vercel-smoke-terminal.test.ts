@@ -7,20 +7,27 @@ describe('provider smoke output waiting', () => {
   it('uses exactly one production terminal adapter call for the ready/interrupt flow', async () => {
     const signalController = new AbortController();
     const pathReport = { label: 'existing', checks: [] as unknown[] };
+    let escapeFrame: Buffer | undefined;
     const terminalAdapter = {
       attach: vi.fn(async (_sandbox: unknown, options: VercelTerminalOptions = {}) => new Promise<VercelTerminalResult>((resolve) => {
         const streams = options.streams!;
         const signalSource = options.signalSource!;
         let commandCount = 0;
         streams.stdin.on('data', (chunk: Buffer) => {
+          const input = Buffer.from(chunk);
+          if (input.includes(0x1d)) {
+            escapeFrame = input;
+            resolve({ status: 'detached', reason: 'escape' });
+            return;
+          }
           commandCount += 1;
-          const command = chunk.toString();
+          const command = input.toString();
           if (commandCount === 1) {
             streams.stdout.write('provider-smoke-ready-existing\\n');
           } else if (command.includes('sleep 30')) {
             streams.stdout.write('provider-smoke-sleeping-existing\\n');
-          } else if (command.includes('exit')) {
-            resolve({ status: 'exited', code: 0 });
+          } else if (command.includes('provider-smoke-after-interrupt-existing')) {
+            streams.stdout.write('provider-smoke-after-interrupt-existing\\n');
           }
         });
         signalSource.once('SIGINT', () => {
@@ -44,9 +51,11 @@ describe('provider smoke output waiting', () => {
 
     expect(terminalAdapter.attach).toHaveBeenCalledOnce();
     expect(terminalAdapter.attach).toHaveBeenCalledWith({}, expect.objectContaining({ cwd: '/vercel/sandbox/repo' }));
+    expect(escapeFrame).toEqual(Buffer.from([0x1d]));
     expect(pathReport.checks).toEqual([
       expect.objectContaining({ name: 'openInteractive terminal', ok: true }),
       expect.objectContaining({ name: 'Ctrl-C terminal protocol', ok: true }),
+      expect.objectContaining({ name: 'Ctrl-] terminal protocol', ok: true }),
     ]);
   });
 

@@ -103,26 +103,35 @@ export async function runInteractiveTerminal({
   const capturedOutput = () => output.join('');
   const readyMarker = `provider-smoke-ready-${pathReport.label}`;
   const encodedReadyMarker = Buffer.from(readyMarker).toString('base64');
+  const readyWait = waitForOutput(stdout, readyMarker, terminalTimeoutMs, signal, capturedOutput);
   stdin.write(`printf "%s\\n" "$(printf "%s" "${encodedReadyMarker}" | base64 -d)"\n`);
-  await waitForOutput(stdout, readyMarker, terminalTimeoutMs, signal, capturedOutput);
+  await readyWait;
   const interruptMarker = `provider-smoke-interrupted-${pathReport.label}`;
   const encodedInterruptMarker = Buffer.from(interruptMarker).toString('base64');
   const sleepMarker = `provider-smoke-sleeping-${pathReport.label}`;
   const encodedSleepMarker = Buffer.from(sleepMarker).toString('base64');
+  const sleepingWait = waitForOutput(stdout, sleepMarker, terminalTimeoutMs, signal, capturedOutput);
   stdin.write(`trap 'printf "%s\\n" "$(printf "%s" "${encodedInterruptMarker}" | base64 -d)"' INT; printf "%s\\n" "$(printf "%s" "${encodedSleepMarker}" | base64 -d)"; sleep 30\n`);
-  await waitForOutput(stdout, sleepMarker, terminalTimeoutMs, signal, capturedOutput);
+  await sleepingWait;
   const outputBeforeInterrupt = capturedOutput();
+  const interruptWait = waitForOutput(stdout, interruptMarker, terminalTimeoutMs, signal, capturedOutput);
   signalSource.emit('SIGINT');
-  await waitForOutput(stdout, interruptMarker, terminalTimeoutMs, signal, capturedOutput);
+  await interruptWait;
   const outputAfterInterrupt = capturedOutput().slice(outputBeforeInterrupt.length);
-  stdin.write(`printf 'provider-smoke-after-interrupt-${pathReport.label}\\n'\nexit\n`);
+  const postInterruptMarker = `provider-smoke-after-interrupt-${pathReport.label}`;
+  const postInterruptWait = waitForOutput(stdout, postInterruptMarker, terminalTimeoutMs, signal, capturedOutput);
+  stdin.write(`printf '${postInterruptMarker}\\n'\n`);
+  await postInterruptWait;
+  stdin.write(Buffer.from([0x1d]));
   const result = await boundedCall(
     () => attach,
     'interactive terminal completion',
     { signal, timeoutMs: terminalTimeoutMs },
   );
-  recordCheck(pathReport, 'openInteractive terminal', result.status === 'exited' && result.code === 0, terminalError ?? 'terminal completed');
+  const detachedByEscape = result.status === 'detached' && result.reason === 'escape';
+  recordCheck(pathReport, 'openInteractive terminal', detachedByEscape, terminalError ?? `terminal status=${result.status}`);
   recordCheck(pathReport, 'Ctrl-C terminal protocol', outputAfterInterrupt.includes(interruptMarker), 'remote trap observed SIGINT after it was sent through the terminal adapter');
+  recordCheck(pathReport, 'Ctrl-] terminal protocol', detachedByEscape, 'terminal adapter detached with the production escape reason after byte 0x1d');
   pathReport.terminal = {
     status: result.status,
     ...(result.status === 'exited' ? { exitCode: result.code } : { reason: result.reason }),

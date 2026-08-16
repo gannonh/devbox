@@ -205,6 +205,7 @@ describe('Vercel provider smoke configuration', () => {
       'createVercelSandboxClient',
       'createVercelTerminalAdapter',
       'runInteractiveTerminal',
+      'validateCloneBranchState',
       'resolveVercelRepositoryCwd',
       'resume: true',
       "git', ['remote', 'get-url', 'origin']",
@@ -228,15 +229,22 @@ describe('Vercel provider smoke configuration', () => {
       'waitForOutput(stdout, interruptMarker',
       'base64 -d',
       'outputBeforeInterrupt',
+      'postInterruptMarker',
+      'Buffer.from([0x1d])',
+      "reason === 'escape'",
     ]) {
       expect(terminalSource).toContain(required);
     }
+    expect(terminalSource).not.toContain('exit\\n');
     expect(source).not.toContain('sandbox.openInteractive');
     expect(source).not.toContain('execFile');
     expect(source).not.toContain('process.argv');
     expect(source.indexOf('const image = assertPromotedVercelImagePin'))
       .toBeLessThan(source.indexOf('initializeSecretValues();'));
     expect(source).not.toContain('vercel sandbox');
+    expect(source).toContain("'private clone requested revision HEAD'");
+    expect(source).toContain("'private clone existing revision branch state'");
+    expect(source).toContain('allowDetachedBranch: requestedBranchExists');
   });
 
   it('directly reconciles known path sandboxes before collection recovery and preflights stale runs', async () => {

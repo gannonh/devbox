@@ -111,7 +111,7 @@ export async function cleanupVercelSandbox(
   }
 
   const deadline = Date.now() + timeoutMs;
-  const errors: string[] = [];
+  const operationErrors = new Map<string, string>();
   const snapshotIds = new Set<string>();
   const knownSnapshotIds = new Set<string>();
   const residualSnapshotIds = new Set<string>();
@@ -140,7 +140,16 @@ export async function cleanupVercelSandbox(
     return `${operation}: ${detail}`;
   };
   const recordError = (operation: string, error: unknown): void => {
-    errors.push(formatError(operation, error));
+    operationErrors.set(operation, formatError(operation, error));
+  };
+  const clearErrors = (...operations: readonly string[]): void => {
+    for (const operation of operations) operationErrors.delete(operation);
+  };
+  const clearSessionErrors = (): void => {
+    clearErrors('session listing', 'sandbox stop', 'session verification');
+  };
+  const clearDeletionErrors = (): void => {
+    clearErrors('stale sandbox delete', 'sandbox deletion verification', 'sandbox delete');
   };
   const recordSnapshotListingError = (operation: string, error: unknown): void => {
     snapshotListingError = formatError(operation, error);
@@ -169,6 +178,7 @@ export async function cleanupVercelSandbox(
       sandboxMissing = true;
       sandboxDeleted = true;
       sessionObservationOk = true;
+      clearDeletionErrors();
     } else if (isVercelStale(error)) {
       staleSandbox = true;
       sessionObservationOk = true;
@@ -266,8 +276,15 @@ export async function cleanupVercelSandbox(
         });
         sandboxDeleted = true;
         sandboxMissing = deletion.missing;
+        clearDeletionErrors();
       } catch (error) {
-        recordError('stale sandbox delete', error);
+        if (isVercelNotFound(error)) {
+          sandboxDeleted = true;
+          sandboxMissing = true;
+          clearDeletionErrors();
+        } else {
+          recordError('stale sandbox delete', error);
+        }
       }
     }
 
@@ -295,7 +312,10 @@ export async function cleanupVercelSandbox(
             sandboxMissing = true;
             sandboxDeleted = true;
             sessionObservationOk = true;
+            sandbox = undefined;
+            clearDeletionErrors();
           } else {
+            sandbox = undefined;
             recordError('sandbox deletion verification', error);
             sessionObservationOk = false;
           }
@@ -312,6 +332,7 @@ export async function cleanupVercelSandbox(
         );
         sessionObservationOk = observation.ok;
         finalSessions = observation.sessions;
+        if (observation.terminal) clearSessionErrors();
         if (!sessionObservationOk || hasNonTerminalSessions(finalSessions)) {
           residualSandboxIds.add(sandboxIdentifier(sandbox) ?? options.name);
           if (sessionObservationOk) {
@@ -350,10 +371,12 @@ export async function cleanupVercelSandbox(
           try {
             await options.adapter.delete(sandbox, { signal: options.signal });
             sandboxDeleted = true;
+            clearDeletionErrors();
           } catch (error) {
             if (isVercelNotFound(error)) {
               sandboxMissing = true;
               sandboxDeleted = true;
+              clearDeletionErrors();
             } else recordError('sandbox delete', error);
           }
         }
@@ -407,7 +430,7 @@ export async function cleanupVercelSandbox(
   }
 
   const terminal = sessionObservationOk && !hasNonTerminalSessions(finalSessions);
-  const finalErrors = [...errors];
+  const finalErrors = [...operationErrors.values()];
   if (snapshotListingError !== undefined) finalErrors.push(snapshotListingError);
   for (const error of snapshotOperationErrors.values()) finalErrors.push(error);
   if (!snapshotsCleaned && snapshotListingError === undefined && snapshotOperationErrors.size === 0) {
@@ -434,6 +457,7 @@ export async function cleanupVercelSandbox(
 interface SessionObservation {
   sessions: SandboxSessionRecord[];
   ok: boolean;
+  terminal: boolean;
   stop?: VercelStopResult;
 }
 
@@ -472,6 +496,7 @@ async function stopAndVerifySessions(
   return {
     sessions: after.sessions,
     ok: stopOk && after.ok,
+    terminal: after.ok && !hasNonTerminalSessions(after.sessions),
     ...(stop === undefined ? {} : { stop }),
   };
 }
@@ -483,13 +508,15 @@ async function listSessions(
   recordError: (operation: string, error: unknown) => void,
 ): Promise<SessionObservation> {
   try {
+    const sessions = await collectPaginated<SandboxSessionRecord>(await adapter.listSessions(sandbox, { signal }), 'sessions');
     return {
-      sessions: await collectPaginated(await adapter.listSessions(sandbox, { signal }), 'sessions'),
+      sessions,
       ok: true,
+      terminal: !hasNonTerminalSessions(sessions),
     };
   } catch (error) {
     recordError('session listing', error);
-    return { sessions: [], ok: false };
+    return { sessions: [], ok: false, terminal: false };
   }
 }
 

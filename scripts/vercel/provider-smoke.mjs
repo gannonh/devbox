@@ -47,6 +47,7 @@ import {
 import { deleteListedSnapshot } from './snapshot-cleanup.mjs';
 import { fetchWithTimeout } from './http-probe.mjs';
 import { runInteractiveTerminal } from './smoke-terminal.mjs';
+import { validateCloneBranchState } from './smoke-repository.mjs';
 import {
   aggregateCleanupEvidence,
   createConfigurationEvidence,
@@ -257,10 +258,14 @@ async function assertRepository(client, sandbox, config, pathReport, expected, c
   recordCheck(pathReport, 'private clone remote', remote.exitCode === 0 && remote.stdout.trim() === expected.remoteUrl, `exitCode=${remote.exitCode}`);
 
   const head = await runCommand(client, sandbox, 'git', ['rev-parse', 'HEAD'], cwd, signal);
-  recordCheck(pathReport, 'private clone HEAD', head.exitCode === 0 && /^[a-f0-9]{40}$/.test(head.stdout.trim()) && head.stdout.trim() === expected.sha, `exitCode=${head.exitCode}`);
+  recordCheck(pathReport, 'private clone requested revision HEAD', head.exitCode === 0 && /^[a-f0-9]{40}$/.test(head.stdout.trim()) && head.stdout.trim() === expected.sha, `exitCode=${head.exitCode}`);
 
   const branch = await runCommand(client, sandbox, 'git', ['branch', '--show-current'], cwd, signal);
-  recordCheck(pathReport, 'private clone requested branch', branch.exitCode === 0 && branch.stdout.trim() === expected.branch, `exitCode=${branch.exitCode}`);
+  const branchState = validateCloneBranchState(branch.stdout, expected.branch, expected.allowDetachedBranch);
+  const branchCheckName = expected.allowDetachedBranch
+    ? 'private clone existing revision branch state'
+    : 'private clone requested branch';
+  recordCheck(pathReport, branchCheckName, branch.exitCode === 0 && branchState.ok, `observed=${branchState.state === 'detached' ? 'detached HEAD' : branchState.observedBranch}; expected=${expected.branch}`);
 
   const content = await runCommand(client, sandbox, 'cat', ['--', config.fixture.expectedFile], cwd, signal);
   recordCheck(pathReport, 'private clone expected content', content.exitCode === 0 && content.stdout === config.fixture.expectedContent, `exitCode=${content.exitCode}`);
@@ -556,6 +561,7 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
         remoteUrl: remote.url,
         sha: expectedSha,
         branch: requestedBranch,
+        allowDetachedBranch: requestedBranchExists,
       }, cloneCwd, requestSignal),
       signal,
       Math.min(operationTimeoutMs * 2, smokeTimeoutMs),

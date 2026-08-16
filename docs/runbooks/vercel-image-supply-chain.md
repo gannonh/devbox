@@ -121,13 +121,15 @@ cwd as `/vercel/sandbox`. The client therefore sends the SDK object overload
 assertions, and both fresh/resumed terminal sessions. The existing path clones
 `DEVBOX_GITHUB_FIXTURE_BRANCH`. The missing path verifies a run-unique branch is
 absent, clones the expected default, and creates that branch inside the
-Sandbox without pushing it. Both paths assert `origin`, commit `HEAD`,
-checked-out branch, clean status, and configured file content. The production
+Sandbox without pushing it. Both paths assert `origin`, the exact commit `HEAD`,
+clean status, and configured file content; the missing path requires the created
+branch while the existing revision may report detached `HEAD`. The production
 terminal adapter opens the interactive endpoint exactly once per terminal
-session, executes a command, sends Ctrl-C through the terminal protocol, exits,
-stops for snapshot completion, resumes/reconnects, and repeats terminal
-coverage. Final session listing must show every created VM as `stopped` or
-`aborted`.
+session, executes a command, sends Ctrl-C through the terminal protocol,
+verifies a post-interrupt marker, then sends the production Ctrl-] escape byte
+and requires a detached result with reason `escape`; it does not use a remote shell exit. The Sandbox then stops for snapshot completion, resumes/reconnects,
+and repeats terminal coverage. Final session listing must show every created VM
+as `stopped` or `aborted`.
 
 Cleanup is unconditional. Before either path starts, the gate performs a
 preflight list with a short smoke name prefix and no server-side tag filter;

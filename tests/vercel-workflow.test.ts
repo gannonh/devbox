@@ -247,7 +247,11 @@ describe('Vercel image supply-chain workflow', () => {
     expect(runbook).toContain('six 2-minute cleanup phases');
     expect(runbook).toContain('preflight list with a short smoke name prefix');
     expect(runbook).toContain('all five identity tags are checked locally');
+    expect(runbook).toContain('existing revision may report detached `HEAD`');
     expect(runbook).toContain('Returned Sandbox images are checked by exact manifest digest');
+    expect(runbook).toContain('production Ctrl-] escape byte');
+    expect(runbook).toContain('reason `escape`');
+    expect(runbook).toContain('does not use a remote shell exit');
     expect(runbook).toContain('sleep infinity');
     expect(imageReadme).toContain('sleep infinity');
   });

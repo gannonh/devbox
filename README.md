@@ -138,9 +138,11 @@ command overload with an explicit cwd, so the existing path clones the
 requested branch and the missing path clones the default, creates a run-unique
 branch locally, and runs every Git assertion and terminal session in
 `/vercel/sandbox/<normalized-repository>`, including resume/attach. It asserts
-the remote, `HEAD`, branch, clean worktree, and fixture content, exercises
-`openInteractive` once per adapter session, Ctrl-C, stop/snapshot completion,
-and every created VM session. Returned Sandbox images are accepted only when
+the remote and exact `HEAD`, requires the created branch for the missing path,
+allows detached `HEAD` for the existing revision, and checks clean worktree and
+fixture content. It exercises `openInteractive` once per adapter session, Ctrl-C,
+a post-interrupt marker, and production Ctrl-] escape detachment before
+stop/snapshot completion and every created VM session. Returned Sandbox images are accepted only when
 their manifest digest exactly matches the promoted pin; absent, tag-only, and
 different-digest values fail closed. Before paths, preflight cleanup lists with
 a short smoke prefix, filters the complete five-tag identity locally, and
