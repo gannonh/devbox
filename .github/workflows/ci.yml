@@ -82,3 +82,28 @@ jobs:
       VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
       VERCEL_CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
       VERCEL_CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
+
+  vercel-provider-smoke:
+    name: credentialed Vercel provider terminal smoke
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.actor == github.repository_owner &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.label.name == format('provider-smoke:{0}', github.event.pull_request.head.sha)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vercel-provider-smoke.yml
+    with:
+      source_sha: ${{ github.event.pull_request.head.sha }}
+      path: both
+    secrets:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      GITHUB_FIXTURE_TOKEN: ${{ secrets.GITHUB_FIXTURE_TOKEN }}
+      GITHUB_FIXTURE_REPOSITORY: ${{ secrets.GITHUB_FIXTURE_REPOSITORY }}
+      GITHUB_FIXTURE_BRANCH: ${{ secrets.GITHUB_FIXTURE_BRANCH }}
+      GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.GITHUB_FIXTURE_DEFAULT_BRANCH }}
+      GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.GITHUB_FIXTURE_EXPECTED_FILE }}
+      GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.GITHUB_FIXTURE_EXPECTED_CONTENT }}

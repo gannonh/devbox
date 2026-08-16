@@ -123,14 +123,65 @@ describe('Vercel provider smoke configuration', () => {
     expect(source).not.toContain('vercel sandbox');
   });
 
+  it('defines a reusable exact-source smoke contract with explicit private secrets', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
+    expect(workflow).toContain('workflow_call:');
+    expect(workflow).toMatch(/source_sha:[\s\S]*?required: true[\s\S]*?type: string/);
+    expect(workflow).toMatch(/path:[\s\S]*?required: true[\s\S]*?type: string/);
+    for (const secret of [
+      'VERCEL_TOKEN',
+      'VERCEL_TEAM_ID',
+      'VERCEL_PROJECT_ID',
+      'GITHUB_FIXTURE_TOKEN',
+      'GITHUB_FIXTURE_REPOSITORY',
+      'GITHUB_FIXTURE_BRANCH',
+      'GITHUB_FIXTURE_DEFAULT_BRANCH',
+      'GITHUB_FIXTURE_EXPECTED_FILE',
+      'GITHUB_FIXTURE_EXPECTED_CONTENT',
+    ]) {
+      expect(workflow).toMatch(new RegExp(`${secret}:[\\s\\S]*?required: true`));
+    }
+  });
+
+  it('defends reusable calls with trusted events and an exact full source SHA', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
+    const providerJob = workflow.slice(workflow.indexOf('  provider-smoke:'));
+    expect(providerJob).not.toMatch(/\n\s{4}if:/);
+    expect(workflow).toContain('SOURCE_SHA: ${{ inputs.source_sha || github.sha }}');
+    expect(workflow).toContain('[[ "${SOURCE_SHA}" =~ ^[a-f0-9]{40}$ ]]');
+    expect(workflow).toContain('GITHUB_EVENT_NAME');
+    expect(workflow).toContain('pull_request)');
+    expect(workflow).toContain("github.event.action");
+    expect(workflow).toContain("github.actor");
+    expect(workflow).toContain("github.event.pull_request.head.repo.full_name");
+    expect(workflow).toContain('provider-smoke:${SOURCE_SHA}');
+    expect(workflow).toContain('github.event.pull_request.head.sha');
+    expect(workflow).toContain('GITHUB_REF_NAME');
+    expect(workflow).toContain('github.event.repository.default_branch');
+    expect(workflow).not.toContain('pull_request_target');
+  });
+
+  it('checks out, records, and uploads the exact authorized source identity', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
+    expect(workflow).toContain('ref: ${{ env.SOURCE_SHA }}');
+    expect(workflow).toContain('persist-credentials: false');
+    expect(workflow).toContain('git rev-parse HEAD');
+    expect(workflow).toContain('sourceSha');
+    expect(workflow).toContain('vercel-provider-smoke-${{ env.SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}');
+    expect(workflow).not.toContain('ref: ${{ github.ref }}');
+    expect(workflow).not.toContain('ref: ${{ github.ref_name }}');
+  });
+
   it('gates the manual workflow and uploads only redacted evidence', async () => {
     const workflow = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
     expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).toContain('type: choice');
+    for (const path of ['both', 'existing', 'missing']) expect(workflow).toContain(`- ${path}`);
     expect(workflow).toContain('src/providers/vercel/image.ts');
     expect(workflow).not.toContain('pull_request:');
     expect(workflow).not.toContain("github.actor == github.repository_owner");
-    expect(workflow).toContain('github.ref_name == github.event.repository.default_branch');
-    expect(workflow).toContain('github.event.repository.fork == false');
+    expect(workflow).toContain('test "${GITHUB_REF_NAME}" = "${EXPECTED_DEFAULT_BRANCH}"');
+    expect(workflow).toContain('test "${EXPECTED_REPOSITORY_FORK}" = \'false\'');
     expect(workflow).toContain('environment:\n      name: vercel-provider-smoke');
     expect(workflow).toContain('permissions:\n  contents: read');
     expect(workflow).toContain('timeout-minutes: 35');
@@ -151,14 +202,24 @@ describe('Vercel provider smoke configuration', () => {
     }
   });
 
+  it('keeps credentials out of authorization and evidence material', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
+    const beforeSmoke = workflow.match(/steps:[\s\S]*?(?=\n\s{6}- name: Run real provider smoke)/)?.[0] ?? '';
+    expect(beforeSmoke).not.toContain('${{ secrets.');
+    expect(workflow).not.toContain('toJSON(secrets)');
+    expect(workflow).not.toMatch(/SMOKE_REPORT:\s*\$\{\{\s*secrets\./);
+    expect(workflow).toContain('scripts/vercel/redact-artifacts.mjs');
+    expect(workflow).toContain('redacted":false');
+  });
+
   it('keeps secret-bearing smoke steps behind the trusted guard after pin validation', async () => {
     const workflow = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
-    const smokeStep = workflow.match(/- name: Run real provider smoke[\s\S]*?(?=\n {6}- name:)/)?.[0] ?? '';
-    const redactStep = workflow.match(/- name: Redact all provider smoke evidence[\s\S]*?(?=\n {6}- name:)/)?.[0] ?? '';
+    const smokeStep = workflow.match(/- name: Run real provider smoke[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    const redactStep = workflow.match(/- name: Redact all provider smoke evidence[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
     expect(workflow).toContain('id: pin');
     expect(workflow).toContain('Validate promoted image pin before credentials');
     expect(workflow).toContain('configuration; it uses no Vercel CLI or GitHub CLI.');
-    expect(smokeStep).toContain("if: always() && steps.guard.outcome == 'success'");
+    expect(smokeStep).toContain("if: success() && steps.guard.outcome == 'success'");
     expect(smokeStep).toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
     expect(redactStep).toContain("if: always() && steps.guard.outcome == 'success'");
     expect(redactStep).toContain('GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.GITHUB_FIXTURE_EXPECTED_CONTENT }}');

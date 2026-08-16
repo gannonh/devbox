@@ -49,6 +49,45 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain("github.event_name != 'pull_request'");
   });
 
+  it('authorizes provider smoke only from an owner exact-head label with explicit read-only secrets', async () => {
+    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
+    expect(ci).toContain('vercel-provider-smoke:');
+    expect(ci).toContain("github.event.action == 'labeled'");
+    expect(ci).toContain('github.actor == github.repository_owner');
+    expect(ci).toContain("github.event.pull_request.head.repo.full_name == github.repository");
+    expect(ci).toContain("github.event.label.name == format('provider-smoke:{0}', github.event.pull_request.head.sha)");
+    expect(ci).toContain('uses: ./.github/workflows/vercel-provider-smoke.yml');
+    expect(ci).toContain('source_sha: ${{ github.event.pull_request.head.sha }}');
+    expect(ci).toContain('path: both');
+    expect(ci).not.toContain('secrets: inherit');
+    expect(ci).not.toContain('pull_request_target');
+    expect(ci).toMatch(/vercel-provider-smoke:[\s\S]*?permissions:\n\s+contents: read[\s\S]*?uses: \.\/\.github\/workflows\/vercel-provider-smoke\.yml/);
+    for (const secret of [
+      'VERCEL_TOKEN',
+      'VERCEL_TEAM_ID',
+      'VERCEL_PROJECT_ID',
+      'GITHUB_FIXTURE_TOKEN',
+      'GITHUB_FIXTURE_REPOSITORY',
+      'GITHUB_FIXTURE_BRANCH',
+      'GITHUB_FIXTURE_DEFAULT_BRANCH',
+      'GITHUB_FIXTURE_EXPECTED_FILE',
+      'GITHUB_FIXTURE_EXPECTED_CONTENT',
+    ]) {
+      expect(ci).toContain(`${secret}: \${{ secrets.${secret} }}`);
+    }
+  });
+
+  it('documents exact provider-smoke authorization and stale-label behavior', async () => {
+    const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
+    expect(runbook).toContain('provider-smoke:<40-character-head-SHA>');
+    expect(runbook).toContain('provider-smoke:${head_sha}');
+    expect(runbook).toContain('gh pr edit <number> --add-label');
+    expect(runbook).toContain('synchronize');
+    expect(runbook).toContain('new exact-SHA label');
+    expect(runbook).toContain('authorization only');
+    expect(runbook).toContain('not a pass');
+  });
+
   it('builds an amd64 zstd immutable candidate and waits for readiness', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('docker/setup-buildx-action');

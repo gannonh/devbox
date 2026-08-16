@@ -22,11 +22,42 @@ the default branch. Select `both` for the normal gate, or select
 `existing`/`missing` while diagnosing one deterministic source path. This
 workflow is separate from the image candidate workflow and has no
 `pull_request` trigger. Its job guard rejects fork/non-default-branch
-dispatches, grants only `contents: read`, serializes runs, and requires the
-protected `vercel-provider-smoke` GitHub environment. The job timeout is 35
-minutes; `both` has two sequential 12-minute path budgets, two 10-second
+dispatches, grants only `contents: read`, serializes runs, and uses the
+`vercel-provider-smoke` GitHub environment. Configure required reviewers on
+that environment before enabling the credentialed secrets when a human
+approval boundary is desired; the workflow's event guard remains mandatory.
+The job timeout is 35 minutes; `both` has two sequential 12-minute path
+budgets, two 10-second
 branch-probe budgets, two 2-minute cleanup budgets, and a 30-second
 fixture-validation budget under a 29-minute-20-second outer smoke deadline.
+
+### Pre-merge authorization for Issue #5
+
+When the workflow exists only on a same-repository pull request, authorize the
+reviewed current head with one exact, full lowercase SHA label. This label is an
+authorization only, not a smoke result and **not a pass**. Obtain the current
+head SHA immediately before applying it:
+
+```bash
+head_sha="$(gh pr view <number> --json headRefOid --jq .headRefOid)"
+[[ "${head_sha}" =~ ^[a-f0-9]{40}$ ]] || { echo 'head SHA is not a full lowercase SHA' >&2; exit 1; }
+gh label create "provider-smoke:${head_sha}" --color B60205 --description 'Authorize Issue #5 provider smoke for this exact SHA' --force
+gh pr edit <number> --add-label "provider-smoke:${head_sha}"
+```
+
+The caller starts the reusable workflow only for the repository owner's
+`labeled` event, a same-repository PR head, and the exact label
+`provider-smoke:<40-character-head-SHA>`. The called workflow repeats those
+checks, validates the SHA, and checks out that exact commit. A fork PR never
+qualifies.
+
+A later `synchronize` event changes the head and cannot reuse the old
+authorization: the stale label may remain visible, but no credentialed job is
+called for that event, and a labeled event for the old SHA fails the exact-head
+check. Review the new head, remove the stale label if desired, then create and
+apply a **new exact-SHA label** to authorize a new attempt. Starting a job or
+adding a label never establishes smoke acceptance; record acceptance only from
+completed redacted evidence after the real smoke has run.
 
 Create these exact repository secrets:
 
