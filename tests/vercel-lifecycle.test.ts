@@ -52,6 +52,8 @@ function sandbox(): VercelSandboxHandle {
     persistent: true,
     image: VERCEL_IMAGE_PIN.reference,
     tags: { ...identity.tags },
+    openInteractive: async () => ({ url: 'wss://sandbox.example/session', token: 'token' }),
+    extendTimeout: async () => {},
     listSessions: async () => [],
     stop: async () => ({ id: 'session', status: 'stopped' }),
     delete: async () => {},

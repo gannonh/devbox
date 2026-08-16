@@ -119,6 +119,23 @@ export type {
   ResolveGitHubSourceOptions,
   ResolveGitHubTokenOptions,
 } from './vercel/source.js';
+export {
+  createVercelTerminalAdapter,
+} from './vercel/terminal.js';
+export type {
+  VercelInteractiveSandbox,
+  VercelTerminalAdapter,
+  VercelTerminalAdapterDependencies,
+  VercelTerminalInput,
+  VercelTerminalOptions,
+  VercelTerminalOutput,
+  VercelTerminalResult,
+  VercelTerminalSize,
+  VercelTerminalStreams,
+  VercelTerminalTimeoutOptions,
+  VercelTerminalTimeoutScheduler,
+  VercelTerminalWebSocket,
+} from './vercel/terminal.js';
 export type {
   DevboxProvider,
   DisplayCredentialsResult,

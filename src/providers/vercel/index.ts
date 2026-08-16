@@ -7,3 +7,4 @@ export * from './lifecycle.js';
 export * from './metadata.js';
 export * from './redaction.js';
 export * from './source.js';
+export * from './terminal.js';

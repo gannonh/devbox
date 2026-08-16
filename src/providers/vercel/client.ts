@@ -74,6 +74,9 @@ export interface VercelSandboxHandle {
   readonly persistent?: boolean;
   readonly image?: string;
   readonly timeout?: number;
+  readonly createdAt?: Date;
+  readonly expiresAt?: Date;
+  readonly cwd?: string;
   readonly tags?: Record<string, string>;
   readonly routes?: readonly SandboxRoute[];
   readonly keepLastSnapshots?: { count: number; expiration?: number; deleteEvicted?: boolean };
@@ -83,6 +86,8 @@ export interface VercelSandboxHandle {
   readonly totalActiveCpuDurationMs?: number;
   readonly totalIngressBytes?: number;
   readonly totalEgressBytes?: number;
+  openInteractive(options?: { signal?: AbortSignal }): Promise<{ url: string; token: string }>;
+  extendTimeout(durationMs: number, options?: { signal?: AbortSignal }): Promise<void>;
   listSessions(params?: { signal?: AbortSignal }): Promise<unknown>;
   stop(params?: { signal?: AbortSignal }): Promise<VercelStopResult>;
   delete(params?: { signal?: AbortSignal }): Promise<void>;
@@ -390,6 +395,20 @@ function wrapSandboxHandle(
 ): VercelSandboxHandle {
   return new Proxy(handle, {
     get(target, property, receiver) {
+      if (property === 'openInteractive') {
+        return (options?: { signal?: AbortSignal }) => callWithSecrets(
+          'Sandbox.openInteractive',
+          secrets,
+          () => target.openInteractive(options),
+        );
+      }
+      if (property === 'extendTimeout') {
+        return (durationMs: number, options?: { signal?: AbortSignal }) => callWithSecrets(
+          'Sandbox.extendTimeout',
+          secrets,
+          () => target.extendTimeout(durationMs, options),
+        );
+      }
       if (property === 'listSessions') {
         return (options?: { signal?: AbortSignal }) => callWithSecrets(
           'Sandbox.listSessions',
