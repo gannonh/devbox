@@ -459,20 +459,25 @@ describe('Vercel provider smoke configuration', () => {
     expect(smokeStep).not.toContain('steps.pin.outcome');
   });
 
-  it('runs quality and provider contracts at the support floor and current Node release', async () => {
+  it('runs quality on a single Node 22 LTS lane', async () => {
     const ci = await readFile('.github/workflows/ci.yml', 'utf8');
-    expect(ci).toContain("node-version: ['20.18.1', '26']");
-    expect(ci).toContain('Provider and smoke workflow contracts');
-    expect(ci).toContain('tests/provider-registry.test.ts');
-    expect(ci).toContain('tests/cli-provider-routing.test.ts');
-    expect(ci).toContain('tests/vercel-auth.test.ts');
-    expect(ci).toContain('tests/vercel-provider-smoke.test.ts');
-    expect(ci).toContain('tests/vercel-smoke-evidence.test.ts');
-    expect(ci).toContain('tests/vercel-smoke-terminal.test.ts');
-    expect(ci).toContain('tests/vercel-workflow.test.ts');
-    expect(ci).toContain("if: matrix.node-version == '26'");
-    expect(ci).toContain("if: matrix.node-version == '20.18.1'");
+    const smoke = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
+    const release = await readFile('.github/workflows/release.yml', 'utf8');
+    const pkg = JSON.parse(await readFile('package.json', 'utf8')) as { engines: { node: string } };
+    expect(pkg.engines.node).toBe('>=22');
+    expect(ci).toContain("node-version: '22'");
+    expect(ci).not.toContain('matrix:');
+    expect(ci).not.toContain('matrix.node-version');
+    expect(ci).not.toContain('20.18.1');
+    expect(ci).not.toMatch(/node-version:\s*\[/);
+    expect(ci).toContain('npm run lint');
+    expect(ci).toContain('npm run typecheck');
+    expect(ci).toContain('npm run build');
     expect(ci).toContain('npm run test');
+    expect(smoke).toContain("node-version: '22'");
+    expect(smoke).not.toContain('20.18.1');
+    expect(release).toContain("node-version: '22'");
+    expect(release).not.toMatch(/node-version:\s*'20'/);
   });
 
   it('keeps smoke configuration internal to the provider implementation', async () => {

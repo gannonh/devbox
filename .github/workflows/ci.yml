@@ -9,15 +9,8 @@ on:
 
 jobs:
   quality:
-    name: quality and provider contracts (Node ${{ matrix.node-version }})
+    name: quality and provider contracts (Node 22)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Keep the supported floor exact and exercise the current supported
-        # Node release (26.x is Current per the official release schedule)
-        # without repeating the expensive build/full-test lane.
-        node-version: ['20.18.1', '26']
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -25,7 +18,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: '22'
           cache: npm
 
       - name: Install dependencies
@@ -37,24 +30,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Provider and smoke workflow contracts
-        if: matrix.node-version == '26'
-        run: >-
-          npm test -- --run
-          tests/provider-registry.test.ts
-          tests/cli-provider-routing.test.ts
-          tests/vercel-auth.test.ts
-          tests/vercel-provider-smoke.test.ts
-          tests/vercel-smoke-evidence.test.ts
-          tests/vercel-smoke-terminal.test.ts
-          tests/vercel-workflow.test.ts
-
       - name: Build
-        if: matrix.node-version == '20.18.1'
         run: npm run build
 
       - name: Full test suite
-        if: matrix.node-version == '20.18.1'
         run: npm run test
 
   vercel-image-candidate:
