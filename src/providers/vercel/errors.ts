@@ -2,6 +2,7 @@ import { ProviderOperationError } from '../types.js';
 import { VercelSdkError } from './client.js';
 import {
   VercelCleanupError,
+  VercelCreationCompensationError,
   VercelIdentityConflictError,
   VercelResourceNotFoundError,
   VercelRouteNotFoundError,
@@ -78,6 +79,22 @@ export function mapVercelError(
       'route',
       `No Vercel route is available for this sandbox; start it and expose a configured port, then retry ${command}.`,
       2,
+    );
+  }
+  if (error instanceof VercelCreationCompensationError) {
+    const residualIds = [
+      ...error.result.residualSandboxIds,
+      ...error.result.residualSnapshotIds,
+    ];
+    const residualDetail = residualIds.length > 0
+      ? ` Recover or inspect resource IDs: ${residualIds.join(', ')}.`
+      : '';
+    const metadataDetail = error.recoveryMetadataFailure === undefined
+      ? ' Inspect the retained recovery metadata.'
+      : ` recovery metadata was not retained: ${error.recoveryMetadataFailure}.`;
+    return new VercelProviderError(
+      'cleanup',
+      `Vercel Sandbox creation failed and cleanup is incomplete; retry ${removeRecoveryCommand(context)}.${residualDetail}${metadataDetail}`,
     );
   }
   if (error instanceof VercelCleanupError || lifecycleCode === 'cleanup_incomplete' || lifecycleCode === 'stop_incomplete') {

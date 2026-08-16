@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import { mapVercelError } from '../src/providers/vercel/errors.js';
+import { VercelCreationCompensationError } from '../src/providers/vercel/lifecycle.js';
 
 describe('Vercel provider errors', () => {
+  it('preserves creation-compensation recovery IDs without exposing secrets', () => {
+    const token = 'compensation-token';
+    const error = new VercelCreationCompensationError({
+      verified: false,
+      sandboxDeleted: false,
+      snapshotsCleaned: false,
+      sandboxMissing: false,
+      snapshotIds: ['snapshot-1'],
+      residualSandboxIds: ['sandbox-1'],
+      residualSnapshotIds: ['snapshot-1'],
+      finalSessions: [],
+      errors: ['sandbox delete unavailable'],
+    }, `metadata failed ${token}`, 'recovery write unavailable');
+
+    const mapped = mapVercelError(error, {
+      action: 'up',
+      branch: 'feature/ui',
+      secrets: [token],
+    });
+
+    expect(mapped.code).toBe('cleanup');
+    expect(mapped.message).toContain('sandbox-1');
+    expect(mapped.message).toContain('snapshot-1');
+    expect(mapped.message).toContain('recovery metadata was not retained');
+    expect(mapped.message).toContain('--rm');
+    expect(mapped.message).not.toContain(token);
+  });
+
   it('maps metadata lock contention before generic timeout with action recovery', () => {
     const attach = mapVercelError(Object.assign(new Error('metadata is busy'), { code: 'ELOCKED' }), {
       action: 'attach',

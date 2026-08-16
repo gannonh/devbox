@@ -67,6 +67,277 @@ function sandbox(): VercelSandboxHandle {
 }
 
 describe('Vercel lifecycle', () => {
+  it('compensates a newly created sandbox when metadata persistence fails', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-compensation-verified-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const persistenceError = new Error('initial metadata write failed');
+    vi.spyOn(metadata, 'write').mockRejectedValue(persistenceError);
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async (request) => {
+        await request.onCreate?.(handle);
+        return handle;
+      }),
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const noSetupSource = {
+      ...source,
+      requestedBranchExists: true,
+      needsBranchSetup: false,
+      source: { ...source.source, revision: source.requestedBranch },
+    };
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: noSetupSource,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    await expect(lifecycle.up()).rejects.toBe(persistenceError);
+    expect(client.deleteSandbox).toHaveBeenCalledOnce();
+    expect(await metadata.read()).toBeNull();
+  });
+
+  it('retains nonsecret recovery guidance when created-sandbox compensation is incomplete', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-compensation-incomplete-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const persistenceError = new Error('metadata write failed with vercel-token');
+    const recoveryWrites: unknown[] = [];
+    vi.spyOn(metadata, 'write')
+      .mockRejectedValueOnce(persistenceError)
+      .mockImplementation(async (input) => { recoveryWrites.push(input); });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async (request) => {
+        await request.onCreate?.(handle);
+        return handle;
+      }),
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => { throw new Error('sandbox delete unavailable'); }),
+    } as unknown as VercelSandboxClient;
+    const noSetupSource = {
+      ...source,
+      requestedBranchExists: true,
+      needsBranchSetup: false,
+      source: { ...source.source, revision: source.requestedBranch },
+    };
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: noSetupSource,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    const caught = await lifecycle.up().catch((error: unknown) => error);
+    expect(caught).toMatchObject({
+      code: 'cleanup_incomplete',
+      result: {
+        verified: false,
+        residualSandboxIds: [handle.name],
+      },
+    });
+    expect(JSON.stringify(caught)).not.toContain('vercel-token');
+    expect(recoveryWrites).toHaveLength(1);
+    expect(recoveryWrites[0]).toMatchObject({
+      residual: {
+        sandboxIds: [handle.name],
+        reason: expect.stringContaining('metadata'),
+      },
+    });
+    expect(JSON.stringify(recoveryWrites)).not.toContain('vercel-token');
+  });
+
+  it('does not compensate a preexisting sandbox when its metadata write fails', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-compensation-existing-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const persistenceError = new Error('metadata write failed');
+    vi.spyOn(metadata, 'write').mockRejectedValue(persistenceError);
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const noSetupSource = {
+      ...source,
+      requestedBranchExists: true,
+      needsBranchSetup: false,
+      source: { ...source.source, revision: source.requestedBranch },
+    };
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: noSetupSource,
+      metadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.up()).rejects.toBe(persistenceError);
+    expect(client.deleteSandbox).not.toHaveBeenCalled();
+  });
+
+  it('uses stored old-version identity for every stored lifecycle action', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-old-identity-'));
+    const metadata = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: source.remote.canonical,
+      branch: source.requestedBranch,
+    });
+    const oldIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.0.1',
+      scope: { teamId: credentials.teamId, projectId: credentials.projectId },
+    });
+    const oldHandle = {
+      ...sandbox(),
+      name: oldIdentity.name,
+      tags: { ...oldIdentity.tags },
+      routes: [{ url: 'https://old.example/3000', subdomain: 'old', port: 3000 }],
+      domain: () => 'https://old.example/3000',
+    } as VercelSandboxHandle;
+    await metadata.write({
+      identity: {
+        name: oldIdentity.name,
+        repository: oldIdentity.canonicalRepository,
+        branch: oldIdentity.branch,
+        packageVersion: oldIdentity.packageVersion,
+        tags: { ...oldIdentity.tags },
+      },
+      configuration: {
+        imageReference: VERCEL_IMAGE_PIN.reference,
+        sourceUrl: source.source.url,
+        sourceRevision: source.source.revision,
+        requestedBranch: source.requestedBranch,
+        needsBranchSetup: source.needsBranchSetup,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+    });
+
+    const get = vi.fn(async ({ name }: { name: string }) => {
+      expect(name).toBe(oldIdentity.name);
+      return oldHandle;
+    });
+    const client = {
+      get,
+      listSandboxes: vi.fn(async ({ tags }: { tags: Record<string, string> }) => {
+        expect(tags).toEqual({ provider: oldIdentity.tags.provider, repository: oldIdentity.tags.repository });
+        return [{ name: oldIdentity.name, status: 'stopped' as const, tags: { ...oldIdentity.tags } }];
+      }),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.get()).resolves.toBe(oldHandle);
+    await expect(lifecycle.attach()).resolves.toBe(oldHandle);
+    await expect(lifecycle.routes()).resolves.toEqual(oldHandle.routes);
+    await expect(lifecycle.url(3000)).resolves.toBe('https://old.example/3000');
+    await expect(lifecycle.list()).resolves.toEqual([
+      expect.objectContaining({ name: oldIdentity.name }),
+    ]);
+    await expect(lifecycle.stop()).resolves.toMatchObject({ name: oldIdentity.name });
+    await expect(lifecycle.remove()).resolves.toMatchObject({ verified: true });
+
+    expect(get).toHaveBeenCalled();
+    expect(get.mock.calls.every(([request]) => request.name === oldIdentity.name)).toBe(true);
+    expect(client.deleteSandbox).toHaveBeenCalledWith(oldHandle, expect.anything());
+    await expect(metadata.read()).resolves.toBeNull();
+  });
+
+  it('uses stored identity for up resume and current identity for new creation', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-up-identity-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const oldIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.0.1',
+    });
+    const currentIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+    });
+    const oldHandle = { ...sandbox(), name: oldIdentity.name, tags: { ...oldIdentity.tags } } as VercelSandboxHandle;
+    const currentHandle = { ...sandbox(), name: currentIdentity.name, tags: { ...currentIdentity.tags } } as VercelSandboxHandle;
+    await metadata.write({
+      teamId: credentials.teamId,
+      projectId: credentials.projectId,
+      identity: {
+        name: oldIdentity.name,
+        repository: oldIdentity.canonicalRepository,
+        branch: oldIdentity.branch,
+        packageVersion: oldIdentity.packageVersion,
+        tags: { ...oldIdentity.tags },
+      },
+      configuration: {
+        imageReference: VERCEL_IMAGE_PIN.reference,
+        sourceUrl: source.source.url,
+        sourceRevision: source.source.revision,
+        requestedBranch: source.requestedBranch,
+        needsBranchSetup: source.needsBranchSetup,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+    });
+
+    const requests: Array<{ name: string; tags: Record<string, string> }> = [];
+    const client = {
+      getOrCreate: vi.fn(async (request: { name: string; tags: Record<string, string> }) => {
+        requests.push({ name: request.name, tags: { ...request.tags } });
+        return requests.length === 1 ? oldHandle : currentHandle;
+      }),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.up()).resolves.toBe(oldHandle);
+    expect(requests[0]).toEqual({ name: oldIdentity.name, tags: { ...oldIdentity.tags } });
+    await expect(metadata.read()).resolves.toMatchObject({ identity: { packageVersion: '0.0.1', name: oldIdentity.name } });
+
+    await metadata.remove();
+    await expect(lifecycle.up()).resolves.toBe(currentHandle);
+    expect(requests[1]).toEqual({ name: currentIdentity.name, tags: { ...currentIdentity.tags } });
+    await expect(metadata.read()).resolves.toMatchObject({ identity: { packageVersion: '0.1.2', name: currentIdentity.name } });
+  });
+
   it('uses scope-aware branch metadata and refuses mismatched delete tags', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-branch-'));
     const branchMetadataStore = createVercelBranchMetadataStore({

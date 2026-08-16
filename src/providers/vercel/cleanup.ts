@@ -116,6 +116,8 @@ export async function cleanupVercelSandbox(
   const knownSnapshotIds = new Set<string>();
   const residualSnapshotIds = new Set<string>();
   const snapshotStatuses = new Map<string, SandboxSnapshotRecord['status']>();
+  const snapshotOperationErrors = new Map<string, string>();
+  let snapshotListingError: string | undefined;
   const residualSandboxIds = new Set<string>();
   for (const snapshotId of options.knownSnapshotIds ?? []) {
     rememberSnapshotId(snapshotId, knownSnapshotIds, snapshotIds, residualSnapshotIds);
@@ -133,9 +135,18 @@ export async function cleanupVercelSandbox(
   let sessionObservationOk = false;
   let absentRelistStreak = 0;
 
-  const recordError = (operation: string, error: unknown): void => {
+  const formatError = (operation: string, error: unknown): string => {
     const detail = redactSecrets(error, [options.credentials.token]).slice(0, 500);
-    errors.push(`${operation}: ${detail}`);
+    return `${operation}: ${detail}`;
+  };
+  const recordError = (operation: string, error: unknown): void => {
+    errors.push(formatError(operation, error));
+  };
+  const recordSnapshotListingError = (operation: string, error: unknown): void => {
+    snapshotListingError = formatError(operation, error);
+  };
+  const recordSnapshotOperationError = (snapshotId: string, error: unknown): void => {
+    snapshotOperationErrors.set(snapshotId, formatError(`snapshot delete ${snapshotId}`, error));
   };
   const throwIfAborted = (): void => {
     if (options.signal?.aborted) {
@@ -187,7 +198,7 @@ export async function cleanupVercelSandbox(
       options.credentials,
       options.name,
       options.signal,
-      recordError,
+      recordSnapshotListingError,
     );
     if (!snapshotObservation.ok) {
       snapshotsCleaned = false;
@@ -214,14 +225,15 @@ export async function cleanupVercelSandbox(
         await deleteKnownSnapshots(
           knownSnapshotIds,
           snapshotStatuses,
+          snapshotOperationErrors,
           options,
-          recordError,
+          recordSnapshotOperationError,
           attemptedSnapshotIds,
         );
       }
       return true;
     }
-    if (errors.length > 0) {
+    if (snapshotOperationErrors.size > 0) {
       snapshotsCleaned = false;
       absentRelistStreak = 0;
       return false;
@@ -233,6 +245,7 @@ export async function cleanupVercelSandbox(
     } else {
       snapshotsCleaned = true;
     }
+    if (snapshotsCleaned) snapshotListingError = undefined;
     return false;
   };
 
@@ -320,7 +333,7 @@ export async function cleanupVercelSandbox(
           options.credentials,
           options.name,
           options.signal,
-          recordError,
+          recordSnapshotListingError,
         );
         if (snapshotObservation.ok) {
           rememberSnapshotListing(
@@ -351,8 +364,9 @@ export async function cleanupVercelSandbox(
       await deleteKnownSnapshots(
         knownSnapshotIds,
         snapshotStatuses,
+        snapshotOperationErrors,
         options,
-        recordError,
+        recordSnapshotOperationError,
         attemptedSnapshotIds,
       );
       const followUpRelist = await processSnapshotRelist(attemptedSnapshotIds);
@@ -376,8 +390,9 @@ export async function cleanupVercelSandbox(
     await deleteKnownSnapshots(
       knownSnapshotIds,
       snapshotStatuses,
+      snapshotOperationErrors,
       options,
-      recordError,
+      recordSnapshotOperationError,
       finalAttemptedSnapshotIds,
     );
     await processSnapshotRelist(finalAttemptedSnapshotIds);
@@ -391,6 +406,15 @@ export async function cleanupVercelSandbox(
   }
 
   const terminal = sessionObservationOk && !hasNonTerminalSessions(finalSessions);
+  const finalErrors = [...errors];
+  if (snapshotListingError !== undefined) finalErrors.push(snapshotListingError);
+  for (const error of snapshotOperationErrors.values()) finalErrors.push(error);
+  if (!snapshotsCleaned && snapshotListingError === undefined && snapshotOperationErrors.size === 0) {
+    for (const snapshotId of residualSnapshotIds) {
+      const status = snapshotStatuses.get(snapshotId);
+      if (status !== 'deleted') finalErrors.push(`snapshot ${snapshotId} remains unresolved`);
+    }
+  }
   const verified = sandboxLookupOk && sandboxIdentityVerified && sandboxDeleted && snapshotsCleaned && terminal;
   return {
     verified,
@@ -402,7 +426,7 @@ export async function cleanupVercelSandbox(
     residualSnapshotIds: [...residualSnapshotIds],
     finalSessions,
     ...(finalStop === undefined ? {} : { finalStop }),
-    errors,
+    errors: finalErrors,
   };
 }
 
@@ -492,12 +516,16 @@ async function listSnapshots(
 async function deleteKnownSnapshots(
   knownSnapshotIds: Set<string>,
   snapshotStatuses: Map<string, SandboxSnapshotRecord['status']>,
+  snapshotOperationErrors: Map<string, string>,
   options: VercelCleanupOptions,
-  recordError: (operation: string, error: unknown) => void,
+  recordError: (snapshotId: string, error: unknown) => void,
   attemptedSnapshotIds?: Set<string>,
 ): Promise<void> {
   for (const snapshotId of knownSnapshotIds) {
-    if (snapshotStatuses.get(snapshotId) === 'deleted' || attemptedSnapshotIds?.has(snapshotId)) continue;
+    if (
+      attemptedSnapshotIds?.has(snapshotId) ||
+      (snapshotStatuses.get(snapshotId) === 'deleted' && !snapshotOperationErrors.has(snapshotId))
+    ) continue;
     attemptedSnapshotIds?.add(snapshotId);
     try {
       const snapshot = await options.adapter.getSnapshot({
@@ -507,8 +535,13 @@ async function deleteKnownSnapshots(
       });
       snapshotStatuses.set(snapshotId, snapshot.status);
       if (snapshot.status !== 'deleted') await snapshot.delete({ signal: options.signal });
+      snapshotOperationErrors.delete(snapshotId);
     } catch (error) {
-      if (!isVercelNotFound(error)) recordError(`snapshot delete ${snapshotId}`, error);
+      if (isVercelNotFound(error)) {
+        snapshotOperationErrors.delete(snapshotId);
+      } else {
+        recordError(snapshotId, error);
+      }
       // A successful delete or a 404 is not proof of absence. The next
       // complete relist alone may remove this ID from residual state.
     }
@@ -545,6 +578,7 @@ function resolveSnapshotRelist(
       requiresAbsenceConfirmation = true;
     } else if (snapshot.status === 'deleted') {
       residualSnapshotIds.delete(snapshotId);
+      snapshotStatuses.set(snapshotId, 'deleted');
     } else {
       residualSnapshotIds.add(snapshotId);
       allResolved = false;

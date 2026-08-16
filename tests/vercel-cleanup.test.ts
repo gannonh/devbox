@@ -555,4 +555,78 @@ describe('Vercel sandbox cleanup', () => {
     expect(result.verified).toBe(false);
     expect(result.residualSnapshotIds).toEqual(['snapshot-failed', 'snapshot-created']);
   });
+
+  it('recovers from a transient snapshot delete error after a deleted relist', async () => {
+    let listCalls = 0;
+    let getCalls = 0;
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('not found'), { notFound: true }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => {
+        listCalls += 1;
+        return listCalls === 1
+          ? [{ id: 'transient-delete', sourceSessionId: 'session', status: 'created' as const }]
+          : [{ id: 'transient-delete', sourceSessionId: 'session', status: 'deleted' as const }];
+      }),
+      getSnapshot: vi.fn(async () => {
+        getCalls += 1;
+        if (getCalls === 1) throw new Error('temporary snapshot API failure');
+        throw Object.assign(new Error('snapshot disappeared'), { notFound: true });
+      }),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'transient-delete-recovery',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(getCalls).toBe(2);
+    expect(result).toMatchObject({
+      verified: true,
+      snapshotsCleaned: true,
+      residualSnapshotIds: [],
+      errors: [],
+    });
+  });
+
+  it('recovers from a transient snapshot list error after authoritative empty relists', async () => {
+    let listCalls = 0;
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => { throw Object.assign(new Error('not found'), { notFound: true }); }),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => {
+        listCalls += 1;
+        if (listCalls === 1) throw new Error('temporary snapshot list failure');
+        return [];
+      }),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: 'transient-list-recovery',
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 2,
+      sleep: async () => {},
+    });
+
+    expect(listCalls).toBeGreaterThanOrEqual(3);
+    expect(result).toMatchObject({
+      verified: true,
+      snapshotsCleaned: true,
+      residualSnapshotIds: [],
+      errors: [],
+    });
+  });
 });

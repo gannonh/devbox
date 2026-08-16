@@ -221,6 +221,8 @@ export async function resolveGitHubSource(
   const knownSecrets = configuredTokenSecrets(options.env);
   let requestedBranch: string;
   try {
+    const branchForGitValidation = normalizeBranch(options.branch);
+    await validateRequestedBranchWithGit(runner, options.repoRoot, branchForGitValidation);
     requestedBranch = normalizeRequestedSourceBranch(options.branch);
   } catch (error) {
     throw createSourceError('github_branch_invalid', errorMessage(error), error, knownSecrets);
@@ -441,22 +443,46 @@ export function selectGitHubRevision(input: {
 }
 
 export function normalizeRequestedSourceBranch(branch: string): string {
+  if (branch !== branch.trim()) {
+    throw new Error('Git branch is not a valid remote branch name');
+  }
   const normalized = normalizeBranch(branch);
+  const components = normalized.split('/');
+  const hasForbiddenCharacter = [...normalized].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 0x20 || code === 0x7f || /[~^:?*]/.test(character)
+      || character === '[' || character === ']' || character === '\\' || /\s/.test(character);
+  });
   if (
     normalized.startsWith('-') ||
-    /[\s~^:?*]/.test(normalized) ||
-    normalized.includes('[') ||
-    normalized.includes(']') ||
-    normalized.includes('\\') ||
+    normalized === '@' ||
+    hasForbiddenCharacter ||
     normalized.includes('..') ||
-    normalized.split('/').some((segment) => segment === '.' || segment === '..' || segment.startsWith('.') || segment.endsWith('.')) ||
     normalized.includes('@{') ||
     normalized.startsWith('/') ||
     normalized.endsWith('/') ||
-    normalized.endsWith('.') ||
-    normalized.includes('//')
+    normalized.includes('//') ||
+    components.some((segment) =>
+      segment === '.' ||
+      segment === '..' ||
+      segment.startsWith('.') ||
+      segment.endsWith('.') ||
+      segment.toLowerCase().endsWith('.lock'))
   ) {
     throw new Error('Git branch is not a valid remote branch name');
   }
   return normalized;
+}
+
+async function validateRequestedBranchWithGit(
+  runner: ShellRunner,
+  repoRoot: string,
+  branch: string,
+): Promise<void> {
+  const result = await runner.execQuiet(
+    'git',
+    ['check-ref-format', '--branch', branch],
+    { cwd: repoRoot, silentStderr: true },
+  );
+  if (result.code !== 0) throw new Error('Git branch is not a valid remote branch name');
 }

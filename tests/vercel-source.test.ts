@@ -43,7 +43,7 @@ describe('Vercel GitHub source selection', () => {
     const shellRunner = {
       ...noOpShell,
       exec: vi.fn(async () => `https://github.com/acme/repo?token=${token}`),
-      execQuiet: vi.fn(),
+      execQuiet: vi.fn(async () => ({ stdout: '', code: 0 })),
     };
 
     let caught: unknown;
@@ -121,6 +121,7 @@ describe('Vercel GitHub source selection', () => {
         throw new Error(`unexpected command ${command} ${args.join(' ')}`);
       }),
       execQuiet: vi.fn(async (_command: string, args: string[], options?: { env?: Record<string, string | undefined> }) => {
+        if (args[0] === 'check-ref-format') return { stdout: '', code: 0 };
         events.push('branch');
         const helper = options?.env?.GIT_ASKPASS;
         expect(helper).toBeTruthy();
@@ -158,7 +159,7 @@ describe('Vercel GitHub source selection', () => {
         if (args[0] === 'ls-remote') throw Object.assign(new Error('access denied'), { status: 403 });
         throw new Error('unexpected command');
       }),
-      execQuiet: vi.fn(),
+      execQuiet: vi.fn(async () => ({ stdout: '', code: 0 })),
     };
 
     await expect(resolveGitHubSource({
@@ -242,13 +243,56 @@ describe('Vercel GitHub source selection', () => {
       defaultBranch: 'main',
       requestedBranchExists: false,
     })).toThrow(/branch/i);
-    for (const branch of ['feature/./x', '.hidden']) {
+    for (const branch of [
+      'feature/./x',
+      '.hidden',
+      'feature.lock',
+      'feature.lock/topic',
+      'feature/topic.lock',
+      'feature/@{topic}',
+      'feature name',
+      'feature~name',
+      'feature^name',
+      'feature:name',
+      'feature?name',
+      'feature*name',
+      'feature[name',
+      'feature\\name',
+      'feature//topic',
+      '/feature',
+      'feature/',
+      'feature/../topic',
+      'feature..topic',
+      'feature.',
+      '@',
+      '-feature',
+    ]) {
       expect(() => selectGitHubRevision({
         requestedBranch: branch,
         defaultBranch: 'main',
         requestedBranchExists: false,
       })).toThrow(/branch/i);
     }
+  });
+
+  it('runs git branch validation before resolving origin or credentials', async () => {
+    const exec = vi.fn(async () => { throw new Error('origin lookup must not run'); });
+    const execQuiet = vi.fn(async () => ({ stdout: '', code: 1 }));
+    const shellRunner = { ...noOpShell, exec, execQuiet };
+
+    await expect(resolveGitHubSource({
+      repoRoot: '/repo',
+      branch: 'feature.lock',
+      env: { GH_TOKEN: 'github-secret' },
+      shellRunner,
+    })).rejects.toMatchObject({ code: 'github_branch_invalid' });
+
+    expect(execQuiet).toHaveBeenCalledWith(
+      'git',
+      ['check-ref-format', '--branch', 'feature.lock'],
+      { cwd: '/repo', silentStderr: true },
+    );
+    expect(exec).not.toHaveBeenCalled();
   });
 
   it('uses the remote default and requests a post-create branch switch when missing', () => {

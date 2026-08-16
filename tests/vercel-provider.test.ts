@@ -529,6 +529,24 @@ describe('Vercel provider', () => {
     expect(output).not.toContain(token);
   });
 
+  it('rejects an invalid branch before Vercel Sandbox creation', async () => {
+    const getOrCreate = vi.fn();
+    const shell = runner();
+    shell.execQuiet = vi.fn(async () => ({ stdout: '', code: 1 }));
+    const provider = createVercelProvider({
+      runner: shell,
+      client: { getOrCreate } as unknown as VercelSandboxClient,
+      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-branch-validation-')),
+      confirmation: vi.fn(async () => true),
+    });
+
+    await expect(provider.up(request({ branch: 'feature.lock' }))).rejects.toMatchObject({
+      code: 'source',
+    });
+    expect(getOrCreate).not.toHaveBeenCalled();
+    expect(shell.exec).not.toHaveBeenCalled();
+  });
+
   it('fails first use in a non-TTY before lifecycle creation', async () => {
     const currentLifecycle = lifecycle();
     const provider = createVercelProvider({
