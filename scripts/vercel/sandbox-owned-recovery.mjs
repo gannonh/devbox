@@ -122,7 +122,7 @@ export async function recoverOwnedResources({
   const remaining = () => Math.max(0, deadline - Date.now());
   const recordError = (operation, error) => {
     const detail = `${operation}: ${errorMessage(error)}`.slice(0, 500);
-    permanentErrors.push(detail);
+    if (!permanentErrors.includes(detail)) permanentErrors.push(detail);
   };
   const recordOperationError = (map, id, operation, error) => {
     map.set(id, `${operation}: ${errorMessage(error)}`.slice(0, 500));

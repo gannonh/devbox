@@ -13,13 +13,14 @@ export interface VercelProviderSmokeBudget {
   cleanupTimeoutMs: number;
   fixtureTimeoutMs: number;
   pathProbeTimeoutMs: number;
+  preflightTimeoutMs: number;
   outerTimeoutMs: number;
 }
 
 /**
- * Return the minimum wall-clock budget for sequential smoke execution. The
- * `both` path runs two complete path budgets, each followed by independent
- * cleanup, before the outer controller may expire.
+ * Return the minimum wall-clock budget for preflight plus sequential smoke
+ * execution. The `both` path runs two complete path budgets, each followed by
+ * independent cleanup, after stale smoke-owned resources are reconciled.
  */
 export function calculateVercelProviderSmokeBudget(
   path: VercelProviderSmokePath,
@@ -27,6 +28,7 @@ export function calculateVercelProviderSmokeBudget(
   cleanupTimeoutMs: number,
   fixtureTimeoutMs: number,
   pathProbeTimeoutMs: number,
+  preflightTimeoutMs = cleanupTimeoutMs,
 ): VercelProviderSmokeBudget {
   if (path !== 'existing' && path !== 'missing' && path !== 'both') {
     throw new TypeError('Vercel provider smoke path is invalid');
@@ -36,19 +38,22 @@ export function calculateVercelProviderSmokeBudget(
     ['cleanupTimeoutMs', cleanupTimeoutMs],
     ['fixtureTimeoutMs', fixtureTimeoutMs],
     ['pathProbeTimeoutMs', pathProbeTimeoutMs],
+    ['preflightTimeoutMs', preflightTimeoutMs],
   ] as const) {
     if (!Number.isFinite(value) || value <= 0) {
       throw new TypeError(`${name} must be finite and positive`);
     }
   }
   const pathCount = path === 'both' ? 2 : 1;
+  const cleanupPhasesPerPath = 3; // normal remove, direct finally cleanup, and recovery
   return {
     pathCount,
     pathTimeoutMs,
     cleanupTimeoutMs,
     fixtureTimeoutMs,
     pathProbeTimeoutMs,
-    outerTimeoutMs: pathCount * (pathTimeoutMs + cleanupTimeoutMs + pathProbeTimeoutMs) + fixtureTimeoutMs,
+    preflightTimeoutMs,
+    outerTimeoutMs: preflightTimeoutMs + pathCount * (pathTimeoutMs + cleanupTimeoutMs * cleanupPhasesPerPath + pathProbeTimeoutMs) + fixtureTimeoutMs,
   };
 }
 

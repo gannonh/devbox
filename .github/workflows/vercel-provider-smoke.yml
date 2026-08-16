@@ -62,7 +62,7 @@ jobs:
   provider-smoke:
     name: private-clone terminal smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     environment:
       name: vercel-provider-smoke
     permissions:
@@ -71,7 +71,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       SMOKE_PATH: ${{ inputs.path }}
       SMOKE_TIMEOUT_MS: '720000'
-      SMOKE_TOTAL_TIMEOUT_MS: '1760000'
+      SMOKE_TOTAL_TIMEOUT_MS: '2400000'
       SMOKE_OPERATION_TIMEOUT_MS: '30000'
       SMOKE_COMMAND_TIMEOUT_MS: '60000'
       SMOKE_TERMINAL_TIMEOUT_MS: '90000'

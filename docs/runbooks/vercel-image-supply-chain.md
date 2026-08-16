@@ -28,10 +28,12 @@ non-default-branch dispatches and unlabeled PR calls, grants only
 environment. Configure required reviewers on that environment before enabling
 the credentialed secrets when a human approval boundary is desired; the
 workflow's event guard remains mandatory.
-The job timeout is 35 minutes; `both` has two sequential 12-minute path
-budgets, two 10-second
-branch-probe budgets, two 2-minute cleanup budgets, and a 30-second
-fixture-validation budget under a 29-minute-20-second outer smoke deadline.
+The job timeout is 45 minutes; `both` has two sequential 12-minute path
+budgets, two 10-second branch-probe budgets, six 2-minute cleanup phases
+(normal removal, direct `finally` cleanup, and independent recovery for each
+path), a 2-minute stale-resource preflight, and a 30-second fixture-validation
+budget under a 38-minute-50-second outer smoke budget. The workflow reserves a
+40-minute total timeout.
 
 ### Pre-merge authorization for Issue #5
 
@@ -127,22 +129,33 @@ stops for snapshot completion, resumes/reconnects, and repeats terminal
 coverage. Final session listing must show every created VM as `stopped` or
 `aborted`.
 
-Cleanup is unconditional. The gate removes the run-unique Sandbox through the
-production cleanup adapter, resolves paginated snapshot metadata through
-`Snapshot.get` before deletion, re-lists until each matching snapshot is
-absent or explicitly `deleted`, and rejects every non-deleted residual. It also
-runs the existing owned-resource recovery helper by exact name/tag/scope so a
-lost create response is not treated as success. Evidence records the run
-identity, path labels, non-reversible fingerprints for fixture/scope
-identities, statuses, timings, checks, recovery history, and final residuals;
-it never records either token, source password, interactive token, exact
-fixture repository/branch/default, expected file/content, or Vercel
-team/project IDs. A successful empty filtered recovery listing is not a session
-proof: functional flow or recovery must have listed and verified at least one
-terminal session. Prior cleanup errors and reconciliation history are
-retained. The standalone report starts with `redacted: false`; the workflow
-redactor flips it to `true` immediately before upload and withholds the
-directory if redaction itself fails.
+Cleanup is unconditional. Before either path starts, the gate performs a
+preflight list with a short smoke name prefix and no server-side tag filter;
+all five identity tags are checked locally. Only strict run-unique smoke
+identities with `provider=vercel` and the exact fixture repository tag are
+eligible, so normal workspaces are ignored. Each stale resource is cleaned
+with its live tags and must prove verified deletion plus terminal session
+state; preflight evidence stores only fingerprints, statuses, and redacted
+stable diagnostics.
+
+Each path's `finally` block first calls `cleanupVercelSandbox` directly for its
+known Sandbox handle/name, even when a functional assertion failed, then runs
+independent owned-resource collection recovery. The gate resolves paginated
+snapshot metadata through `Snapshot.get` before deletion, re-lists until each
+matching snapshot is absent or explicitly `deleted`, and rejects every
+non-deleted residual. Collection requests use a short API-safe prefix and no
+server-side tags; requested names and tags are enforced after full pagination.
+Evidence records the run identity, path labels, non-reversible fingerprints for
+fixture/scope identities, statuses, timings, checks, preflight evidence, recovery history,
+and final residuals; it never records either token, source password, interactive
+token, exact fixture repository/branch/default, expected file/content, or
+Vercel team/project IDs. A successful empty filtered recovery listing is not a
+session proof: functional flow or recovery must have listed and verified at
+least one terminal session. Prior cleanup errors and reconciliation history are
+retained. Returned Sandbox images are checked by exact manifest digest rather
+than URL serialization. The standalone report starts with `redacted: false`;
+the workflow redactor flips it to `true` immediately before upload and
+withholds the directory if redaction itself fails.
 
 If cleanup reports an ambiguous duplicate, do not blindly retry `--rm` or
 choose a name from a broad list. Use the matching team/project in the Vercel

@@ -140,12 +140,17 @@ branch locally, and runs every Git assertion and terminal session in
 `/vercel/sandbox/<normalized-repository>`, including resume/attach. It asserts
 the remote, `HEAD`, branch, clean worktree, and fixture content, exercises
 `openInteractive` once per adapter session, Ctrl-C, stop/snapshot completion,
-and every created VM session. `finally` cleanup stops/removes the owned
-Sandbox, paginates snapshot cleanup, re-lists until every item is absent or
-`deleted`, and fails on any residual or unproven running-session state. Evidence
-stores path labels and non-reversible fingerprints rather than fixture
-repository/branch/file/content or Vercel team/project IDs; the workflow
-redactor marks the final artifact redacted.
+and every created VM session. Returned Sandbox images are accepted only when
+their manifest digest exactly matches the promoted pin; absent, tag-only, and
+different-digest values fail closed. Before paths, preflight cleanup lists with
+a short smoke prefix, filters the complete five-tag identity locally, and
+removes only run-unique smoke resources from this fixture repository. Each
+path's `finally` block directly reconciles its known Sandbox before independent
+collection recovery, paginates snapshot cleanup, re-lists until every item is
+absent or `deleted`, and fails on any residual or unproven running-session
+state. Evidence stores path labels and non-reversible fingerprints rather than
+fixture repository/branch/file/content or Vercel team/project IDs; the
+workflow redactor marks the final artifact redacted.
 
 Artifacts are uploaded after a final redaction step, even for a normal failed
 smoke. A redaction failure withholds the directory rather than risk a secret

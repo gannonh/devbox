@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  matchesVercelSandboxImageDigest,
   parseVercelImageReference,
   VERCEL_IMAGE_PIN,
   VERCEL_IMAGE_PROVENANCE,
@@ -32,6 +33,14 @@ function validPin(overrides: Record<string, unknown> = {}) {
 }
 
 describe('Vercel image pin validation', () => {
+  it('accepts only a returned sandbox image with the exact expected digest', () => {
+    const digest = 'sha256:' + 'a'.repeat(64);
+    expect(matchesVercelSandboxImageDigest(`repository@${digest}`, digest)).toBe(true);
+    expect(matchesVercelSandboxImageDigest('repository:latest', digest)).toBe(false);
+    expect(matchesVercelSandboxImageDigest(undefined, digest)).toBe(false);
+    expect(matchesVercelSandboxImageDigest(`repository@sha256:${'b'.repeat(64)}`, digest)).toBe(false);
+  });
+
   it('accepts a fully-qualified immutable public digest with mirrored provenance', () => {
     const result = validateVercelImagePin(validPin());
 

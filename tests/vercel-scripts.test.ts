@@ -290,6 +290,21 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(result.errors.join(' ')).toMatch(/sandbox discovery/);
   });
 
+  it('keeps repeated sandbox-list 400 diagnostics stable and bounded', async () => {
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 3,
+      backoffMs: 0,
+      listSandboxes: async () => { throw new Error('Status code 400 is not ok'); },
+      recoverSandbox: async () => {},
+      listSnapshots: async () => [],
+      deleteSnapshot: async () => {},
+    });
+    expect(result.discoveryConverged).toBe(false);
+    expect(result.errors.filter((error) => error === 'sandbox discovery: Status code 400 is not ok')).toHaveLength(1);
+    expect(result.errors.filter((error) => error === 'final sandbox discovery: Status code 400 is not ok')).toHaveLength(1);
+  });
+
   it('fails closed when owned snapshot collection discovery returns a broad 404', async () => {
     const result = await recoverOwnedResources({
       timeoutMs: 1_000,

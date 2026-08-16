@@ -252,6 +252,8 @@ export function isVercelStale(error: unknown): boolean {
     : getStatus(error) === 410;
 }
 
+const API_SAFE_SANDBOX_NAME_PREFIX_LENGTH = 32;
+
 export function createVercelSandboxClient(
   options: VercelSandboxClientOptions = {},
 ): VercelSandboxClient {
@@ -323,16 +325,19 @@ export function createVercelSandboxClient(
       });
     },
     listSandboxes: async (request) => {
-      const { credentials, ...listRequest } = request;
-      return call('Sandbox.list', [credentials.token], async () => {
+      const { credentials, tags, namePrefix, signal } = request;
+      return call('Sandbox.list', [credentials.token, credentials.teamId, credentials.projectId], async () => {
+        const serverNamePrefix = namePrefix?.slice(0, API_SAFE_SANDBOX_NAME_PREFIX_LENGTH);
         const page = await sandboxApi.list(withFetch({
-          ...listRequest,
+          ...(serverNamePrefix === undefined ? {} : { namePrefix: serverNamePrefix }),
           ...credentials,
+          ...(signal === undefined ? {} : { signal }),
           sortBy: 'name',
           sortOrder: 'asc',
           limit: 50,
         }));
-        return collectPaginated<SandboxListRecord>(page, 'sandboxes');
+        const sandboxes = await collectPaginated<SandboxListRecord>(page, 'sandboxes');
+        return sandboxes.filter((sandbox) => matchesSandboxListFilters(sandbox, namePrefix, tags));
       });
     },
     listSessions: async (sandbox, options) => call(
@@ -372,6 +377,17 @@ export function createVercelSandboxClient(
     },
     deleteSnapshot: async (snapshot, options) => call('Snapshot.delete', [], () => snapshot.delete(options)),
   };
+}
+
+function matchesSandboxListFilters(
+  sandbox: SandboxListRecord,
+  namePrefix: string | undefined,
+  tags: Record<string, string> | undefined,
+): boolean {
+  if (typeof sandbox?.name !== 'string') return false;
+  if (namePrefix !== undefined && !sandbox.name.startsWith(namePrefix)) return false;
+  if (tags !== undefined && Object.entries(tags).some(([key, value]) => sandbox.tags?.[key] !== value)) return false;
+  return true;
 }
 
 function wrapSnapshotHandle(

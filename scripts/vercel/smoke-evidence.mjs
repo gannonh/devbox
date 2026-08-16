@@ -72,6 +72,56 @@ export function createFixtureEvidence(config, fixture) {
   };
 }
 
+export function createEmptyPreflightEvidence() {
+  return {
+    attempted: false,
+    discoveryConverged: false,
+    snapshotsCleaned: false,
+    sessionProof: false,
+    discoveredSandboxes: [],
+    ignoredSandboxes: [],
+    cleanedSandboxes: [],
+    residualSandboxes: [],
+    errors: [],
+  };
+}
+
+export function createPreflightEvidence({
+  namePrefix,
+  repositoryTag,
+  discovered = [],
+  ignored = [],
+  cleaned = [],
+  residual = [],
+  discoveryConverged = false,
+  snapshotsCleaned = false,
+  sessionProof = false,
+  errors = [],
+  redact = (value) => String(value),
+}) {
+  const fingerprintNames = (values) => (Array.isArray(values) ? values : [])
+    .filter((value) => typeof value === 'string')
+    .map((name) => ({ nameFingerprint: fingerprintEvidence(name) }));
+  return {
+    attempted: true,
+    namePrefixFingerprint: fingerprintEvidence(namePrefix),
+    repositoryTagFingerprint: fingerprintEvidence(repositoryTag),
+    discoveryConverged: discoveryConverged === true,
+    snapshotsCleaned: snapshotsCleaned === true,
+    sessionProof: sessionProof === true,
+    discoveredSandboxes: fingerprintNames(discovered),
+    ignoredSandboxes: fingerprintNames(ignored),
+    cleanedSandboxes: fingerprintNames(cleaned),
+    residualSandboxes: (Array.isArray(residual) ? residual : [])
+      .filter((sandbox) => sandbox && typeof sandbox.name === 'string')
+      .map((sandbox) => ({
+        nameFingerprint: fingerprintEvidence(sandbox.name),
+        ...(sandbox.status === undefined ? {} : { status: sandbox.status }),
+      })),
+    errors: (Array.isArray(errors) ? errors : []).map((error) => redact(error)),
+  };
+}
+
 export function createEmptyCleanupEvidence() {
   return {
     stopped: false,

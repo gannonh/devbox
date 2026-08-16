@@ -243,6 +243,11 @@ describe('Vercel image supply-chain workflow', () => {
     expect(runbook).toContain('UPSTREAM_COMMIT');
     expect(runbook).toContain('--scope');
     expect(runbook).toContain('--tag');
+    expect(runbook).toContain('job timeout is 45 minutes');
+    expect(runbook).toContain('six 2-minute cleanup phases');
+    expect(runbook).toContain('preflight list with a short smoke name prefix');
+    expect(runbook).toContain('all five identity tags are checked locally');
+    expect(runbook).toContain('Returned Sandbox images are checked by exact manifest digest');
     expect(runbook).toContain('sleep infinity');
     expect(imageReadme).toContain('sleep infinity');
   });

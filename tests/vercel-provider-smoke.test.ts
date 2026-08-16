@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
+import { selectSmokeOwnedSandboxes } from '../scripts/vercel/smoke-reconciliation.mjs';
 import {
   assertPromotedVercelImagePin,
   calculateVercelProviderSmokeBudget,
@@ -75,6 +76,37 @@ async function loadWorkflow(path: string): Promise<Record<string, unknown>> {
 }
 
 describe('Vercel provider smoke configuration', () => {
+  it('selects only strict smoke-owned identities for preflight cleanup', () => {
+    const repositoryTag = 'github-com-acme-private-fixture-abcdef1234567890';
+    const valid = {
+      name: 'devbox-vercel-v-provider-smoke-run-31957535685-1-abcdef1234567890',
+      tags: {
+        provider: 'vercel',
+        repository: repositoryTag,
+        branch: 'fixture-existing-abcdef12345678',
+        version: 'v-provider-smoke-run-31957535685-1-abcdef1234567890',
+        identity: 'abcdef1234567890',
+      },
+      status: 'stopped',
+    };
+    const { owned, ignored } = selectSmokeOwnedSandboxes([
+      valid,
+      { ...valid, tags: { ...valid.tags, provider: 'local' } },
+      { ...valid, tags: { ...valid.tags, repository: 'github-com-other-repo-abcdef1234567890' } },
+      { ...valid, tags: { ...valid.tags, extra: 'must-reject' } },
+      { ...valid, tags: { ...valid.tags, identity: '1111111111111111' } },
+      { ...valid, name: 'devbox-vercel-v-0-1-2-github-com-acme-private-fixture-main-abcdef12345678' },
+    ], repositoryTag);
+
+    expect(owned).toEqual([valid]);
+    expect(ignored.map((sandbox) => sandbox.name)).toEqual([
+      valid.name,
+      valid.name,
+      valid.name,
+      valid.name,
+    ]);
+  });
+
   it('budgets both sequential smoke paths plus per-path cleanup inside the outer deadline', () => {
     expect(calculateVercelProviderSmokeBudget('both', 100, 20, 5, 10)).toEqual({
       pathCount: 2,
@@ -82,9 +114,12 @@ describe('Vercel provider smoke configuration', () => {
       cleanupTimeoutMs: 20,
       fixtureTimeoutMs: 5,
       pathProbeTimeoutMs: 10,
-      outerTimeoutMs: 265,
+      preflightTimeoutMs: 20,
+      outerTimeoutMs: 365,
     });
-    expect(calculateVercelProviderSmokeBudget('existing', 100, 20, 5, 10).outerTimeoutMs).toBe(135);
+    expect(calculateVercelProviderSmokeBudget('existing', 100, 20, 5, 10).outerTimeoutMs).toBe(195);
+    expect(calculateVercelProviderSmokeBudget('both', 720_000, 120_000, 30_000, 10_000).outerTimeoutMs)
+      .toBe(2_330_000);
   });
 
   it('rejects a non-positive smoke budget', () => {
@@ -170,6 +205,20 @@ describe('Vercel provider smoke configuration', () => {
     expect(source.indexOf('const image = assertPromotedVercelImagePin'))
       .toBeLessThan(source.indexOf('initializeSecretValues();'));
     expect(source).not.toContain('vercel sandbox');
+  });
+
+  it('directly reconciles known path sandboxes before collection recovery and preflights stale runs', async () => {
+    const source = await readFile('scripts/vercel/provider-smoke.mjs', 'utf8');
+    const runPath = source.slice(source.indexOf('async function runPath'));
+    const finallyBlock = runPath.slice(runPath.indexOf('} finally {'));
+    expect(source).toContain('preflightSmokeResources');
+    expect(source).toContain("'preflight-cleanup'");
+    expect(source).toContain('report.preflight');
+    expect(finallyBlock).toContain('combineSignals(runSignal, cleanupController.signal)');
+    expect(finallyBlock.indexOf('cleanupVercelSandbox')).toBeGreaterThanOrEqual(0);
+    expect(finallyBlock.indexOf('recoverOwned')).toBeGreaterThan(finallyBlock.indexOf('cleanupVercelSandbox'));
+    expect(source).toContain('SMOKE_NAME_PREFIX');
+    expect(source).toContain('selectSmokeOwnedSandboxes');
   });
 
   it('uses valid GitHub fixture secret names in both workflow interfaces', async () => {
@@ -324,8 +373,8 @@ describe('Vercel provider smoke configuration', () => {
     expect(workflow).toContain('test "${EXPECTED_REPOSITORY_FORK}" = \'false\'');
     expect(workflow).toContain('environment:\n      name: vercel-provider-smoke');
     expect(workflow).toContain('permissions:\n  contents: read');
-    expect(workflow).toContain('timeout-minutes: 35');
-    expect(workflow).toContain("SMOKE_TOTAL_TIMEOUT_MS: '1760000'");
+    expect(workflow).toContain('timeout-minutes: 45');
+    expect(workflow).toContain("SMOKE_TOTAL_TIMEOUT_MS: '2400000'");
     expect(workflow).toContain('id: guard');
     expect(workflow).toContain("if: always() && steps.guard.outcome == 'success'");
     expect(workflow).toContain('redacted":false');

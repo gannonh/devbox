@@ -355,6 +355,82 @@ describe('Vercel Sandbox client adapter', () => {
     await sandbox.delete();
   });
 
+  it('uses a short untagged server prefix and filters sandbox names and tags locally', async () => {
+    const requestedPrefix = 's'.repeat(63);
+    const expectedTags = {
+      provider: 'vercel',
+      repository: 'repo-tag',
+      branch: 'main-tag',
+      version: 'version-tag',
+      identity: 'identity-tag',
+    };
+    const requests: Record<string, unknown>[] = [];
+    const client = createVercelSandboxClient({
+      sandbox: {
+        getOrCreate: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn(async (request) => {
+          requests.push(request);
+          return {
+            pages: async function* () {
+              yield { sandboxes: [
+                {
+                  name: `${requestedPrefix}-wrong-tags`,
+                  persistent: true,
+                  status: 'stopped' as const,
+                  tags: { ...expectedTags, identity: 'other' },
+                },
+              ] };
+              yield { sandboxes: [
+                {
+                  name: requestedPrefix,
+                  persistent: true,
+                  status: 'stopped' as const,
+                  tags: expectedTags,
+                },
+                {
+                  name: 's'.repeat(32) + '-different-name',
+                  persistent: true,
+                  status: 'stopped' as const,
+                  tags: expectedTags,
+                },
+              ] };
+            },
+          };
+        }),
+      } as never,
+    });
+
+    await expect(client.listSandboxes({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      namePrefix: requestedPrefix,
+      tags: expectedTags,
+    })).resolves.toEqual([expect.objectContaining({ name: requestedPrefix })]);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].namePrefix).toBe(requestedPrefix.slice(0, 32));
+    expect(requests[0]).not.toHaveProperty('tags');
+  });
+
+  it('redacts and stabilizes sandbox-list 400 diagnostics', async () => {
+    const token = 'vercel-list-secret';
+    const client = createVercelSandboxClient({
+      sandbox: {
+        getOrCreate: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn(async () => { throw new Error(`Status code 400 for ${token} team project`); }),
+      } as never,
+    });
+
+    const caught = await client.listSandboxes({
+      credentials: { token, teamId: 'team', projectId: 'project' },
+      namePrefix: 'devbox-smoke-',
+    }).catch((error: unknown) => error);
+    expect(caught).toBeInstanceOf(VercelSdkError);
+    expect((caught as Error).message).toBe('Status code 400 for [REDACTED] [REDACTED] [REDACTED]');
+    expect((caught as Error).message).not.toContain(token);
+  });
+
   it('consumes every SDK sandbox and snapshot pagination page', async () => {
     const sessionHandle = {
       name: 'session-pages',

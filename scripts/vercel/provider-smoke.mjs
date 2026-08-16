@@ -22,14 +22,22 @@ import {
 import { cleanupVercelSandbox } from '../../dist/providers/vercel/cleanup.js';
 import {
   createVercelIdentity,
+  createVercelRepositoryTag,
 } from '../../dist/providers/vercel/identity.js';
-import { VERCEL_IMAGE_PIN } from '../../dist/providers/vercel/image.js';
+import {
+  matchesVercelSandboxImageDigest,
+  VERCEL_IMAGE_PIN,
+} from '../../dist/providers/vercel/image.js';
 import {
   normalizeGitHubSourceRemote,
   resolveVercelRepositoryCwd,
 } from '../../dist/providers/vercel/source.js';
 import { createVercelTerminalAdapter } from '../../dist/providers/vercel/terminal.js';
 import { boundedCall } from './sandbox-cleanup.mjs';
+import {
+  SMOKE_NAME_PREFIX,
+  selectSmokeOwnedSandboxes,
+} from './smoke-reconciliation.mjs';
 import {
   applyOwnedRecoveryEvidence,
   recoverOwnedResources,
@@ -41,7 +49,9 @@ import {
   aggregateCleanupEvidence,
   createConfigurationEvidence,
   createEmptyCleanupEvidence,
+  createEmptyPreflightEvidence,
   createFixtureEvidence,
+  createPreflightEvidence,
   createPathReport,
   createRunIdentity,
   fingerprintEvidence,
@@ -61,6 +71,7 @@ const report = {
   imageDigest: VERCEL_IMAGE_PIN.reference.split('@').at(-1),
   paths: [],
   cleanup: createEmptyCleanupEvidence(),
+  preflight: createEmptyPreflightEvidence(),
   startedAt: new Date(startedAt).toISOString(),
 };
 
@@ -268,6 +279,105 @@ function cleanupAdapter(client) {
   };
 }
 
+async function preflightSmokeResources(config, client, signal) {
+  const remote = normalizeGitHubSourceRemote(`https://github.com/${config.fixture.repository}.git`);
+  const repositoryTag = createVercelRepositoryTag(remote.canonical);
+  const adapter = cleanupAdapter(client);
+  const discovered = [];
+  const ignored = [];
+  const cleaned = [];
+  const residual = [];
+  const errors = [];
+  let cleanupFailures = 0;
+  let firstListingSucceeded = false;
+  let finalListingSucceeded = false;
+  let sessionProofCount = 0;
+  let snapshotsCleanedCount = 0;
+
+  const addError = (error) => {
+    const detail = errorMessage(error);
+    if (!errors.includes(detail)) errors.push(detail);
+  };
+  const listCandidates = async () => {
+    const records = await client.listSandboxes({
+      credentials: config.credentials,
+      namePrefix: SMOKE_NAME_PREFIX,
+      signal,
+    });
+    return selectSmokeOwnedSandboxes(records, repositoryTag);
+  };
+
+  try {
+    const selection = await listCandidates();
+    firstListingSucceeded = true;
+    ignored.push(...selection.ignored);
+    for (const sandbox of selection.owned) {
+      discovered.push(sandbox.name);
+      addSensitiveValues([sandbox.name, ...Object.values(sandbox.tags ?? {})]);
+      try {
+        const result = await cleanupVercelSandbox({
+          name: sandbox.name,
+          credentials: config.credentials,
+          expectedTags: sandbox.tags,
+          knownSnapshotIds: sandbox.currentSnapshotId === undefined ? [] : [sandbox.currentSnapshotId],
+          adapter,
+          timeoutMs: cleanupTimeoutMs,
+          maxAttempts: 8,
+          signal,
+        });
+        addSensitiveValues(result.snapshotIds);
+        const sessionProof = hasTerminalSessionProof(result.finalSessions);
+        if (sessionProof) sessionProofCount += 1;
+        if (result.snapshotsCleaned) snapshotsCleanedCount += 1;
+        if (result.verified && result.errors.length === 0 && sessionProof) {
+          cleaned.push(sandbox.name);
+        } else {
+          cleanupFailures += 1;
+          residual.push({ name: sandbox.name, status: sandbox.status });
+          addError(`preflight cleanup for ${sandbox.name} did not prove absence and terminal sessions`);
+          for (const detail of result.errors) addError(detail);
+        }
+      } catch (error) {
+        cleanupFailures += 1;
+        residual.push({ name: sandbox.name, status: sandbox.status });
+        addError(`preflight cleanup for ${sandbox.name}: ${errorMessage(error)}`);
+      }
+    }
+  } catch (error) {
+    addError(`preflight sandbox discovery: ${errorMessage(error)}`);
+  }
+
+  let finalOwned = [];
+  if (firstListingSucceeded) {
+    try {
+      const finalSelection = await listCandidates();
+      finalListingSucceeded = true;
+      ignored.push(...finalSelection.ignored);
+      finalOwned = finalSelection.owned;
+      residual.push(...finalOwned.map((sandbox) => ({ name: sandbox.name, status: sandbox.status })));
+      if (finalOwned.length > 0) addError('preflight sandbox discovery still contains smoke-owned resources');
+    } catch (error) {
+      addError(`preflight final sandbox discovery: ${errorMessage(error)}`);
+    }
+  }
+
+  const evidence = createPreflightEvidence({
+    namePrefix: SMOKE_NAME_PREFIX,
+    repositoryTag,
+    discovered,
+    ignored: [...new Set(ignored.map((sandbox) => sandbox.name))],
+    cleaned,
+    residual,
+    discoveryConverged: finalListingSucceeded && finalOwned.length === 0,
+    snapshotsCleaned: discovered.length === 0 || snapshotsCleanedCount === discovered.length,
+    sessionProof: discovered.length > 0 && sessionProofCount === discovered.length,
+    errors,
+    redact: errorMessage,
+  });
+  const success = firstListingSucceeded && finalListingSucceeded && finalOwned.length === 0 && cleanupFailures === 0;
+  return { success, evidence };
+}
+
 async function recoverOwned(client, credentials, identity, pathReport, signal) {
   const adapter = cleanupAdapter(client);
   const recovery = await recoverOwnedResources({
@@ -402,7 +512,8 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       signal,
       smokeTimeoutMs,
     );
-    recordCheck(pathReport, 'Sandbox image pin', sandbox.image === VERCEL_IMAGE_PIN.reference, 'created Sandbox reports the promoted image reference');
+    const expectedImageDigest = VERCEL_IMAGE_PIN.reference.split('@').at(-1);
+    recordCheck(pathReport, 'Sandbox image pin', matchesVercelSandboxImageDigest(sandbox.image, expectedImageDigest), 'created Sandbox reports the expected promoted image digest');
     recordCheck(pathReport, 'Sandbox scope identity', sandbox.tags?.identity === identity.tags.identity, 'created Sandbox returned the run-unique identity tags');
 
     const cloneCwd = resolveVercelRepositoryCwd(sandbox.cwd, remote.repository);
@@ -483,13 +594,41 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
   } finally {
     clearTimeout(smokeTimer);
     const cleanupController = new AbortController();
+    const cleanupSignal = combineSignals(runSignal, cleanupController.signal);
     const cleanupTimer = setTimeout(() => cleanupController.abort(new Error(`provider smoke cleanup exceeded ${cleanupTimeoutMs}ms`)), cleanupTimeoutMs);
+    try {
+      const directCleanup = await timed(
+        pathReport,
+        'direct-cleanup',
+        (requestSignal) => cleanupVercelSandbox({
+          name: sandbox?.name ?? identity.name,
+          credentials,
+          expectedTags: identity.tags,
+          knownSnapshotIds: pathReport.knownSnapshotIds ?? [],
+          adapter: cleanupAdapter(client),
+          timeoutMs: cleanupTimeoutMs,
+          maxAttempts: 8,
+          signal: requestSignal,
+        }),
+        cleanupSignal,
+        cleanupTimeoutMs,
+      );
+      applyCleanupResult(pathReport, directCleanup);
+      const directSessionProof = pathReport.cleanup.finalSessionStatesTerminal === true || hasTerminalSessionProof(directCleanup.finalSessions);
+      if (!directCleanup.verified || directCleanup.errors.length > 0 || !directSessionProof) {
+        pathReport.cleanupFailed = true;
+        if (!directSessionProof) pathReport.cleanup.errors.push('direct cleanup session proof was not observed');
+      }
+    } catch (error) {
+      pathReport.cleanup.errors.push(`direct cleanup: ${errorMessage(error)}`);
+      pathReport.cleanupFailed = true;
+    }
     try {
       const recovery = await timed(
         pathReport,
         'snapshot-cleanup',
         (requestSignal) => recoverOwned(client, credentials, identity, pathReport, requestSignal),
-        cleanupController.signal,
+        cleanupSignal,
         cleanupTimeoutMs,
       );
       const sessionProof = pathReport.cleanup.finalSessionStatesTerminal === true || recovery.sessionProof === true;
@@ -602,6 +741,15 @@ async function main() {
     try {
       const fixture = await timed(report, 'fixture-validation', (signal) => inspectFixture(config, signal), controller.signal, smokeBudget.fixtureTimeoutMs);
       report.fixture = createFixtureEvidence(config, fixture);
+      const preflight = await timed(
+        report,
+        'preflight-cleanup',
+        (signal) => preflightSmokeResources(config, client, signal),
+        controller.signal,
+        cleanupTimeoutMs,
+      );
+      report.preflight = preflight.evidence;
+      if (!preflight.success) throw new Error('provider smoke preflight cleanup did not converge');
       const labels = config.path === 'both' ? ['existing', 'missing'] : [config.path];
       for (const label of labels) {
         try {

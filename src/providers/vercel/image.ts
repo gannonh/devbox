@@ -99,6 +99,16 @@ export interface VercelImagePinValidation {
   errors: string[];
 }
 
+/** Compare an SDK-returned repository@digest image to the promoted manifest digest. */
+export function matchesVercelSandboxImageDigest(
+  image: unknown,
+  expectedDigest: string,
+): boolean {
+  if (!DIGEST_VALUE.test(expectedDigest) || typeof image !== 'string') return false;
+  const match = /^.+@(sha256:[a-f0-9]{64})$/.exec(image);
+  return match?.[1] === expectedDigest;
+}
+
 /**
  * Parse a fully-qualified VCR image reference.
  *

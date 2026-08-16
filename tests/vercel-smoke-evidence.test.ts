@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   aggregateCleanupEvidence,
   createConfigurationEvidence,
+  createEmptyPreflightEvidence,
   createPathReport,
+  createPreflightEvidence,
   createRunIdentity,
   fingerprintEvidence,
   hasTerminalSessionProof,
@@ -10,6 +12,35 @@ import {
 } from '../scripts/vercel/smoke-evidence.mjs';
 
 describe('provider smoke evidence', () => {
+  it('records redacted preflight cleanup evidence without raw names or tags', () => {
+    const preflight = createPreflightEvidence({
+      namePrefix: 'devbox-vercel-v-provider-smoke-',
+      repositoryTag: 'github-com-secret-owner-private-fixture-abcdef1234567890',
+      discovered: ['sandbox-secret-name'],
+      ignored: ['sandbox-invalid-name'],
+      cleaned: ['sandbox-secret-name'],
+      residual: [{ name: 'sandbox-residual-name', status: 'stopped' }],
+      discoveryConverged: true,
+      snapshotsCleaned: true,
+      sessionProof: true,
+      errors: ['sandbox secret-name remains'],
+      redact: (value) => String(value).replaceAll('secret-name', '[REDACTED]'),
+    });
+
+    expect(createEmptyPreflightEvidence().attempted).toBe(false);
+    expect(JSON.stringify(preflight)).not.toContain('secret-owner');
+    expect(JSON.stringify(preflight)).not.toContain('sandbox-secret-name');
+    expect(preflight).toMatchObject({
+      attempted: true,
+      discoveryConverged: true,
+      snapshotsCleaned: true,
+      sessionProof: true,
+      errors: ['sandbox [REDACTED] remains'],
+      discoveredSandboxes: [{ nameFingerprint: expect.any(String) }],
+      residualSandboxes: [{ status: 'stopped' }],
+    });
+  });
+
   it('stores fingerprints instead of fixture and scope identities', () => {
     const config = {
       path: 'existing',

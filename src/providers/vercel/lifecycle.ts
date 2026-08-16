@@ -17,7 +17,7 @@ import {
   type VercelSandboxHandle,
   type VercelStopResult,
 } from './client.js';
-import { VERCEL_IMAGE_PIN } from './image.js';
+import { matchesVercelSandboxImageDigest, parseVercelImageReference, VERCEL_IMAGE_PIN } from './image.js';
 import { createVercelIdentity, createVercelRepositoryTag, type VercelSandboxIdentity } from './identity.js';
 import {
   createVercelMetadataStore,
@@ -769,8 +769,9 @@ function validateSandboxIdentity(
   if (!sandbox.tags || !sameTags(sandbox.tags, expectedTags)) {
     throw new VercelIdentityConflictError(`Vercel Sandbox tags conflict for ${expectedName}`);
   }
-  if (sandbox.image !== undefined && sandbox.image !== context.imageReference) {
-    throw new VercelIdentityConflictError(`Vercel Sandbox image conflicts for ${expectedName}`);
+  const expectedImageDigest = parseVercelImageReference(context.imageReference).digest;
+  if (!matchesVercelSandboxImageDigest(sandbox.image, expectedImageDigest)) {
+    throw new VercelIdentityConflictError(`Vercel Sandbox image digest conflicts for ${expectedName}`);
   }
   if (sandbox.timeout !== undefined && sandbox.timeout !== context.timeoutMs) {
     throw new VercelIdentityConflictError(`Vercel Sandbox timeout conflicts for ${expectedName}`);
