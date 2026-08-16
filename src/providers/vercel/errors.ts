@@ -21,6 +21,7 @@ export type VercelProviderErrorCode =
   | 'identity'
   | 'quota'
   | 'image_not_ready'
+  | 'locked'
   | 'timeout'
   | 'aborted'
   | 'cleanup'
@@ -64,6 +65,13 @@ export function mapVercelError(
   const command = recoveryCommand(context);
   const message = detail.toLowerCase();
 
+  if (isMetadataLockContention(error, message)) {
+    return new VercelProviderError(
+      'locked',
+      `Vercel metadata lock is held by another operation; wait for it to finish, then retry ${command}.`,
+      2,
+    );
+  }
   if (error instanceof VercelRouteNotFoundError || lifecycleCode === 'route_not_found') {
     return new VercelProviderError(
       'route',
@@ -246,7 +254,17 @@ function removeRecoveryCommand(context: VercelErrorContext): string {
 }
 
 function isConfirmationError(message: string): boolean {
-  return message.includes('confirmation') || message.includes('non-tty') || message.includes('tty');
+  return [
+    /\bvercel scope confirmation requires a tty\b/,
+    /\bvercel scope confirmation was refused\b/,
+    /\bconfirmation requires a tty\b/,
+    /\bconfirmation was refused\b/,
+  ].some((pattern) => pattern.test(message));
+}
+
+function isMetadataLockContention(error: unknown, message: string): boolean {
+  return codeOf(error) === 'ELOCKED'
+    || /^timed out waiting for vercel metadata lock: .+$/.test(message);
 }
 
 function isScopeLinkError(message: string): boolean {

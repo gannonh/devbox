@@ -113,7 +113,8 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
     name: 'vercel',
     up: (request) => withProviderErrors(request, 'up', async () => {
       const prepared = await prepareUp(request, runner, options);
-      return prepared.scopeStore.withLock(async () => {
+      let sandbox!: VercelSandboxHandle;
+      await prepared.scopeStore.withLock(async () => {
         const scopeMetadata = await prepared.scopeStore.read();
         const branchMetadata = await prepared.branchStore.read();
         const credentials = await resolveCredentials(
@@ -139,10 +140,10 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
           prepared.branchStore,
           branchMetadata,
         );
-        const sandbox = await lifecycle.up();
+        sandbox = await lifecycle.up();
         if (!scopeMetadata) await prepared.scopeStore.write(scope);
-        return terminalResult(request, terminal, options.signalSource, sandbox, 'up');
       });
+      return terminalResult(request, terminal, options.signalSource, sandbox, 'up');
     }),
     attach: (request) => withProviderErrors(request, 'attach', async () => {
       const prepared = await prepareStored(request, 'attach', runner, options, makeLifecycle, injectedLifecycle);

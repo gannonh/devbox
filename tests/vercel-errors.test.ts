@@ -2,6 +2,24 @@ import { describe, expect, it } from 'vitest';
 import { mapVercelError } from '../src/providers/vercel/errors.js';
 
 describe('Vercel provider errors', () => {
+  it('maps metadata lock contention before generic timeout with action recovery', () => {
+    const attach = mapVercelError(Object.assign(new Error('metadata is busy'), { code: 'ELOCKED' }), {
+      action: 'attach',
+      branch: 'feature/ui',
+    });
+    expect(attach.code).toBe('locked');
+    expect(attach.message).toContain('devbox --provider vercel feature/ui --attach');
+    expect(attach.message).toContain('metadata lock');
+    expect(attach.message).not.toContain('timed out');
+
+    const stop = mapVercelError(new Error('Timed out waiting for Vercel metadata lock: /tmp/vercel.lock'), {
+      action: 'stop',
+      branch: 'feature/ui',
+    });
+    expect(stop.code).toBe('locked');
+    expect(stop.message).toContain('devbox --provider vercel feature/ui --stop');
+  });
+
   it('maps rate limits with Retry-After without exposing the response body', () => {
     const token = 'rate-limit-token';
     const mapped = mapVercelError(Object.assign(new Error(`body ${token}`), {
@@ -45,6 +63,21 @@ describe('Vercel provider errors', () => {
       expect(mapped.message).not.toContain(token);
       expect(mapped.message).not.toContain(encoded);
     }
+  });
+
+  it('only classifies exact scope confirmation phrases', () => {
+    expect(mapVercelError(new Error('terminal transport mentioned tty'), {
+      action: 'attach',
+      branch: 'feature/ui',
+    }).code).toBe('api');
+    expect(mapVercelError(new Error('Vercel scope confirmation requires a TTY'), {
+      action: 'up',
+      branch: 'feature/ui',
+    }).code).toBe('confirmation');
+    expect(mapVercelError(new Error('Vercel scope confirmation was refused'), {
+      action: 'up',
+      branch: 'feature/ui',
+    }).code).toBe('confirmation');
   });
 
   it('uses action-specific recovery commands without a fake branch for list', () => {

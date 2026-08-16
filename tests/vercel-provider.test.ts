@@ -306,6 +306,73 @@ describe('Vercel provider', () => {
     expect(currentLifecycle.up).toHaveBeenCalledTimes(2);
   });
 
+  it('releases the scope lock before a first terminal remains open', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-terminal-lock-'));
+    const terminalEntered = vi.fn();
+    let releaseTerminal!: () => void;
+    const terminalGate = new Promise<void>((resolve) => { releaseTerminal = resolve; });
+    let secondLifecycleStarted = false;
+    let resolveSecondLifecycle!: () => void;
+    const secondLifecycle = new Promise<void>((resolve) => { resolveSecondLifecycle = resolve; });
+    let lifecycleUpCalls = 0;
+    const currentLifecycle = lifecycle();
+    currentLifecycle.up = vi.fn(async () => {
+      lifecycleUpCalls += 1;
+      if (lifecycleUpCalls === 2) {
+        secondLifecycleStarted = true;
+        resolveSecondLifecycle();
+      }
+      return sandbox();
+    });
+    let terminalCalls = 0;
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async () => {
+        terminalCalls += 1;
+        if (terminalCalls === 1) {
+          terminalEntered();
+          await terminalGate;
+        }
+        return { status: 'detached' as const, reason: 'escape' as const };
+      }),
+    };
+    const provider = createVercelProvider({
+      runner: runner(),
+      stateHome,
+      lifecycle: currentLifecycle,
+      confirmation: vi.fn(async () => true),
+      terminal,
+    });
+
+    const first = provider.up(request({ branch: 'feature/one' }));
+    await vi.waitFor(() => expect(terminalEntered).toHaveBeenCalledOnce());
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: 'github.com/acme/repo' });
+    await expect(scope.read()).resolves.toEqual({
+      schemaVersion: 2,
+      metadataKind: 'scope',
+      provider: 'vercel',
+      repoKeyHash: expect.any(String),
+      teamId: 'team-1',
+      projectId: 'project-1',
+    });
+
+    const second = provider.up(request({ branch: 'feature/two' }));
+    let timeoutHandle!: ReturnType<typeof setTimeout>;
+    const secondStarted = await Promise.race([
+      secondLifecycle.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(false), 500);
+      }),
+    ]);
+    clearTimeout(timeoutHandle);
+    releaseTerminal();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { exitCode: 0 },
+      { exitCode: 0 },
+    ]);
+    expect(secondStarted).toBe(true);
+    expect(secondLifecycleStarted).toBe(true);
+  });
+
   it('maps provider failures through CLI dispatch without exposing credentials', async () => {
     const token = 'dispatch-vercel-secret';
     const currentLifecycle = lifecycle();
