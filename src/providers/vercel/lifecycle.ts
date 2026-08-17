@@ -20,14 +20,11 @@ import {
 import { matchesVercelSandboxImageDigest, parseVercelImageReference, VERCEL_IMAGE_PIN } from './image.js';
 import { createVercelIdentity, createVercelRepositoryTag, type VercelSandboxIdentity } from './identity.js';
 import {
-  createVercelMetadataStore,
   type VercelBranchMetadata,
   type VercelBranchMetadataInput,
   type VercelBranchMetadataStore,
   type VercelCreateConfiguration,
-  type VercelMetadata,
   type VercelMetadataIdentity,
-  type VercelMetadataStore,
 } from './metadata.js';
 import {
   normalizeRequestedSourceBranch,
@@ -150,7 +147,6 @@ export interface VercelLifecycleOptions {
   source?: GitHubSourcePlan;
   sourceResolver?: () => Promise<GitHubSourcePlan>;
   shellRunner?: ShellRunner;
-  metadataStore?: VercelMetadataStore;
   branchMetadataStore?: VercelBranchMetadataStore;
   /** List is repository-scoped and must not read an invented branch record. */
   listOnly?: boolean;
@@ -201,12 +197,12 @@ export interface VercelLifecycle {
 
 interface PreparedContext {
   credentials: VercelCredentials;
+  env: Record<string, string | undefined>;
   source?: GitHubSourcePlan;
   identity?: VercelSandboxIdentity;
   repository: string;
   repositoryTag: string;
   metadataStore?: VercelBranchMetadataStore;
-  legacyMetadataStore?: VercelMetadataStore;
   client: VercelSandboxClient;
   imageReference: string;
   timeoutMs: number;
@@ -264,6 +260,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             sandboxId: sandboxIdentifier(sandbox),
             ...(existing?.snapshotIds === undefined ? {} : { snapshotIds: existing.snapshotIds }),
             ...(existing?.residual === undefined ? {} : { residual: existing.residual }),
+            ...preserveDisplayCredentials(existing),
             configuration: existing?.configuration ?? configuration,
           });
         } catch (error) {
@@ -288,7 +285,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
       return metadataStore.withLock(async () => {
         const metadata = await metadataStore.read();
         const identity = requireStoredIdentity(metadata, context);
-        const credentials = credentialsForStoredScope(context.credentials, metadata);
+        const credentials = credentialsForStoredScope(context.credentials);
         const sandbox = await getExistingSandbox(context, credentials, identity.name, request.resume ?? true);
         validateSandboxIdentity(sandbox, context, identity);
         return sandbox;
@@ -300,7 +297,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
       return metadataStore.withLock(async () => {
         const metadata = await metadataStore.read();
         const identity = requireStoredIdentity(metadata, context);
-        const credentials = credentialsForStoredScope(context.credentials, metadata);
+        const credentials = credentialsForStoredScope(context.credentials);
         const sandbox = await getExistingSandbox(context, credentials, identity.name, true);
         validateSandboxIdentity(sandbox, context, identity);
         return sandbox;
@@ -325,7 +322,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         if (metadata) assertScopeAndIdentity(metadata, context);
         const identity = metadata?.identity ?? toMetadataIdentity(requireIdentity(context));
         const credentials = metadata
-          ? credentialsForStoredScope(context.credentials, metadata)
+          ? credentialsForStoredScope(context.credentials)
           : context.credentials;
         const records = await context.client.listSandboxes({
           credentials,
@@ -362,7 +359,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
       return metadataStore.withLock(async () => {
         const metadata = await metadataStore.read();
         const identity = requireStoredIdentity(metadata, context);
-        const credentials = credentialsForStoredScope(context.credentials, metadata);
+        const credentials = credentialsForStoredScope(context.credentials);
         if (metadata?.configuration) assertConfiguration(metadata.configuration, configuration);
         const effectiveConfiguration = metadata?.configuration ?? configuration;
         const sandbox = await getExistingSandbox(context, credentials, identity.name, false);
@@ -389,6 +386,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           sandboxId: sandboxIdentifier(sandbox),
           ...(knownSnapshotIds.length === 0 ? {} : { snapshotIds: knownSnapshotIds }),
           ...(metadata?.residual === undefined ? {} : { residual: metadata.residual }),
+          ...preserveDisplayCredentials(metadata),
           configuration: effectiveConfiguration,
         });
         const finalSession = selectNewestSession(sessions);
@@ -420,7 +418,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         if (metadata) assertScopeAndIdentity(metadata, context);
         const identity = metadata?.identity ?? toMetadataIdentity(requireIdentity(context));
         const credentials = metadata
-          ? credentialsForStoredScope(context.credentials, metadata)
+          ? credentialsForStoredScope(context.credentials)
           : context.credentials;
         const adapter = createCleanupAdapter(context.client);
         const result = await cleanupVercelSandbox({
@@ -440,18 +438,26 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           await metadataStore.remove();
           return result;
         }
+        const cleanupDetails = result.errors.map((error) => redactLifecycleFailure(
+          error,
+          lifecycleSecrets(context, metadata),
+        ));
         await writeBranchMetadata(context, {
           identity,
           sandboxId: metadata?.sandboxId ?? identity.name,
           ...(metadata?.snapshotIds === undefined ? {} : { snapshotIds: metadata.snapshotIds }),
+          ...preserveDisplayCredentials(metadata),
           configuration: metadata?.configuration ?? configuration,
           residual: {
             sandboxIds: result.residualSandboxIds,
             snapshotIds: result.residualSnapshotIds,
-            reason: result.errors.join('; ') || 'Vercel cleanup verification did not converge',
+            reason: cleanupDetails.join('; ') || 'Vercel cleanup verification did not converge',
           },
         });
-        throw new VercelCleanupError(result);
+        throw new VercelCleanupError(
+          result,
+          cleanupDetails.join('; ') || 'Vercel cleanup verification did not converge',
+        );
       });
     },
   };
@@ -479,7 +485,13 @@ async function removeRecoveredSandbox(
     return result;
   }
 
-  const secrets = lifecycleSecrets(context);
+  let existingMetadata: unknown;
+  try {
+    existingMetadata = await context.metadataStore?.read();
+  } catch {
+    // Cloud recovery remains authoritative when local metadata cannot be read.
+  }
+  const secrets = lifecycleSecrets(context, existingMetadata);
   const residualSandboxIds = [...new Set(result.residualSandboxIds)];
   const residualSnapshotIds = [...new Set(result.residualSnapshotIds)];
   const cleanupDetails = result.errors.map((error) => redactLifecycleFailure(error, secrets));
@@ -489,6 +501,7 @@ async function removeRecoveredSandbox(
       identity: recovery.identity,
       sandboxId: recovery.identity.name,
       ...(result.snapshotIds.length === 0 ? {} : { snapshotIds: result.snapshotIds }),
+      ...preserveDisplayCredentials(existingMetadata),
       residual: {
         ...(residualSandboxIds.length === 0 ? {} : { sandboxIds: residualSandboxIds }),
         ...(residualSnapshotIds.length === 0 ? {} : { snapshotIds: residualSnapshotIds }),
@@ -515,18 +528,18 @@ async function removeRecoveredSandbox(
   );
 }
 
+function preserveDisplayCredentials(
+  metadata: unknown,
+): Pick<VercelBranchMetadataInput, 'displayCredentials'> {
+  if (typeof metadata !== 'object' || metadata === null || !('displayCredentials' in metadata)) return {};
+  const displayCredentials = (metadata as VercelBranchMetadataInput).displayCredentials;
+  return displayCredentials === undefined ? {} : { displayCredentials };
+}
+
 async function writeBranchMetadata(
   context: PreparedContext,
   metadata: VercelBranchMetadataInput,
 ): Promise<void> {
-  if (context.legacyMetadataStore) {
-    await context.legacyMetadataStore.write({
-      teamId: context.credentials.teamId,
-      projectId: context.credentials.projectId,
-      ...metadata,
-    });
-    return;
-  }
   await requireMetadataStore(context).write(metadata);
 }
 
@@ -541,7 +554,7 @@ async function handleCreatedSandboxFailure(
   metadataStore: VercelBranchMetadataStore,
   identity: VercelMetadataIdentity,
   createdSandbox: VercelSandboxHandle,
-  existing: VercelMetadata | VercelBranchMetadata | null,
+  existing: VercelBranchMetadata | null,
   configuration: VercelCreateConfiguration,
   creationError: unknown,
   cleanupOptions: VercelLifecycleOptions['cleanup'],
@@ -577,12 +590,12 @@ async function compensateCreatedSandbox(
   context: PreparedContext,
   identity: VercelMetadataIdentity,
   createdSandbox: VercelSandboxHandle,
-  existing: VercelMetadata | VercelBranchMetadata | null,
+  existing: VercelBranchMetadata | null,
   configuration: VercelCreateConfiguration,
   creationError: unknown,
   cleanupOptions: VercelLifecycleOptions['cleanup'],
 ): Promise<CreatedSandboxCompensation> {
-  const secrets = lifecycleSecrets(context);
+  const secrets = lifecycleSecrets(context, existing);
   const creationFailure = redactLifecycleFailure(creationError, secrets);
   const knownSnapshotIds = [
     ...new Set([
@@ -621,11 +634,13 @@ async function compensateCreatedSandbox(
   if (result.verified) return { result, creationFailure };
 
   let recoveryMetadataFailure: string | undefined;
+  const cleanupDetails = result.errors.map((error) => redactLifecycleFailure(error, secrets));
   try {
     await writeBranchMetadata(context, {
       identity,
       sandboxId: sandboxIdentifier(createdSandbox),
       ...(result.snapshotIds.length === 0 ? {} : { snapshotIds: result.snapshotIds }),
+      ...preserveDisplayCredentials(existing),
       configuration: existing?.configuration ?? configuration,
       residual: {
         ...(result.residualSandboxIds.length === 0 ? {} : { sandboxIds: result.residualSandboxIds }),
@@ -633,7 +648,7 @@ async function compensateCreatedSandbox(
         reason: [
           `Sandbox creation metadata persistence failed: ${creationFailure}`,
           'compensation did not verify cleanup',
-          ...(result.errors.length === 0 ? [] : result.errors),
+          ...(cleanupDetails.length === 0 ? [] : cleanupDetails),
         ].join('; '),
       },
     });
@@ -647,10 +662,15 @@ async function compensateCreatedSandbox(
   };
 }
 
-function lifecycleSecrets(context: PreparedContext): string[] {
+function lifecycleSecrets(context: PreparedContext, metadata?: unknown): string[] {
+  const displayPassword = typeof metadata === 'object' && metadata !== null && 'displayCredentials' in metadata
+    ? (metadata as VercelBranchMetadataInput).displayCredentials?.password
+    : undefined;
   return [
     context.credentials.token,
     context.source?.source.password,
+    ...Object.values(context.env),
+    displayPassword,
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
@@ -700,26 +720,17 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');
   }
-  const branchMetadataStore = options.listOnly ? undefined : options.branchMetadataStore;
-  const legacyMetadataStore = branchMetadataStore ? undefined : options.metadataStore;
-  const metadataStore = options.listOnly
-    ? undefined
-    : branchMetadataStore
-      ?? (options.metadataStore as unknown as VercelBranchMetadataStore | undefined)
-      ?? (createVercelMetadataStore({
-        repoKey: repository,
-        stateHome: options.stateHome,
-      }) as unknown as VercelBranchMetadataStore);
+  const metadataStore = options.listOnly ? undefined : options.branchMetadataStore;
   const client = options.client;
   if (!client) throw new Error('Vercel Sandbox client is required');
   return {
     credentials,
+    env: options.env ?? {},
     ...(source === undefined ? {} : { source }),
     ...(identity === undefined ? {} : { identity }),
     repository,
     repositoryTag: createVercelRepositoryTag(repository),
     metadataStore,
-    ...(legacyMetadataStore === undefined ? {} : { legacyMetadataStore }),
     client,
     imageReference,
     timeoutMs,
@@ -766,7 +777,7 @@ async function getExistingForOperation(
   return metadataStore.withLock(async () => {
     const metadata = await metadataStore.read();
     const identity = requireStoredIdentity(metadata, context);
-    const credentials = credentialsForStoredScope(context.credentials, metadata);
+    const credentials = credentialsForStoredScope(context.credentials);
     const sandbox = await getExistingSandbox(context, credentials, identity.name, true);
     validateSandboxIdentity(sandbox, context, identity);
     return sandbox;
@@ -788,7 +799,7 @@ async function getExistingSandbox(
 }
 
 function requireStoredIdentity(
-  metadata: VercelMetadata | VercelBranchMetadata | null,
+  metadata: VercelBranchMetadata | null,
   context: PreparedContext,
 ): VercelMetadataIdentity {
   if (!metadata) throw new VercelResourceNotFoundError('metadata record', context.repository);
@@ -799,37 +810,21 @@ function requireStoredIdentity(
   return metadata.identity;
 }
 
-function credentialsForStoredScope(
-  credentials: VercelCredentials,
-  metadata: VercelMetadata | VercelBranchMetadata | null,
-): VercelCredentials {
-  if (!metadata || !('teamId' in metadata)) return credentials;
-  if (metadata.teamId !== credentials.teamId || metadata.projectId !== credentials.projectId) {
-    throw new VercelScopeConflictError('Stored Vercel team/project does not match resolved credentials');
-  }
-  return {
-    token: credentials.token,
-    teamId: metadata.teamId,
-    projectId: metadata.projectId,
-  };
+function credentialsForStoredScope(credentials: VercelCredentials): VercelCredentials {
+  return credentials;
 }
 
 function assertScopeAndIdentity(
-  metadata: VercelMetadata | VercelBranchMetadata | null,
+  metadata: VercelBranchMetadata | null,
   context: PreparedContext,
 ): void {
   if (!metadata) return;
-  if ('teamId' in metadata && (metadata.teamId !== context.credentials.teamId || metadata.projectId !== context.credentials.projectId)) {
-    throw new VercelScopeConflictError('Stored Vercel team/project does not match resolved credentials');
-  }
   if (metadata.identity && context.identity) {
     const expectedStoredIdentity = createVercelIdentity({
       remote: context.identity.canonicalRepository,
       branch: context.identity.branch,
       packageVersion: metadata.identity.packageVersion,
-      ...(context.legacyMetadataStore === undefined
-        ? { scope: { teamId: context.credentials.teamId, projectId: context.credentials.projectId } }
-        : {}),
+      scope: { teamId: context.credentials.teamId, projectId: context.credentials.projectId },
     });
     if (!sameMetadataIdentity(metadata.identity, expectedStoredIdentity)) {
       throw new VercelIdentityConflictError('Stored Vercel Sandbox identity does not match this repository and branch');

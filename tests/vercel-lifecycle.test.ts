@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createVercelBranchMetadataStore,
-  createVercelMetadataStore,
   type VercelBranchMetadataStore,
 } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
@@ -50,6 +49,7 @@ function sandbox(): VercelSandboxHandle {
     remote: source.remote.canonical,
     branch: source.requestedBranch,
     packageVersion: '0.1.2',
+    scope: { teamId: credentials.teamId, projectId: credentials.projectId },
   });
   return {
     name: identity.name,
@@ -74,16 +74,15 @@ describe('Vercel lifecycle', () => {
     await mkdir(join(repoRoot, '.devcontainer'));
     await writeFile(join(repoRoot, '.devcontainer', 'devcontainer.json'), '{ "forwardPorts": [ }');
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-malformed-state-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const identity = createVercelIdentity({
       remote: source.remote.canonical,
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
+      scope: { teamId: credentials.teamId, projectId: credentials.projectId },
     });
     await metadata.write({
-      teamId: credentials.teamId,
-      projectId: credentials.projectId,
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -129,7 +128,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -144,7 +143,7 @@ describe('Vercel lifecycle', () => {
 
   it('fails closed when a returned Sandbox omits its image before metadata persistence', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-image-missing-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const write = vi.spyOn(metadata, 'write');
     const handle = { ...sandbox(), image: undefined } as unknown as VercelSandboxHandle;
     const client = {
@@ -156,7 +155,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source: { ...source, requestedBranchExists: true, needsBranchSetup: false, source: { ...source.source, revision: source.requestedBranch } },
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -168,7 +167,7 @@ describe('Vercel lifecycle', () => {
 
   it('accepts an alternate Sandbox image serialization when the digest matches', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-image-digest-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const digest = parseVercelImageReference(VERCEL_IMAGE_PIN.reference).digest;
     const handle = { ...sandbox(), image: `alternate.registry/devbox@${digest}` } as VercelSandboxHandle;
     const client = {
@@ -180,7 +179,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source: { ...source, requestedBranchExists: true, needsBranchSetup: false, source: { ...source.source, revision: source.requestedBranch } },
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -190,7 +189,7 @@ describe('Vercel lifecycle', () => {
 
   it('compensates a newly created sandbox when branch setup fails during onCreate', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-branch-compensation-verified-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let deleted = false;
     const client = {
@@ -217,7 +216,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -229,7 +228,7 @@ describe('Vercel lifecycle', () => {
 
   it('retains recovery state when branch setup compensation is incomplete', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-branch-compensation-incomplete-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const client = {
       getOrCreate: vi.fn(async (request) => {
@@ -252,7 +251,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -275,7 +274,7 @@ describe('Vercel lifecycle', () => {
 
   it('compensates a newly created sandbox when metadata persistence fails', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-compensation-verified-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const persistenceError = new Error('initial metadata write failed');
     vi.spyOn(metadata, 'write').mockRejectedValue(persistenceError);
     const handle = sandbox();
@@ -302,7 +301,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source: noSetupSource,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -314,7 +313,7 @@ describe('Vercel lifecycle', () => {
 
   it('retains nonsecret recovery guidance when created-sandbox compensation is incomplete', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-compensation-incomplete-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const persistenceError = new Error('metadata write failed with vercel-token');
     const recoveryWrites: unknown[] = [];
     vi.spyOn(metadata, 'write')
@@ -344,7 +343,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source: noSetupSource,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -370,7 +369,7 @@ describe('Vercel lifecycle', () => {
 
   it('does not compensate a preexisting sandbox when its metadata write fails', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-compensation-existing-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const persistenceError = new Error('metadata write failed');
     vi.spyOn(metadata, 'write').mockRejectedValue(persistenceError);
     const handle = sandbox();
@@ -390,7 +389,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source: noSetupSource,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -481,22 +480,22 @@ describe('Vercel lifecycle', () => {
 
   it('uses stored identity for up resume and current identity for new creation', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-up-identity-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const oldIdentity = createVercelIdentity({
       remote: source.remote.canonical,
       branch: source.requestedBranch,
       packageVersion: '0.0.1',
+      scope: { teamId: credentials.teamId, projectId: credentials.projectId },
     });
     const currentIdentity = createVercelIdentity({
       remote: source.remote.canonical,
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
+      scope: { teamId: credentials.teamId, projectId: credentials.projectId },
     });
     const oldHandle = { ...sandbox(), name: oldIdentity.name, tags: { ...oldIdentity.tags } } as VercelSandboxHandle;
     const currentHandle = { ...sandbox(), name: currentIdentity.name, tags: { ...currentIdentity.tags } } as VercelSandboxHandle;
     await metadata.write({
-      teamId: credentials.teamId,
-      projectId: credentials.projectId,
       identity: {
         name: oldIdentity.name,
         repository: oldIdentity.canonicalRepository,
@@ -530,7 +529,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -855,7 +854,7 @@ describe('Vercel lifecycle', () => {
 
   it('resumes an existing named sandbox without rerunning branch setup', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let creates = 0;
     const client = {
@@ -872,7 +871,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -885,7 +884,7 @@ describe('Vercel lifecycle', () => {
 
   it('does not compensate a preexisting sandbox when resume getOrCreate fails', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-resume-failure-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let creates = 0;
     const client = {
@@ -906,7 +905,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -918,7 +917,7 @@ describe('Vercel lifecycle', () => {
 
   it('preserves snapshot retry seeds and residual audit state after partial cleanup', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const client = {
       getOrCreate: vi.fn(async () => handle),
@@ -939,7 +938,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -947,8 +946,6 @@ describe('Vercel lifecycle', () => {
     await lifecycle.up();
     const stored = (await metadata.read())!;
     await metadata.write({
-      teamId: stored.teamId,
-      projectId: stored.projectId,
       identity: stored.identity,
       sandboxId: stored.sandboxId,
       snapshotIds: ['retry-seed'],
@@ -970,7 +967,7 @@ describe('Vercel lifecycle', () => {
 
   it('preserves branch setup lifecycle errors through the SDK adapter', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const target = sandbox();
     target.runCommand = async () => ({
       exitCode: 1,
@@ -995,7 +992,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -1017,7 +1014,7 @@ describe('Vercel lifecycle', () => {
 
   it('records a possible sandbox residual when the initial lookup fails', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const client = {
       getOrCreate: vi.fn(async () => handle),
@@ -1034,7 +1031,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -1050,7 +1047,7 @@ describe('Vercel lifecycle', () => {
 
   it.each(['failed', 'running'] as const)('fails stop_incomplete for a non-converging %s session', async (status) => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const client = {
       getOrCreate: vi.fn(async () => handle),
@@ -1064,7 +1061,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
     await lifecycle.up();
@@ -1079,7 +1076,7 @@ describe('Vercel lifecycle', () => {
 
   it('resumes after remote branch state changes without changing bootstrap configuration', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const laterSource: GitHubSourcePlan = {
       ...source,
@@ -1105,7 +1102,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     }).up();
 
@@ -1115,7 +1112,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source: laterSource,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
     await expect(laterLifecycle.up()).resolves.toBe(handle);
@@ -1134,7 +1131,7 @@ describe('Vercel lifecycle', () => {
 
   it('serializes concurrent up calls through the metadata lease', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let releaseCreate!: () => void;
     const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
@@ -1156,7 +1153,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
     const first = lifecycle.up();
@@ -1172,7 +1169,7 @@ describe('Vercel lifecycle', () => {
 
   it('rejects create-only timeout conflicts without mutating the named sandbox', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox() as VercelSandboxHandle & { timeout: number };
     handle.timeout = 1_800_000;
     const client = {
@@ -1184,7 +1181,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     } as const;
     await createVercelLifecycle(common).up();
@@ -1196,7 +1193,7 @@ describe('Vercel lifecycle', () => {
 
   it('rejects tampered metadata identity before list or cleanup', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const client = {
       getOrCreate: vi.fn(async () => handle),
@@ -1209,14 +1206,12 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
     await lifecycle.up();
     const stored = (await metadata.read())!;
     await metadata.write({
-      teamId: stored.teamId,
-      projectId: stored.projectId,
       identity: { ...stored.identity!, branch: 'tampered' },
       configuration: stored.configuration,
     });
@@ -1229,7 +1224,7 @@ describe('Vercel lifecycle', () => {
 
   it('retains metadata until a stale named sandbox deletion is verified', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let deleteAttempts = 0;
     const client = {
@@ -1252,7 +1247,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -1271,7 +1266,7 @@ describe('Vercel lifecycle', () => {
 
   it('retains metadata and performs no destructive action when remove finds mismatched tags', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const client = {
       getOrCreate: vi.fn(async () => handle),
@@ -1288,7 +1283,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -1308,7 +1303,7 @@ describe('Vercel lifecycle', () => {
 
   it('retains non-secret residual metadata when cleanup is partial', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let deleted = false;
     const client = {
@@ -1329,7 +1324,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 1, sleep: async () => {} },
     });
@@ -1341,8 +1336,6 @@ describe('Vercel lifecycle', () => {
     });
     const retained = await metadata.read();
     expect(retained).toMatchObject({
-      teamId: 'team',
-      projectId: 'project',
       residual: {
         snapshotIds: ['snapshot-failed'],
       },
@@ -1352,7 +1345,7 @@ describe('Vercel lifecycle', () => {
 
   it('seeds remove cleanup from stored snapshot IDs before relisting', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let deleted = false;
     const client = {
@@ -1377,15 +1370,13 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 3, sleep: async () => {} },
     });
     await lifecycle.up();
     const stored = (await metadata.read())!;
     await metadata.write({
-      teamId: stored.teamId,
-      projectId: stored.projectId,
       identity: stored.identity,
       sandboxId: stored.sandboxId,
       snapshotIds: ['metadata-snapshot'],
@@ -1399,7 +1390,7 @@ describe('Vercel lifecycle', () => {
 
   it('removes the sandbox only after verified cleanup and then removes metadata', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let deleted = false;
     let snapshots = [{ id: 'snapshot-1', sourceSessionId: 'session-1', status: 'created' as const }];
@@ -1426,7 +1417,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       cleanup: { maxAttempts: 3, sleep: async () => {} },
     });
@@ -1444,7 +1435,7 @@ describe('Vercel lifecycle', () => {
 
   it('lists only matching provider and repository identity tags', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const records = [
       { name: handle.name, status: 'running' as const, tags: handle.tags },
@@ -1486,7 +1477,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
     await lifecycle.up();
@@ -1500,7 +1491,7 @@ describe('Vercel lifecycle', () => {
 
   it('attaches to matching routes and rejects an unconfigured URL port', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox() as VercelSandboxHandle & { routes: { url: string; subdomain: string; port: number }[] };
     handle.routes = [{ url: 'https://sandbox.example/3000', subdomain: 'sandbox', port: 3000 }];
     const client = {
@@ -1513,7 +1504,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
     await lifecycle.up();
@@ -1525,7 +1516,7 @@ describe('Vercel lifecycle', () => {
 
   it('stops persistent sandboxes and returns final usage without secrets', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     let sessionsRead = 0;
     const client = {
@@ -1564,7 +1555,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
     await lifecycle.up();
@@ -1590,7 +1581,7 @@ describe('Vercel lifecycle', () => {
 
   it('fails an existing sandbox identity conflict instead of mutating it', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     handle.tags = { ...handle.tags, identity: 'different' };
     const client = {
@@ -1603,7 +1594,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
     });
 
@@ -1616,7 +1607,7 @@ describe('Vercel lifecycle', () => {
 
   it('creates a named persistent sandbox and switches only a missing remote branch', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
-    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
     const requests: unknown[] = [];
     const client = {
@@ -1635,7 +1626,7 @@ describe('Vercel lifecycle', () => {
       packageVersion: '0.1.2',
       credentials,
       source,
-      metadataStore: metadata,
+      branchMetadataStore: metadata,
       client,
       onNotice: (notice) => notices.push(notice),
     });
@@ -1657,8 +1648,6 @@ describe('Vercel lifecycle', () => {
     });
     expect('runtime' in (requests[0] as object)).toBe(false);
     await expect(metadata.read()).resolves.toMatchObject({
-      teamId: 'team',
-      projectId: 'project',
       identity: expect.objectContaining({ branch: source.requestedBranch }),
       configuration: expect.objectContaining({
         sourceRevision: 'main',

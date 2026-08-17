@@ -20,6 +20,7 @@ export type {
   VercelMetadataIdentity,
   VercelMetadataInput,
   VercelResidualMetadata,
+  VercelDisplayCredentials,
   VercelBranchMetadata,
   VercelBranchMetadataInput,
   VercelScopeMetadata,

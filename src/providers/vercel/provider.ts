@@ -39,7 +39,7 @@ import {
   type VercelScopeMetadata,
   type VercelScopeMetadataStore,
 } from './metadata.js';
-import { mapVercelError } from './errors.js';
+import { mapVercelError, VercelProviderError } from './errors.js';
 import {
   normalizeRequestedSourceBranch,
   resolveGitHubSource,
@@ -49,6 +49,10 @@ import {
   type GitHubSourceRemote,
 } from './source.js';
 import { recoverMissingBranchSandbox } from './recovery.js';
+import {
+  DisplayCredentialsNotFoundError,
+  getDisplayCredentials as resolveDisplayCredentials,
+} from './display-credentials.js';
 import {
   createVercelTerminalAdapter,
   type VercelTerminalAdapter,
@@ -111,11 +115,16 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
   const injectedLifecycle = options.lifecycle && typeof options.lifecycle !== 'function'
     ? options.lifecycle
     : undefined;
+  const providerErrors = (
+    request: ProviderRequestContext,
+    action: string,
+    operation: (secrets: string[]) => Promise<ProviderActionResult>,
+  ) => withProviderErrors(request, action, operation, secretsFor(request.env));
 
   const provider: DevboxProvider = {
     name: 'vercel',
-    up: (request) => withProviderErrors(request, 'up', async () => {
-      const prepared = await prepareUp(request, runner, options);
+    up: (request) => providerErrors(request, 'up', async (secrets) => {
+      const prepared = await prepareUp(request, runner, options, secrets);
       let credentials!: VercelCredentials;
       await prepared.scopeStore.withLock(async () => {
         const scopeMetadata = await prepared.scopeStore.read();
@@ -124,6 +133,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
           options,
           scopeMetadata ? { teamId: scopeMetadata.teamId, projectId: scopeMetadata.projectId } : undefined,
         );
+        addSecrets(secrets, credentials.token);
         const scope = { teamId: credentials.teamId, projectId: credentials.projectId };
         const renderedScope = renderScope(options.confirmation, scope);
         request.stderr.write(`${renderedScope}\n`);
@@ -152,10 +162,11 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         sandbox,
         'up',
         prepared.source.remote.repository,
+        secrets,
       );
     }),
-    attach: (request) => withProviderErrors(request, 'attach', async () => {
-      const prepared = await prepareStored(request, 'attach', runner, options, makeLifecycle, injectedLifecycle, client);
+    attach: (request) => providerErrors(request, 'attach', async (secrets) => {
+      const prepared = await prepareStored(request, 'attach', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
       const sandbox = await prepared.lifecycle.attach();
       const repository = prepared.source?.remote.repository;
       if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
@@ -166,16 +177,17 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         sandbox,
         'attach',
         repository,
+        secrets,
       );
     }),
-    stop: (request) => withProviderErrors(request, 'stop', async () => {
-      const prepared = await prepareStored(request, 'stop', runner, options, makeLifecycle, injectedLifecycle, client);
+    stop: (request) => providerErrors(request, 'stop', async (secrets) => {
+      const prepared = await prepareStored(request, 'stop', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
       const report = await prepared.lifecycle.stop();
       renderStopReport(request, report);
       return { exitCode: 0 };
     }),
-    remove: (request) => withProviderErrors(request, 'remove', async () => {
-      const prepared = await prepareStored(request, 'remove', runner, options, makeLifecycle, injectedLifecycle, client);
+    remove: (request) => providerErrors(request, 'remove', async (secrets) => {
+      const prepared = await prepareStored(request, 'remove', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
       if (prepared.alreadyAbsent) {
         try {
           await prepared.branchStore?.remove();
@@ -192,14 +204,14 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       request.stderr.write(`Vercel sandbox ${prepared.recovery?.identity.name ?? sandboxName(prepared.metadata, request.branch)}: cleanup verified\n`);
       return { exitCode: 0 };
     }),
-    list: (request) => withProviderErrors(request, 'list', async () => {
-      const prepared = await prepareStored(request, 'list', runner, options, makeLifecycle, injectedLifecycle, client);
+    list: (request) => providerErrors(request, 'list', async (secrets) => {
+      const prepared = await prepareStored(request, 'list', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
       const records = await prepared.lifecycle.list();
       renderList(request, records);
       return { exitCode: 0 };
     }),
-    url: (request) => withProviderErrors(request, 'url', async () => {
-      const prepared = await prepareStored(request, 'url', runner, options, makeLifecycle, injectedLifecycle, client);
+    url: (request) => providerErrors(request, 'url', async (secrets) => {
+      const prepared = await prepareStored(request, 'url', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
       const routes = await prepared.lifecycle.routes();
       if (routes.length === 0) {
         throw new VercelLifecycleError('route_not_found', 'Vercel Sandbox has no routes');
@@ -208,10 +220,39 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       if (request.open) await (options.opener ?? defaultOpener(runner))(routes[0].url);
       return { exitCode: 0 };
     }),
-    getDisplayCredentials: async (): Promise<DisplayCredentialsResult> => ({
-      supported: false,
-      message: 'display credentials are not supported by the Vercel provider in the core phase; use --url for current routes',
-    }),
+    getDisplayCredentials: async (request): Promise<DisplayCredentialsResult> => {
+      const secrets = secretsFor(request.env);
+      let origin: GitHubSourceRemote | undefined;
+      let branch: string | undefined;
+      try {
+        origin = await resolveGitHubSourceOrigin({
+          repoRoot: request.repoRoot,
+          env: request.env,
+          shellRunner: runner,
+        });
+        branch = normalizeRequestedSourceBranch(request.branch);
+        const result = await resolveDisplayCredentials(createBranchStore(origin, branch, options));
+        return {
+          supported: true,
+          username: result.credentials.username,
+          password: result.credentials.password,
+        };
+      } catch (error) {
+        const mapped = error instanceof DisplayCredentialsNotFoundError && origin && branch
+          ? new VercelProviderError(
+            'missing',
+            `No Vercel sandbox metadata was found for ${origin.canonical} branch ${branch}; `
+              + `run devbox --provider vercel ${branch} to create it first.`,
+            2,
+          )
+          : error;
+        throw mapVercelError(mapped, {
+          action: 'password',
+          branch: branch ?? request.branch,
+          secrets,
+        });
+      }
+    },
   };
 
   return provider;
@@ -221,6 +262,7 @@ async function prepareUp(
   request: ProviderBranchRequest,
   runner: ShellRunner,
   options: VercelProviderOptions,
+  secrets: string[],
 ): Promise<PreparedUp> {
   const source = await resolveGitHubSource({
     repoRoot: request.repoRoot,
@@ -228,9 +270,12 @@ async function prepareUp(
     env: request.env,
     shellRunner: runner,
   });
+  addSecrets(secrets, source.source.password);
   const scopeStore = createScopeStore(source.remote, options);
   const branchStore = createBranchStore(source.remote, source.requestedBranch, options);
-  return { scopeStore, branchStore, metadata: await branchStore.read(), source };
+  const metadata = await branchStore.read();
+  addSecrets(secrets, metadata?.displayCredentials?.password);
+  return { scopeStore, branchStore, metadata, source };
 }
 
 async function prepareStored(
@@ -241,6 +286,7 @@ async function prepareStored(
   makeLifecycle: VercelLifecycleFactory,
   injectedLifecycle: VercelLifecycle | undefined,
   client: VercelSandboxClient,
+  secrets: string[],
 ): Promise<PreparedOperation> {
   const origin = await resolveGitHubSourceOrigin({
     repoRoot: request.repoRoot,
@@ -253,6 +299,7 @@ async function prepareStored(
     ? { teamId: scopeMetadata.teamId, projectId: scopeMetadata.projectId }
     : undefined;
   const credentials = await resolveCredentials(request, options, storedScope);
+  addSecrets(secrets, credentials.token);
   if (action === 'list') {
     const lifecycle = createLifecycle(
       request,
@@ -278,6 +325,7 @@ async function prepareStored(
     if (action !== 'remove') throw error;
     metadata = null;
   }
+  addSecrets(secrets, metadata?.displayCredentials?.password);
   const source = storedSource(origin, branch, metadata, action === 'remove', action === 'remove');
   if (!metadata && action !== 'remove') {
     throw new VercelLifecycleError(
@@ -540,6 +588,7 @@ async function terminalResult(
   sandbox: VercelSandboxHandle,
   action: 'up' | 'attach',
   repository: string,
+  secrets: readonly string[],
 ): Promise<ProviderActionResult> {
   const cwd = resolveVercelRepositoryCwd(sandbox.cwd, repository);
   const streams: VercelTerminalStreams = {
@@ -568,7 +617,7 @@ async function terminalResult(
     throw mapVercelError(failure?.cause ?? new Error('Vercel terminal transport failed'), {
       action,
       branch: request.branch,
-      secrets: secretsFor(request.env),
+      secrets,
     });
   }
   return mapTerminalResult(result);
@@ -619,17 +668,24 @@ function defaultOpener(runner: ShellRunner): VercelOpener {
 async function withProviderErrors(
   request: ProviderRequestContext,
   action: string,
-  operation: () => Promise<ProviderActionResult>,
+  operation: (secrets: string[]) => Promise<ProviderActionResult>,
+  secrets: string[],
 ): Promise<ProviderActionResult> {
   try {
-    return await operation();
+    return await operation(secrets);
   } catch (error) {
     const branch = (request as ProviderRequestContext & { branch?: unknown }).branch;
     throw mapVercelError(error, {
       action,
       branch: typeof branch === 'string' ? branch : undefined,
-      secrets: secretsFor(request.env),
+      secrets,
     });
+  }
+}
+
+function addSecrets(secrets: string[], ...values: Array<string | undefined>): void {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0 && !secrets.includes(value)) secrets.push(value);
   }
 }
 

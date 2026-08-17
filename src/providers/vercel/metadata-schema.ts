@@ -20,6 +20,11 @@ export interface VercelResidualMetadata {
   reason?: string;
 }
 
+export interface VercelDisplayCredentials {
+  username: 'devbox';
+  password: string;
+}
+
 export interface VercelCreateConfiguration {
   imageReference: string;
   sourceUrl: string;
@@ -65,6 +70,7 @@ export interface VercelBranchMetadataInput {
   snapshotIds?: string[];
   residual?: VercelResidualMetadata;
   configuration?: VercelCreateConfiguration;
+  displayCredentials?: VercelDisplayCredentials;
 }
 
 export interface VercelBranchMetadata extends VercelBranchMetadataInput {
@@ -158,7 +164,14 @@ export function serializeMetadata(
 
 const SCOPE_INPUT_FIELDS = ['teamId', 'projectId'] as const;
 const SCOPE_STORED_FIELDS = ['schemaVersion', 'metadataKind', 'provider', 'repoKeyHash', ...SCOPE_INPUT_FIELDS] as const;
-const BRANCH_INPUT_FIELDS = ['identity', 'sandboxId', 'snapshotIds', 'residual', 'configuration'] as const;
+const BRANCH_INPUT_FIELDS = [
+  'identity',
+  'sandboxId',
+  'snapshotIds',
+  'residual',
+  'configuration',
+  'displayCredentials',
+] as const;
 const BRANCH_STORED_FIELDS = ['schemaVersion', 'metadataKind', 'provider', 'repoKeyHash', ...BRANCH_INPUT_FIELDS] as const;
 
 export function validateScopeMetadataInput(value: unknown): VercelScopeMetadataInput {
@@ -211,6 +224,7 @@ export function validateBranchMetadataInput(value: unknown): VercelBranchMetadat
     ...(input.snapshotIds === undefined ? {} : { snapshotIds: parseStringArray(input.snapshotIds, 'snapshotIds') }),
     ...(input.residual === undefined ? {} : { residual: parseResidual(input.residual) }),
     ...(input.configuration === undefined ? {} : { configuration: parseConfiguration(input.configuration) }),
+    ...(input.displayCredentials === undefined ? {} : { displayCredentials: parseDisplayCredentials(input.displayCredentials) }),
   };
 }
 
@@ -286,6 +300,19 @@ function parseTags(value: unknown): VercelIdentityTags {
   };
 }
 
+function parseDisplayCredentials(value: unknown): VercelDisplayCredentials {
+  const credentials = expectRecord(value, 'Vercel display credentials');
+  assertExactKeys(credentials, ['username', 'password'], ['username', 'password'], 'Vercel display credentials');
+  if (credentials.username !== 'devbox') {
+    throw new Error('Vercel display credentials username must be devbox');
+  }
+  const password = requireString(credentials.password, 'displayCredentials.password');
+  if (!/^[A-Za-z0-9_-]+$/.test(password)) {
+    throw new Error('Metadata displayCredentials.password must use URL-safe characters');
+  }
+  return { username: 'devbox', password };
+}
+
 function parseResidual(value: unknown): VercelResidualMetadata {
   const residual = expectRecord(value, 'Vercel metadata residual');
   assertExactKeys(residual, RESIDUAL_FIELDS, [], 'Vercel metadata residual');
@@ -320,9 +347,11 @@ function parseConfiguration(value: unknown): VercelCreateConfiguration {
   ) {
     throw new Error('Metadata configuration.timeoutMs must be positive');
   }
+  const sourceUrl = requireString(configuration.sourceUrl, 'configuration.sourceUrl');
+  assertSecretFreeSourceUrl(sourceUrl);
   return {
     imageReference: requireString(configuration.imageReference, 'configuration.imageReference'),
-    sourceUrl: requireString(configuration.sourceUrl, 'configuration.sourceUrl'),
+    sourceUrl,
     sourceRevision: requireString(configuration.sourceRevision, 'configuration.sourceRevision'),
     requestedBranch: requireString(configuration.requestedBranch, 'configuration.requestedBranch'),
     needsBranchSetup: configuration.needsBranchSetup,
@@ -330,6 +359,21 @@ function parseConfiguration(value: unknown): VercelCreateConfiguration {
     keepLastSnapshots: 1,
     timeoutMs: configuration.timeoutMs,
   };
+}
+
+function assertSecretFreeSourceUrl(sourceUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    return;
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('Metadata configuration.sourceUrl must not contain credentials');
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error('Metadata configuration.sourceUrl must not contain query or fragment components');
+  }
 }
 
 function parseStringArray(value: unknown, field: string): string[] {

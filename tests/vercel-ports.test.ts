@@ -8,7 +8,7 @@ import {
   resolveDevcontainerPorts,
 } from '../src/providers/vercel/ports.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
-import { createVercelMetadataStore } from '../src/providers/vercel/metadata.js';
+import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
 import {
   createVercelLifecycle,
 } from '../src/providers/vercel/lifecycle.js';
@@ -216,7 +216,11 @@ describe('Vercel devcontainer ports', () => {
       },
       warning: '',
     };
-    const identity = createVercelIdentity({ remote: remote.canonical, branch: 'main' });
+    const identity = createVercelIdentity({
+      remote: remote.canonical,
+      branch: 'main',
+      scope: { teamId: 'team', projectId: 'project' },
+    });
     const handle: VercelSandboxHandle = {
       name: identity.name,
       status: 'running',
@@ -239,13 +243,13 @@ describe('Vercel devcontainer ports', () => {
       },
     } as unknown as VercelSandboxClient;
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-vercel-ports-'));
-    const metadataStore = createVercelMetadataStore({ stateHome, repoKey: remote.canonical });
+    const branchMetadataStore = createVercelBranchMetadataStore({ stateHome, repoKey: remote.canonical, branch: 'main' });
     const lifecycle = createVercelLifecycle({
       repoRoot: '/repo',
       branch: 'main',
       credentials: { token: 'token', teamId: 'team', projectId: 'project' },
       source,
-      metadataStore,
+      branchMetadataStore,
       client,
       ports: [5173],
     });
@@ -258,7 +262,7 @@ describe('Vercel devcontainer ports', () => {
       branch: 'main',
       credentials: { token: 'token', teamId: 'team', projectId: 'project' },
       source,
-      metadataStore,
+      branchMetadataStore,
       client,
       ports: [5900],
     });

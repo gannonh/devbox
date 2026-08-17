@@ -55,7 +55,7 @@ NOTE
   First use displays the Vercel team/project and requires TTY confirmation.
   In the remote terminal, Ctrl-C reaches the remote process and Ctrl-]
   detaches without stopping the sandbox. Core URL output lists current
-  routes; noVNC/password parity and password generation are not included.`;
+  routes; noVNC authentication parity is not included.`;
 
 const INIT_HELP = `devbox init — scaffold .devbox/ + .devcontainer/ in this repo
 
@@ -98,7 +98,8 @@ VERCEL CORE
   Without a complete Vercel credential triad, device auth prints the verification
   URL and user code. Ctrl-C is sent to the remote process. Ctrl-] detaches without stopping it.
   --url prints current provider routes and --open opens the first route.
-  --password is explicitly unsupported in this core phase.`;
+  --password retrieves Vercel display credentials; the local provider reports
+  this action as unsupported.`;
 
 const LIST_HELP = `devbox --list — list provider devboxes and routes
 
@@ -176,7 +177,7 @@ USAGE
 
 DESCRIPTION
   Retrieves explicitly supported display credentials and prints labeled
-  username/password fields. Providers may report this action as unsupported.
+  username/password fields. The local provider reports this action as unsupported.
 
 EXAMPLES
   devbox ${branch} --password

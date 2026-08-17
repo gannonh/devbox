@@ -10,6 +10,12 @@ export {
   createVercelProviderConfirmation,
   mapVercelTerminalResult,
 } from './vercel/provider.js';
+export {
+  getDisplayCredentials,
+} from './vercel/display-credentials.js';
+export type {
+  DisplayCredentialsResolution,
+} from './vercel/display-credentials.js';
 export type {
   VercelConfirmation,
   VercelConfirmationBoundary,
@@ -53,6 +59,7 @@ export type {
   VercelBranchMetadataInput,
   VercelBranchMetadataStore,
   VercelCreateConfiguration,
+  VercelDisplayCredentials,
   VercelIdentityTags,
   VercelMetadata,
   VercelMetadataIdentity,
