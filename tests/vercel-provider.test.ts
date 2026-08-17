@@ -18,10 +18,11 @@ import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js'
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
 
 function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranchRequest {
-  return {
+  const defaults: ProviderBranchRequest = {
     repoRoot: '/repo',
     repoName: 'repo',
     env: {
+      HOME: '/tmp/devbox-vercel-provider-no-pi',
       GH_TOKEN: 'github-secret',
       VERCEL_TOKEN: 'vercel-secret',
       VERCEL_TEAM_ID: 'team-1',
@@ -32,7 +33,12 @@ function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranch
     stdout: new PassThrough(),
     stderr: new PassThrough(),
     branch: 'feature/ui',
+  };
+  const env = overrides.env ?? defaults.env;
+  return {
+    ...defaults,
     ...overrides,
+    env: { ...env, HOME: env.HOME ?? defaults.env.HOME },
   };
 }
 
@@ -60,7 +66,8 @@ function sandbox(): VercelSandboxHandle {
     listSessions: vi.fn(),
     stop: vi.fn(),
     delete: vi.fn(),
-    runCommand: vi.fn(),
+    writeFiles: vi.fn(async () => {}),
+    runCommand: vi.fn(async () => ({ exitCode: 0 })),
     domain: vi.fn((port: number) => `https://sandbox.example/${port}`),
   } as unknown as VercelSandboxHandle;
 }
@@ -447,6 +454,7 @@ describe('Vercel provider', () => {
         await createRequest.onCreate?.(handle);
         return handle;
       }),
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as VercelSandboxClient;
     const confirmation = vi.fn(async () => true);

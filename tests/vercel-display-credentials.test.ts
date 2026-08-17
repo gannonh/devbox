@@ -324,7 +324,12 @@ describe('Vercel display credentials', () => {
         spawnInherit: vi.fn(),
       },
       lifecycle: {
-        attach: vi.fn(async () => ({ cwd: '/vercel/sandbox', name: identity.name }) as unknown as VercelSandboxHandle),
+        attach: vi.fn(async () => ({
+          cwd: '/vercel/sandbox',
+          name: identity.name,
+          writeFiles: vi.fn(async () => {}),
+          runCommand: vi.fn(async () => ({ exitCode: 0 })),
+        }) as unknown as VercelSandboxHandle),
       } as unknown as VercelLifecycle,
       terminal,
     });
@@ -333,6 +338,8 @@ describe('Vercel display credentials', () => {
       repoRoot: '/repo',
       repoName: 'repo',
       env: {
+        HOME: '/tmp/devbox-display-test-no-pi',
+        GH_TOKEN: 'github-runtime-secret',
         VERCEL_TOKEN: 'vercel-token',
         VERCEL_TEAM_ID: 'team-1',
         VERCEL_PROJECT_ID: 'project-1',
@@ -742,6 +749,8 @@ describe('Vercel display credentials', () => {
       cwd: '/vercel/sandbox',
       status: 'running',
       tags: { ...identity.tags },
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
       domain: (port: number) => `https://sandbox.example/${port}`,
     } as unknown as VercelSandboxHandle;
     const lifecycle = {
@@ -763,6 +772,7 @@ describe('Vercel display credentials', () => {
     };
     const provider = createVercelProvider({ stateHome, runner, lifecycle, terminal });
     const env = {
+      HOME: '/tmp/devbox-display-test-no-pi',
       GH_TOKEN: 'github-token',
       VERCEL_TOKEN: 'vercel-token',
       VERCEL_TEAM_ID: 'team-1',

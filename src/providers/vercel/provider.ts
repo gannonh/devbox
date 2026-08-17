@@ -60,6 +60,7 @@ import {
   type VercelTerminalResult,
   type VercelTerminalStreams,
 } from './terminal.js';
+import { prepareSandboxRuntime } from './runtime.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -155,6 +156,16 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         prepared.metadata,
       );
       const sandbox = await lifecycle.up();
+      await prepareSandboxRuntime({
+        repoRoot: request.repoRoot,
+        repository: prepared.source.remote.repository,
+        env: request.env,
+        shellRunner: runner,
+        sandbox,
+        client,
+        stderr: request.stderr,
+        hostHome: request.env.HOME,
+      });
       return terminalResult(
         request,
         terminal,
@@ -170,6 +181,16 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       const sandbox = await prepared.lifecycle.attach();
       const repository = prepared.source?.remote.repository;
       if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
+      await prepareSandboxRuntime({
+        repoRoot: request.repoRoot,
+        repository,
+        env: request.env,
+        shellRunner: runner,
+        sandbox,
+        client,
+        stderr: request.stderr,
+        hostHome: request.env.HOME,
+      });
       return terminalResult(
         request,
         terminal,

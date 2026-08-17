@@ -108,6 +108,7 @@ export type {
   SandboxSnapshotStatus,
   VercelCommandResult,
   VercelRunCommandRequest,
+  VercelWriteFile,
   VercelSandboxDeleteByNameRequest,
   VercelSandboxDeleteByNameResult,
   VercelSandboxApi,
