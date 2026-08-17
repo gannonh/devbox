@@ -63,6 +63,7 @@ import {
   type VercelTerminalStreams,
 } from './terminal.js';
 import { prepareSandboxRuntime } from './runtime.js';
+import { renderSetupNotice, type VercelSetupStatus } from './setup.js';
 import { DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts, VercelPortsError } from './ports.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
@@ -159,7 +160,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         prepared.metadata,
       );
       const sandbox = await lifecycle.up();
-      await prepareSandboxRuntime({
+      const setupStatus = await prepareSandboxRuntime({
         repoRoot: request.repoRoot,
         repository: prepared.source.remote.repository,
         env: request.env,
@@ -171,7 +172,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore,
         secrets,
       });
-      await renderVercelReadyBlock(request, sandbox);
+      await renderVercelReadyBlock(request, sandbox, setupStatus);
       return terminalResult(
         request,
         terminal,
@@ -187,7 +188,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       const sandbox = await prepared.lifecycle.attach();
       const repository = prepared.source?.remote.repository;
       if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
-      await prepareSandboxRuntime({
+      const setupStatus = await prepareSandboxRuntime({
         repoRoot: request.repoRoot,
         repository,
         env: request.env,
@@ -199,7 +200,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore!,
         secrets,
       });
-      await renderVercelAttachNotice(request, sandbox);
+      await renderVercelAttachNotice(request, sandbox, setupStatus);
       return terminalResult(
         request,
         terminal,
@@ -725,6 +726,7 @@ async function resolveRouteLabels(repoRoot: string): Promise<Record<number, stri
 async function renderVercelReadyBlock(
   request: ProviderBranchRequest,
   sandbox: VercelSandboxHandle,
+  setupStatus: VercelSetupStatus | null,
 ): Promise<void> {
   const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, request.branch);
   request.stderr.write('Vercel devbox ready\n');
@@ -732,17 +734,22 @@ async function renderVercelReadyBlock(
   request.stderr.write(`  password: devbox ${request.branch} --provider vercel --password\n`);
   request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
   request.stderr.write(`  remove: devbox ${request.branch} --provider vercel --rm\n`);
+  const setupNotice = renderSetupNotice(setupStatus);
+  if (setupNotice) request.stderr.write(`${setupNotice}\n`);
 }
 
 async function renderVercelAttachNotice(
   request: ProviderBranchRequest,
   sandbox: VercelSandboxHandle,
+  setupStatus: VercelSetupStatus | null,
 ): Promise<void> {
   const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, request.branch);
   const noVnc = routes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
   request.stderr.write(noVnc
     ? `Vercel devbox resumed; ${noVnc.line}\n`
     : 'Vercel devbox resumed\n');
+  const setupNotice = renderSetupNotice(setupStatus);
+  if (setupNotice) request.stderr.write(`${setupNotice}\n`);
 }
 
 function renderVercelRoutes(

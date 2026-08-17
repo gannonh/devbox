@@ -157,7 +157,7 @@ async function runCommand(
   } catch (error) {
     throw startupError(`${operation} output failed: ${redactSecrets(error, options.secrets)}`, options.secrets);
   }
-  return { exitCode: result.exitCode, output };
+  return { exitCode: result.exitCode ?? -1, output };
 }
 
 async function commandOutput(

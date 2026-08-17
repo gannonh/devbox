@@ -5,6 +5,7 @@ import { resolveDevboxEnv } from '../local/env.js';
 import { redactSecrets } from './redaction.js';
 import { collectPiBundle } from './pi-bundle.js';
 import { startDisplayStack, VercelDisplayStartupError } from './display-startup.js';
+import { launchBackgroundSetup, type VercelSetupStatus } from './setup.js';
 import type { VercelBranchMetadataStore } from './metadata.js';
 import type { ShellRunner } from '../../lib/shell.js';
 import {
@@ -49,7 +50,7 @@ export interface PrepareSandboxRuntimeOptions {
 
 export async function prepareSandboxRuntime(
   options: PrepareSandboxRuntimeOptions,
-): Promise<void> {
+): Promise<VercelSetupStatus | null> {
   const hostEnvPath = resolveDevboxEnv(options.repoRoot, options.env, options.hostHome);
   let content: Buffer;
   try {
@@ -159,6 +160,12 @@ export async function prepareSandboxRuntime(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     }));
   }
+  return launchBackgroundSetup({
+    sandbox: options.sandbox,
+    client: options.client,
+    workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
 }
 
 async function uploadRuntimeFiles(

@@ -220,6 +220,7 @@ describe('Vercel URL output', () => {
       '  password: devbox feature/ui --provider vercel --password',
       '  stop: devbox feature/ui --provider vercel --stop',
       '  remove: devbox feature/ui --provider vercel --rm',
+      'setup running; log: /vercel/.devbox/runtime/setup.log',
       '',
     ].join('\n'));
     expect(events.at(-1)).toBe('terminal-attach');
@@ -297,7 +298,8 @@ describe('Vercel URL output', () => {
     const notice = test.errorOutput().slice(test.errorOutput().indexOf('Vercel devbox resumed'));
     expect(notice).toBe(
       'Vercel devbox resumed; 6080: https://sandbox.example/6080  '
-      + '(noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)\n',
+      + '(noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)\n'
+      + 'setup running; log: /vercel/.devbox/runtime/setup.log\n',
     );
     expect(notice).not.toContain('--stop');
     expect(notice).not.toContain('3000:');

@@ -62,9 +62,10 @@ export interface VercelStopResult {
 }
 
 export interface VercelCommandResult {
-  exitCode: number;
+  exitCode: number | null;
   stdout?: (options?: { signal?: AbortSignal }) => Promise<string>;
   stderr?: (options?: { signal?: AbortSignal }) => Promise<string>;
+  wait?: (options?: { signal?: AbortSignal }) => Promise<VercelCommandResult>;
 }
 
 export interface VercelWriteFile {
@@ -81,6 +82,7 @@ export interface VercelRunCommandRequest {
   cwd?: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  detached?: boolean;
 }
 
 export interface VercelSandboxHandle {
