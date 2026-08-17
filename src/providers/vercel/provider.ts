@@ -20,6 +20,7 @@ import {
 } from './auth.js';
 import {
   createVercelSandboxClient,
+  type SandboxRoute,
   type VercelSandboxClient,
   type VercelSandboxHandle,
 } from './client.js';
@@ -50,6 +51,7 @@ import {
 } from './source.js';
 import { recoverMissingBranchSandbox } from './recovery.js';
 import {
+  DISPLAY_USERNAME,
   DisplayCredentialsNotFoundError,
   getDisplayCredentials as resolveDisplayCredentials,
 } from './display-credentials.js';
@@ -61,6 +63,7 @@ import {
   type VercelTerminalStreams,
 } from './terminal.js';
 import { prepareSandboxRuntime } from './runtime.js';
+import { DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts, VercelPortsError } from './ports.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -168,6 +171,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore,
         secrets,
       });
+      await renderVercelReadyBlock(request, sandbox);
       return terminalResult(
         request,
         terminal,
@@ -195,6 +199,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore!,
         secrets,
       });
+      await renderVercelAttachNotice(request, sandbox);
       return terminalResult(
         request,
         terminal,
@@ -241,8 +246,19 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       if (routes.length === 0) {
         throw new VercelLifecycleError('route_not_found', 'Vercel Sandbox has no routes');
       }
-      for (const route of routes) request.stdout.write(`${route.port}: ${route.url}\n`);
-      if (request.open) await (options.opener ?? defaultOpener(runner))(routes[0].url);
+      const labels = await resolveRouteLabels(request.repoRoot);
+      const renderedRoutes = renderVercelRoutes(routes, labels, request.branch);
+      for (const rendered of renderedRoutes) request.stdout.write(`${rendered.line}\n`);
+      if (request.open) {
+        const noVnc = renderedRoutes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
+        if (!noVnc) {
+          throw new VercelLifecycleError(
+            'route_not_found',
+            `Vercel Sandbox has no authenticated noVNC route for port ${DEVBOX_NOVNC_PROXY_PORT}`,
+          );
+        }
+        await (options.opener ?? defaultOpener(runner))(noVnc.url);
+      }
       return { exitCode: 0 };
     }),
     getDisplayCredentials: async (request): Promise<DisplayCredentialsResult> => {
@@ -677,6 +693,89 @@ function renderList(
     const branch = record.tags?.branch ?? 'unknown';
     request.stderr.write(`  ${record.name} ${record.status} branch=${branch} identity=${identity}\n`);
   }
+}
+
+interface RenderedVercelRoute {
+  route: SandboxRoute;
+  url: string;
+  line: string;
+}
+
+async function renderedRoutesForSandbox(
+  sandbox: VercelSandboxHandle,
+  repoRoot: string,
+  branch: string,
+): Promise<RenderedVercelRoute[]> {
+  return renderVercelRoutes(sandbox.routes ?? [], await resolveRouteLabels(repoRoot), branch);
+}
+
+// Labels are cosmetic enrichment on read surfaces. A malformed
+// devcontainer.json must not break --url or a resume the way it cannot
+// break stop/remove/list (see the up()-only ports resolution in the
+// lifecycle); `up` fails hard on it when the ports actually matter.
+async function resolveRouteLabels(repoRoot: string): Promise<Record<number, string>> {
+  try {
+    return (await resolveDevcontainerPorts(repoRoot)).labels;
+  } catch (error) {
+    if (!(error instanceof VercelPortsError)) throw error;
+    return {};
+  }
+}
+
+async function renderVercelReadyBlock(
+  request: ProviderBranchRequest,
+  sandbox: VercelSandboxHandle,
+): Promise<void> {
+  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, request.branch);
+  request.stderr.write('Vercel devbox ready\n');
+  for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
+  request.stderr.write(`  password: devbox ${request.branch} --provider vercel --password\n`);
+  request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
+  request.stderr.write(`  remove: devbox ${request.branch} --provider vercel --rm\n`);
+}
+
+async function renderVercelAttachNotice(
+  request: ProviderBranchRequest,
+  sandbox: VercelSandboxHandle,
+): Promise<void> {
+  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, request.branch);
+  const noVnc = routes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
+  request.stderr.write(noVnc
+    ? `Vercel devbox resumed; ${noVnc.line}\n`
+    : 'Vercel devbox resumed\n');
+}
+
+function renderVercelRoutes(
+  routes: readonly SandboxRoute[],
+  labels: Record<number, string>,
+  branch: string,
+): RenderedVercelRoute[] {
+  return [...routes]
+    .sort((left, right) => left.port - right.port)
+    .map((route) => {
+      const url = assertSafeRouteUrl(route.url);
+      const description = route.port === DEVBOX_NOVNC_PROXY_PORT
+        ? `noVNC display — username ${DISPLAY_USERNAME}; password: devbox ${branch} --provider vercel --password`
+        : labels[route.port] ? `${labels[route.port]} — public` : 'public';
+      return {
+        route,
+        url,
+        line: `${route.port}: ${url}  (${description})`,
+      };
+    });
+}
+
+function assertSafeRouteUrl(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new VercelProviderError('route', 'Vercel route URL is invalid');
+  }
+  if (parsed.username || parsed.password) {
+    throw new VercelProviderError('route', 'Vercel route URL contains embedded credentials', 2);
+  }
+  return url;
 }
 
 function sandboxName(metadata: VercelBranchMetadata | null, branch: string): string {

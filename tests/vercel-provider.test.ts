@@ -807,6 +807,7 @@ describe('Vercel provider', () => {
     currentLifecycle.routes = vi.fn(async () => [
       { port: 3000, subdomain: 'sandbox', url: 'https://sandbox.example/3000' },
       { port: 8080, subdomain: 'sandbox', url: 'https://sandbox.example/8080' },
+      { port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' },
     ]);
     currentLifecycle.remove = vi.fn(async () => ({
       verified: true,
@@ -836,8 +837,13 @@ describe('Vercel provider', () => {
     const urls: string[] = [];
     urlStdout.on('data', (chunk) => urls.push(chunk.toString()));
     await expect(provider.url(request({ stdout: urlStdout, open: true, env: { VERCEL_TOKEN: 'new-vercel-token' } }))).resolves.toEqual({ exitCode: 0 });
-    expect(urls.join('')).toBe('3000: https://sandbox.example/3000\n8080: https://sandbox.example/8080\n');
-    expect(opener).toHaveBeenCalledWith('https://sandbox.example/3000');
+    expect(urls.join('')).toBe([
+      '3000: https://sandbox.example/3000  (public)',
+      '6080: https://sandbox.example/6080  (noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)',
+      '8080: https://sandbox.example/8080  (public)',
+      '',
+    ].join('\n'));
+    expect(opener).toHaveBeenCalledWith('https://sandbox.example/6080');
     currentLifecycle.routes = vi.fn(async () => []);
     await expect(provider.url(request({ env: { VERCEL_TOKEN: 'new-vercel-token' } }))).rejects.toMatchObject({
       code: 'route',

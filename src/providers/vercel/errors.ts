@@ -78,9 +78,12 @@ export function mapVercelError(
     );
   }
   if (error instanceof VercelRouteNotFoundError || lifecycleCode === 'route_not_found') {
+    const noVnc = detail.toLowerCase().includes('authenticated novnc');
     return new VercelProviderError(
       'route',
-      `No Vercel route is available for this sandbox; start it and expose a configured port, then retry ${command}.`,
+      noVnc
+        ? `Authenticated noVNC route (port 6080) is unavailable; start the box and retry ${command}.`
+        : `No Vercel route is available for this sandbox; start it and expose a configured port, then retry ${command}.`,
       2,
     );
   }

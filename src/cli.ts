@@ -54,8 +54,8 @@ NOTE
   local dirty files and unpushed commits are not copied to the sandbox.
   First use displays the Vercel team/project and requires TTY confirmation.
   In the remote terminal, Ctrl-C reaches the remote process and Ctrl-]
-  detaches without stopping the sandbox. Core URL output lists current
-  routes; noVNC authentication parity is not included.`;
+  detaches without stopping the sandbox. Core URL output labels authenticated
+  noVNC and public app routes; URLs never embed credentials.`;
 
 const INIT_HELP = `devbox init — scaffold .devbox/ + .devcontainer/ in this repo
 
@@ -97,7 +97,7 @@ VERCEL CORE
   are not copied. First use confirms the displayed team/project in a TTY.
   Without a complete Vercel credential triad, device auth prints the verification
   URL and user code. Ctrl-C is sent to the remote process. Ctrl-] detaches without stopping it.
-  --url prints current provider routes and --open opens the first route.
+  --url prints labeled noVNC and public app routes; --open opens authenticated noVNC.
   --password retrieves Vercel display credentials; the local provider reports
   this action as unsupported.`;
 
@@ -164,7 +164,7 @@ USAGE
   devbox [--provider local|vercel] <branch> --url [--open|-o]
 
 FLAGS
-  --open|-o    open the first provider route in a browser after printing routes
+  --open|-o    open the authenticated noVNC route in a browser after printing routes
 
 EXAMPLES
   devbox ${branch} --url
