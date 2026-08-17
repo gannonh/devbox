@@ -4,6 +4,7 @@ import {
   VercelCreationCompensationError,
   VercelRecoveryCleanupError,
 } from '../src/providers/vercel/lifecycle.js';
+import { VercelDisplayStartupError } from '../src/providers/vercel/display-startup.js';
 
 describe('Vercel provider errors', () => {
   it('preserves creation-compensation recovery IDs without exposing secrets', () => {
@@ -77,6 +78,18 @@ describe('Vercel provider errors', () => {
     });
     expect(stop.code).toBe('locked');
     expect(stop.message).toContain('devbox --provider vercel feature/ui --stop');
+  });
+
+  it('maps display startup failures with service detail and running-box guidance', () => {
+    const mapped = mapVercelError(
+      new VercelDisplayStartupError('display readiness failed; services not running: auth-proxy'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+
+    expect(mapped.code).toBe('display');
+    expect(mapped.message).toContain('auth-proxy');
+    expect(mapped.message).toMatch(/box was left running/i);
+    expect(mapped.message).toContain('devbox --provider vercel feature/ui --attach');
   });
 
   it('maps rate limits with Retry-After without exposing the response body', () => {

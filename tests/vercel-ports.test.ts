@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   assertSdkPorts,
+  DEVBOX_NOVNC_INTERNAL_PORT,
   parseDevcontainerPorts,
   resolveDevcontainerPorts,
 } from '../src/providers/vercel/ports.js';
@@ -123,6 +124,12 @@ describe('Vercel devcontainer ports', () => {
     ).ports).toEqual([5173, 6080]);
     expect(() => parseDevcontainerPorts('{ "forwardPorts": [{ "port": 5173 }] }', '/repo/devcontainer.json'))
       .toThrow(/forwardPorts\[0\].*\{"port":5173\}/);
+  });
+
+  it('keeps the internal noVNC port private', () => {
+    expect(() => assertSdkPorts([DEVBOX_NOVNC_INTERNAL_PORT])).toThrow(/internal|private/i);
+    expect(() => parseDevcontainerPorts(`{ "forwardPorts": [${DEVBOX_NOVNC_INTERNAL_PORT}] }`))
+      .toThrow(/internal|private/i);
   });
 
   it('forbids the VNC port and consumes every declaration of the noVNC proxy port', () => {
@@ -267,5 +274,16 @@ describe('Vercel devcontainer ports', () => {
       ports: [5900],
     });
     await expect(invalidLifecycle.up()).rejects.toThrow(/5900.*forbidden|private/);
+
+    const invalidInternalLifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: 'main',
+      credentials: { token: 'token', teamId: 'team', projectId: 'project' },
+      source,
+      branchMetadataStore,
+      client,
+      ports: [DEVBOX_NOVNC_INTERNAL_PORT],
+    });
+    await expect(invalidInternalLifecycle.up()).rejects.toThrow(/6081.*internal|private/);
   });
 });

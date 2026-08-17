@@ -33,20 +33,51 @@ export async function getDisplayCredentials(
 ): Promise<DisplayCredentialsResolution> {
   const metadata = await store.read();
   if (!metadata) throw new DisplayCredentialsNotFoundError();
-  if (metadata.displayCredentials) return { credentials: metadata.displayCredentials, generated: false };
+  if (metadata.displayCredentials) {
+    return {
+      credentials: metadata.displayCredentials,
+      generated: metadata.displayCredentials.rotating === true,
+    };
+  }
 
   return store.withLock(async () => {
     const current = await store.read();
     if (!current) throw new DisplayCredentialsNotFoundError();
     if (current.displayCredentials) {
-      return { credentials: current.displayCredentials, generated: false };
+      return {
+        credentials: current.displayCredentials,
+        generated: current.displayCredentials.rotating === true,
+      };
     }
     const credentials: VercelDisplayCredentials = {
       username: DISPLAY_USERNAME,
       password: generateDisplayPassword(),
+      rotating: true,
     };
     await store.write({ ...toBranchMetadataInput(current), displayCredentials: credentials });
     return { credentials, generated: true };
+  });
+}
+
+export async function clearDisplayCredentialRotation(
+  store: VercelBranchMetadataStore,
+  credentials: VercelDisplayCredentials,
+): Promise<void> {
+  await store.withLock(async () => {
+    const current = await store.read();
+    const currentCredentials = current?.displayCredentials;
+    if (!current || !currentCredentials) throw new DisplayCredentialsNotFoundError();
+    if (currentCredentials.password !== credentials.password) {
+      throw new Error('Vercel display credentials changed during startup');
+    }
+    if (currentCredentials.rotating !== true) return;
+    await store.write({
+      ...toBranchMetadataInput(current),
+      displayCredentials: {
+        username: DISPLAY_USERNAME,
+        password: credentials.password,
+      },
+    });
   });
 }
 

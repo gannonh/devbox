@@ -19,6 +19,14 @@ import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import { prepareSandboxRuntime } from '../src/providers/vercel/runtime.js';
 
+const DISPLAY_STATUS_OUTPUT = [
+  '[devbox-status] Xvfb=running',
+  '[devbox-status] fluxbox=running',
+  '[devbox-status] x11vnc=running',
+  '[devbox-status] websockify=running',
+  '[devbox-status] auth-proxy=running',
+].join('\n');
+
 function sandbox(): VercelSandboxHandle {
   return {
     name: 'runtime-sync',
@@ -422,6 +430,12 @@ describe('Vercel runtime sync', () => {
     await writeFile(envPath, 'API_KEY=dotenv-secret\n');
     const events: string[] = [];
     const handle = sandbox();
+    const branchMetadata = createVercelBranchMetadataStore({
+      stateHome: hostEnv,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/ui',
+    });
+    await branchMetadata.write({});
     const lifecycle = {
       up: vi.fn(async () => {
         events.push('lifecycle-up');
@@ -430,8 +444,11 @@ describe('Vercel runtime sync', () => {
     } as unknown as VercelLifecycle;
     const client: VercelSandboxClient = {
       writeFiles: vi.fn(async () => { events.push('runtime-upload'); }),
-      runCommand: vi.fn(async () => {
+      runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
         events.push('runtime-command');
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
+        }
         return { exitCode: 0 };
       }),
     } as unknown as VercelSandboxClient;
@@ -523,8 +540,11 @@ describe('Vercel runtime sync', () => {
     } as unknown as VercelLifecycle;
     const client: VercelSandboxClient = {
       writeFiles: vi.fn(async () => { events.push('runtime-upload'); }),
-      runCommand: vi.fn(async () => {
+      runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
         events.push('runtime-command');
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
+        }
         return { exitCode: 0 };
       }),
     } as unknown as VercelSandboxClient;

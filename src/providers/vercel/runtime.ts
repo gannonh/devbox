@@ -4,6 +4,8 @@ import type { Writable } from 'node:stream';
 import { resolveDevboxEnv } from '../local/env.js';
 import { redactSecrets } from './redaction.js';
 import { collectPiBundle } from './pi-bundle.js';
+import { startDisplayStack, VercelDisplayStartupError } from './display-startup.js';
+import type { VercelBranchMetadataStore } from './metadata.js';
 import type { ShellRunner } from '../../lib/shell.js';
 import {
   resolveGitHubToken,
@@ -41,6 +43,8 @@ export interface PrepareSandboxRuntimeOptions {
   hostHome?: string;
   piRoot?: string;
   signal?: AbortSignal;
+  displayCredentialsStore?: VercelBranchMetadataStore;
+  secrets?: string[];
 }
 
 export async function prepareSandboxRuntime(
@@ -64,7 +68,8 @@ export async function prepareSandboxRuntime(
     env: options.env,
     shellRunner: options.shellRunner,
   });
-  const secrets = [token, ...runtimeEnvironmentSecrets(options.env), ...dotenvSecrets(content)];
+  const secrets = options.secrets ?? [];
+  addSecrets(secrets, token, ...runtimeEnvironmentSecrets(options.env), ...dotenvSecrets(content));
   const piBundle = await runRuntimeOperation('Pi config collection', secrets, () => collectPiBundle({
     ...(options.piRoot === undefined ? {} : { root: options.piRoot }),
     ...(options.hostHome === undefined ? {} : { home: options.hostHome }),
@@ -144,6 +149,16 @@ export async function prepareSandboxRuntime(
     cwd: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   }, 'workspace .env link', secrets);
+  const displayCredentialsStore = options.displayCredentialsStore;
+  if (displayCredentialsStore) {
+    await runRuntimeOperation('Display startup', secrets, () => startDisplayStack({
+      sandbox: options.sandbox,
+      client: options.client,
+      store: displayCredentialsStore,
+      secrets,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    }));
+  }
 }
 
 async function uploadRuntimeFiles(
@@ -170,6 +185,7 @@ async function runRuntimeOperation<T>(
   try {
     return await action();
   } catch (error) {
+    if (error instanceof VercelDisplayStartupError) throw error;
     throw new VercelRuntimeSyncError(`${operation} failed: ${redactSecrets(error, secrets)}`);
   }
 }
@@ -207,6 +223,12 @@ async function runRuntimeCommand(
     throw new VercelRuntimeSyncError(
       `${operation} failed${output ? `: ${output}` : ` with exit code ${result.exitCode}`}`,
     );
+  }
+}
+
+function addSecrets(secrets: string[], ...values: Array<string | undefined>): void {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0 && !secrets.includes(value)) secrets.push(value);
   }
 }
 

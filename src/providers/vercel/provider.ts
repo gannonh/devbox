@@ -165,6 +165,8 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         client,
         stderr: request.stderr,
         hostHome: request.env.HOME,
+        displayCredentialsStore: prepared.branchStore,
+        secrets,
       });
       return terminalResult(
         request,
@@ -190,6 +192,8 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         client,
         stderr: request.stderr,
         hostHome: request.env.HOME,
+        displayCredentialsStore: prepared.branchStore!,
+        secrets,
       });
       return terminalResult(
         request,

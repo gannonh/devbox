@@ -1,5 +1,6 @@
 import { ProviderOperationError } from '../types.js';
 import { VercelSdkError } from './client.js';
+import { VercelDisplayStartupError } from './display-startup.js';
 import {
   VercelCleanupError,
   VercelCreationCompensationError,
@@ -28,6 +29,7 @@ export type VercelProviderErrorCode =
   | 'aborted'
   | 'cleanup'
   | 'route'
+  | 'display'
   | 'api';
 
 export interface VercelErrorContext {
@@ -80,6 +82,13 @@ export function mapVercelError(
       'route',
       `No Vercel route is available for this sandbox; start it and expose a configured port, then retry ${command}.`,
       2,
+    );
+  }
+  if (error instanceof VercelDisplayStartupError || lifecycleCode === 'display_startup_failed') {
+    return new VercelProviderError(
+      'display',
+      `Vercel display startup failed: ${detail || 'one or more display services are not running'}; `
+        + `the box was left running; inspect the display services and retry ${command}.`,
     );
   }
   if (error instanceof VercelCreationCompensationError) {

@@ -23,6 +23,14 @@ import {
   getDisplayCredentials,
 } from '../src/providers/vercel/display-credentials.js';
 
+const DISPLAY_STATUS_OUTPUT = [
+  '[devbox-status] Xvfb=running',
+  '[devbox-status] fluxbox=running',
+  '[devbox-status] x11vnc=running',
+  '[devbox-status] websockify=running',
+  '[devbox-status] auth-proxy=running',
+].join('\n');
+
 describe('Vercel display credentials', () => {
   it('stores the dedicated credential field with restrictive metadata permissions', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-credentials-'));
@@ -120,6 +128,68 @@ describe('Vercel display credentials', () => {
     await expect(store.read()).resolves.toMatchObject({ displayCredentials: result.credentials });
   });
 
+  it('keeps a generated credential pending until display startup succeeds', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-pending-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/display',
+    });
+    await store.write({});
+
+    const first = await getDisplayCredentials(store);
+    const pending = await getDisplayCredentials(store);
+
+    expect(first.credentials.password).toBe(pending.credentials.password);
+    expect(first.generated).toBe(true);
+    expect(pending.generated).toBe(true);
+    await expect(store.read()).resolves.toMatchObject({
+      displayCredentials: {
+        username: DISPLAY_USERNAME,
+        password: first.credentials.password,
+        rotating: true,
+      },
+    });
+  });
+
+  it('reports the stored pending password through --password', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-pending-cli-'));
+    const branch = 'feature/display';
+    const password = 'pending-display-password';
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch,
+    });
+    await store.write({
+      displayCredentials: { username: DISPLAY_USERNAME, password, rotating: true },
+    });
+    const runner: ShellRunner = {
+      exec: vi.fn(async () => 'git@github.com:Acme/Repo.git'),
+      execQuiet: vi.fn(),
+      spawnInherit: vi.fn(),
+    };
+    const provider = createVercelProvider({ stateHome, runner });
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let output = '';
+    stdout.on('data', (chunk) => { output += chunk.toString(); });
+    stderr.on('data', (chunk) => { output += chunk.toString(); });
+
+    await expect(dispatch(['--provider', 'vercel', branch, '--password'], {
+      stdin: new PassThrough(),
+      stdout,
+      stderr,
+    }, {
+      repoRoot: '/repo',
+      env: {},
+      tty: false,
+      registry: { ...defaultProviderRegistry, vercel: provider },
+    })).resolves.toBe(0);
+
+    expect(output).toBe(`username: ${DISPLAY_USERNAME}\npassword: ${password}\n`);
+  });
+
   it('converges concurrent missing-field callers on one password', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-concurrent-'));
     const store = createVercelBranchMetadataStore({
@@ -135,7 +205,7 @@ describe('Vercel display credentials', () => {
     ]);
 
     expect(first.credentials).toEqual(second.credentials);
-    expect([first.generated, second.generated].sort()).toEqual([false, true]);
+    expect([first.generated, second.generated].sort()).toEqual([true, true]);
   });
 
   it('prints exactly the two labeled credential lines through the CLI', async () => {
@@ -328,7 +398,9 @@ describe('Vercel display credentials', () => {
           cwd: '/vercel/sandbox',
           name: identity.name,
           writeFiles: vi.fn(async () => {}),
-          runCommand: vi.fn(async () => ({ exitCode: 0 })),
+          runCommand: vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
+            ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+            : { exitCode: 0 }),
         }) as unknown as VercelSandboxHandle),
       } as unknown as VercelLifecycle,
       terminal,
@@ -750,7 +822,9 @@ describe('Vercel display credentials', () => {
       status: 'running',
       tags: { ...identity.tags },
       writeFiles: vi.fn(async () => {}),
-      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+      runCommand: vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
+        ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+        : { exitCode: 0 }),
       domain: (port: number) => `https://sandbox.example/${port}`,
     } as unknown as VercelSandboxHandle;
     const lifecycle = {

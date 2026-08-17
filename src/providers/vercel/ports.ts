@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 export const DEVBOX_NOVNC_PROXY_PORT = 6080;
 export const DEVBOX_VNC_PORT = 5900;
+export const DEVBOX_NOVNC_INTERNAL_PORT = 6081;
 export const MAX_VERCEL_SANDBOX_PORTS = 15;
 
 export interface ParsedDevcontainerPorts {
@@ -29,6 +30,9 @@ export function assertSdkPorts(ports: number[]): number[] {
     }
     if (port === DEVBOX_VNC_PORT) {
       throw new VercelPortsError(`SDK ports input contains ${DEVBOX_VNC_PORT}; this port is forbidden/private`);
+    }
+    if (port === DEVBOX_NOVNC_INTERNAL_PORT) {
+      throw new VercelPortsError(`SDK ports input contains ${DEVBOX_NOVNC_INTERNAL_PORT}; this noVNC port is internal/private`);
     }
     resolved.add(port);
   }

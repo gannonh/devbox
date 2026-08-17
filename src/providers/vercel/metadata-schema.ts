@@ -23,6 +23,7 @@ export interface VercelResidualMetadata {
 export interface VercelDisplayCredentials {
   username: 'devbox';
   password: string;
+  rotating?: boolean;
 }
 
 export interface VercelCreateConfiguration {
@@ -302,7 +303,12 @@ function parseTags(value: unknown): VercelIdentityTags {
 
 function parseDisplayCredentials(value: unknown): VercelDisplayCredentials {
   const credentials = expectRecord(value, 'Vercel display credentials');
-  assertExactKeys(credentials, ['username', 'password'], ['username', 'password'], 'Vercel display credentials');
+  assertExactKeys(
+    credentials,
+    ['username', 'password', 'rotating'],
+    ['username', 'password'],
+    'Vercel display credentials',
+  );
   if (credentials.username !== 'devbox') {
     throw new Error('Vercel display credentials username must be devbox');
   }
@@ -310,7 +316,14 @@ function parseDisplayCredentials(value: unknown): VercelDisplayCredentials {
   if (!/^[A-Za-z0-9_-]+$/.test(password)) {
     throw new Error('Metadata displayCredentials.password must use URL-safe characters');
   }
-  return { username: 'devbox', password };
+  if (credentials.rotating !== undefined && typeof credentials.rotating !== 'boolean') {
+    throw new Error('Metadata displayCredentials.rotating must be a boolean');
+  }
+  return {
+    username: 'devbox',
+    password,
+    ...(credentials.rotating === undefined ? {} : { rotating: credentials.rotating }),
+  };
 }
 
 function parseResidual(value: unknown): VercelResidualMetadata {
