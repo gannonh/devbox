@@ -37,6 +37,7 @@ import {
   type GitHubSourcePlan,
 } from './source.js';
 import { redactSecrets } from './redaction.js';
+import { assertSdkPorts, resolveDevcontainerPorts } from './ports.js';
 import type { ShellRunner } from '../../lib/shell.js';
 
 export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 30 * 60 * 1000;
@@ -142,6 +143,7 @@ export interface VercelLifecycleOptions {
   repoRoot: string;
   branch?: string;
   packageVersion?: string;
+  ports?: number[];
   env?: Record<string, string | undefined>;
   credentials?: VercelCredentials;
   credentialOptions?: Omit<CredentialResolutionOptions, 'repoRoot' | 'env'>;
@@ -213,14 +215,20 @@ interface PreparedContext {
 
 export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLifecycle {
   let contextPromise: Promise<PreparedContext> | undefined;
+  let portsPromise: Promise<number[]> | undefined;
   const getContext = (): Promise<PreparedContext> => {
     contextPromise ??= prepareContext(options);
     return contextPromise;
+  };
+  const getPorts = (): Promise<number[]> => {
+    portsPromise ??= resolvePorts(options);
+    return portsPromise;
   };
 
   return {
     up: async () => {
       const context = await getContext();
+      const ports = await getPorts();
       const metadataStore = requireMetadataStore(context);
       const identity = requireIdentity(context);
       const source = requireSource(context);
@@ -237,6 +245,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           name: effectiveIdentity.name,
           source: source.source,
           timeoutMs: context.timeoutMs,
+          ports,
           tags: { ...effectiveIdentity.tags },
           onCreate: async (sandbox) => {
             createdSandbox = sandbox;
@@ -647,6 +656,12 @@ function lifecycleSecrets(context: PreparedContext): string[] {
 
 function redactLifecycleFailure(error: unknown, secrets: readonly string[]): string {
   return redactSecrets(error, secrets).replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+async function resolvePorts(options: VercelLifecycleOptions): Promise<number[]> {
+  return options.ports === undefined
+    ? (await resolveDevcontainerPorts(options.repoRoot)).ports
+    : assertSdkPorts([...options.ports]);
 }
 
 async function prepareContext(options: VercelLifecycleOptions): Promise<PreparedContext> {

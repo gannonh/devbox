@@ -341,9 +341,8 @@ describe('Vercel provider', () => {
     const first = provider.up(request({ branch: 'feature/one' }));
     await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
     const second = provider.up(request({ branch: 'feature/two' }));
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledTimes(2));
     expect(confirmation).toHaveBeenCalledOnce();
-    expect(entered).toHaveBeenCalledTimes(2);
     release();
     await expect(Promise.all([first, second])).resolves.toEqual([
       { exitCode: 0 },

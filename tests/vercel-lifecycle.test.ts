@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -10,6 +10,7 @@ import {
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import {
   createVercelLifecycle,
+  DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
   VercelLifecycleError,
 } from '../src/providers/vercel/lifecycle.js';
 import { parseVercelImageReference, VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
@@ -68,6 +69,79 @@ function sandbox(): VercelSandboxHandle {
 }
 
 describe('Vercel lifecycle', () => {
+  it('keeps stop, remove, and list working when devcontainer ports are malformed', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-malformed-'));
+    await mkdir(join(repoRoot, '.devcontainer'));
+    await writeFile(join(repoRoot, '.devcontainer', 'devcontainer.json'), '{ "forwardPorts": [ }');
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-malformed-state-'));
+    const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
+    const handle = sandbox();
+    const identity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+    });
+    await metadata.write({
+      teamId: credentials.teamId,
+      projectId: credentials.projectId,
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: { ...identity.tags },
+      },
+      sandboxId: handle.name,
+      configuration: {
+        imageReference: VERCEL_IMAGE_PIN.reference,
+        sourceUrl: source.source.url,
+        sourceRevision: source.source.revision,
+        requestedBranch: source.requestedBranch,
+        needsBranchSetup: source.needsBranchSetup,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
+      },
+    });
+    let deleted = false;
+    const client = {
+      get: vi.fn(async () => {
+        if (deleted) throw Object.assign(new Error('not found'), { notFound: true });
+        return handle;
+      }),
+      getOrCreate: vi.fn(async () => handle),
+      listSandboxes: vi.fn(async () => [{
+        name: handle.name,
+        persistent: true,
+        status: 'running' as const,
+        image: VERCEL_IMAGE_PIN.reference,
+        tags: { ...identity.tags },
+      }]),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      deleteSandbox: vi.fn(async () => { deleted = true; }),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      metadataStore: metadata,
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    await expect(lifecycle.stop()).resolves.toMatchObject({ name: handle.name });
+    await expect(lifecycle.list()).resolves.toEqual([
+      expect.objectContaining({ name: handle.name }),
+    ]);
+    await expect(lifecycle.remove()).resolves.toMatchObject({ verified: true });
+    await expect(lifecycle.up()).rejects.toThrow(/devcontainer\.json.*invalid JSONC.*line/);
+  });
+
   it('fails closed when a returned Sandbox omits its image before metadata persistence', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-image-missing-'));
     const metadata = createVercelMetadataStore({ stateHome, repoKey: source.remote.canonical });
