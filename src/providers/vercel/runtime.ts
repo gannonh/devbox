@@ -51,7 +51,7 @@ export interface PrepareSandboxRuntimeOptions {
 export async function prepareSandboxRuntime(
   options: PrepareSandboxRuntimeOptions,
 ): Promise<VercelSetupStatus | null> {
-  const hostEnvPath = resolveDevboxEnv(options.repoRoot, options.env, options.hostHome);
+  const hostEnvPath = resolveDevboxEnv(options.repoRoot, options.env);
   let content: Buffer;
   try {
     content = await readFile(hostEnvPath);

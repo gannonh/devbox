@@ -1,24 +1,21 @@
 /**
  * Environment resolution for DEVBOX_ENV and GH_TOKEN.
  *
- * DEVBOX_ENV: explicit env var, else $HOME/dotfiles/repos/<repoName>/.env
+ * DEVBOX_ENV: explicit env var, else the repo-local .env
  * GH_TOKEN: explicit GH_TOKEN, else GITHUB_TOKEN, else `gh auth token`
  */
-import { basename } from 'node:path';
+import { join } from 'node:path';
 import type { ShellRunner } from '../../lib/shell.js';
 
 /**
  * Resolve the .env file path for the repo.
- * Priority: DEVBOX_ENV env var > $HOME/dotfiles/repos/<repoName>/.env
+ * Priority: DEVBOX_ENV env var > <repoRoot>/.env
  */
 export function resolveDevboxEnv(
   repoRoot: string,
   env: Record<string, string | undefined>,
-  home: string = process.env.HOME ?? '',
 ): string {
-  if (env.DEVBOX_ENV) return env.DEVBOX_ENV;
-  const repoName = basename(repoRoot);
-  return `${home}/dotfiles/repos/${repoName}/.env`;
+  return env.DEVBOX_ENV ?? join(repoRoot, '.env');
 }
 
 /**

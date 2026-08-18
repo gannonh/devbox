@@ -183,7 +183,7 @@ flowchart LR
   escape hatch), and copying uncommitted `.devbox/` + `.devcontainer/` into a
   worktree when `devcontainer.json` is missing.
 - **`providers/local/env.ts`** — resolve `DEVBOX_ENV` (explicit env, else
-  `$HOME/dotfiles/repos/<repo>/.env`); resolve `GH_TOKEN` (explicit env, else
+  the repository-local `.env`); resolve `GH_TOKEN` (explicit env, else
   `gh auth token`).
 - **`lib/display.ts`** — `hyperlink(url, text)` OSC 8 emitter.
 - **`lib/lockfile.ts`** — given a dir, return `bun`/`pnpm`/`npm`/`none` based

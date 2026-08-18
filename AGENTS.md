@@ -2,7 +2,7 @@
 
 ## Vercel credentials and real UAT
 
-- The worktree `.env` is a local/symlinked file (`npm run worktree:setup` links it); linking does **not** export variables into the caller's shell. Never infer credential absence from bare `process.env` in a process that did not explicitly load `.env`.
+- Devbox resolves `.env` to the repository-local file by default; `DEVBOX_ENV` is the explicit override. `npm run worktree:setup` never copies or links environment files. Loading a file does **not** export variables into the caller's shell, so use an explicit child shell when needed. Never infer credential absence from bare `process.env` in a process that did not load the intended file.
 - For local commands that need `.env`, load it only in the child shell and never print values or pass secrets in argv:
   ```bash
   (set -a; . "$PWD/.env"; set +a; <command>)
