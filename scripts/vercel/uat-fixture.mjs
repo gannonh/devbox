@@ -158,26 +158,30 @@ async function runInitial(refresh) {
   });
 </script>
 `);
-    await writeFile(join(workspace, 'electron-entry.mjs'), `import { app, BrowserWindow } from 'electron';
+    await writeFile(join(workspace, 'electron-entry.cjs'), `const { app, BrowserWindow } = require('electron');
 
 const url = process.env.UAT_URL;
 let window;
-try {
-  await app.whenReady();
-  window = new BrowserWindow({ show: false });
-  await window.loadURL(url);
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const state = await window.webContents.executeJavaScript('document.body.dataset.uat || ""');
-    if (state === 'ok') process.exitCode = 0;
-    if (state === 'ok' || state === 'failed') break;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+async function main() {
+  try {
+    await app.whenReady();
+    window = new BrowserWindow({ show: false });
+    await window.loadURL(url);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const state = await window.webContents.executeJavaScript('document.body.dataset.uat || ""');
+      if (state === 'ok') process.exitCode = 0;
+      if (state === 'ok' || state === 'failed') break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } catch {
+    process.exitCode = 1;
+  } finally {
+    window?.destroy();
+    app.exit(process.exitCode ?? 1);
   }
-} catch {
-  process.exitCode = 1;
-} finally {
-  window?.destroy();
-  app.exit(process.exitCode ?? 1);
 }
+
+void main();
 `);
 
     vite = spawn(join(workspace, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', '4173'], {
@@ -199,7 +203,9 @@ try {
     await stopProcess(chromium);
 
     electron = spawn(join(workspace, 'node_modules/.bin/electron'), [
-      'electron-entry.mjs',
+      '--no-sandbox',
+      '--disable-gpu',
+      'electron-entry.cjs',
     ], {
       cwd: workspace,
       env: { ...process.env, UAT_URL: 'http://127.0.0.1:4173/?client=electron' },

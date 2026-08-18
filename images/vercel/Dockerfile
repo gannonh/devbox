@@ -167,6 +167,8 @@ RUN set -eux; \
       libatk-bridge2.0-0t64 \
       libatk1.0-0t64 \
       libatspi2.0-0t64 \
+      libgbm1 \
+      libgtk-3-0t64 \
       libnspr4 \
       libnss3 \
       libxkbcommon0 \

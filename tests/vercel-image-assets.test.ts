@@ -28,6 +28,8 @@ describe('Vercel image assets', () => {
     expect(dockerfile).toContain('x11vnc');
     expect(dockerfile).toContain('novnc');
     expect(dockerfile).toContain('chromium');
+    expect(dockerfile).toContain('libgbm1');
+    expect(dockerfile).toContain('libgtk-3-0t64');
     expect(dockerfile).not.toMatch(/(VERCEL_TOKEN|GH_TOKEN|PASSWORD=|SECRET=|COPY .*\\.env)/i);
   });
 

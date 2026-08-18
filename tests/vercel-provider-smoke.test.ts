@@ -531,6 +531,10 @@ describe('Vercel provider smoke configuration', () => {
     expect(source).toContain("readFile(new URL('./uat-fixture.mjs', import.meta.url)");
     expect(fixture).toContain("electron: '31.7.7'");
     expect(fixture).toContain("vite: '5.4.20'");
+    expect(fixture).toContain("electron-entry.cjs");
+    expect(fixture).toContain("require('electron')");
+    expect(fixture).toContain("'--no-sandbox'");
+    expect(fixture).toContain("'--disable-gpu'");
     expect(fixture).toContain("git', ['push'");
   });
 });
