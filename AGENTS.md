@@ -16,5 +16,7 @@
   gh pr checks <number> --watch
   ```
 - Before calling UAT blocked, check `gh secret list` (names only) and the PR check reason. `skipping` means the authorization label is absent; it is not evidence that credentials are missing. Only report missing credentials after the authorized workflow reaches its configuration gate and fails.
-- Never expose secret values from `.env`, GitHub Actions, command output, logs, evidence, or metadata.
+- Never expose secret values from `.env`, `.env.local`, GitHub Actions, command output, logs, evidence, or metadata.
+- For local linked-project Sandbox UAT, reuse the disposable linked fixture when present at `/Volumes/EVO/dev/uat-runs/devbox/5-core-vercel`: source its `.env.local` in the same child shell before invoking the CLI/SDK, keep `.vercel/project.json` local, and clean up the Sandbox/snapshots after the run. Do not pass `--token` in argv.
+- Name new disposable Vercel test projects with the `uat_` prefix (for example, `uat_devbox`) so cleanup can find them as a group. Keep the verified legacy consumer project name unchanged until its replacement is fully re-verified; do not rename it speculatively.
 
