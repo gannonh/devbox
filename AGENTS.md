@@ -8,6 +8,7 @@
   (set -a; . "$PWD/.env"; set +a; <command>)
   ```
 - The canonical private provider smoke is GitHub Actions, not a bare local credential check. Repository secrets are mapped by the workflow from `VERCEL_CONSUMER_*` and `DEVBOX_GITHUB_FIXTURE_*` into the smoke process's generic names.
+- `vercel link` supplies only the team/project scope. The CLI reuses the Vercel SDK's valid local auth cache; device authorization is only expected when no explicit/OIDC credential or unexpired cache is available. This is independent of the requested branch.
 - A credentialed PR smoke is intentionally skipped until the repository owner applies the exact current-head label:
   ```bash
   head_sha="$(gh pr view <number> --json headRefOid -q .headRefOid)"

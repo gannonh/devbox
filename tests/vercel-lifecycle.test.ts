@@ -44,10 +44,10 @@ const source: GitHubSourcePlan = {
   warning: 'remote-only warning',
 };
 
-function sandbox(): VercelSandboxHandle {
+function sandbox(branch = source.requestedBranch): VercelSandboxHandle {
   const identity = createVercelIdentity({
     remote: source.remote.canonical,
-    branch: source.requestedBranch,
+    branch,
     packageVersion: '0.1.2',
     scope: { teamId: credentials.teamId, projectId: credentials.projectId },
   });
@@ -283,6 +283,7 @@ describe('Vercel lifecycle', () => {
         await request.onCreate?.(handle);
         return handle;
       }),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
       get: vi.fn(async () => handle),
       listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
@@ -325,6 +326,7 @@ describe('Vercel lifecycle', () => {
         await request.onCreate?.(handle);
         return handle;
       }),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
       get: vi.fn(async () => handle),
       listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
@@ -1605,7 +1607,7 @@ describe('Vercel lifecycle', () => {
     expect(client.runCommand).not.toHaveBeenCalled();
   });
 
-  it('creates a named persistent sandbox and switches only a missing remote branch', async () => {
+  it('creates a named persistent sandbox and checks out the requested branch', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox();
@@ -1635,7 +1637,7 @@ describe('Vercel lifecycle', () => {
     expect(notices).toEqual([source.warning]);
     expect(client.runCommand).toHaveBeenCalledWith(handle, {
       cmd: 'git',
-      args: ['switch', '--create', source.requestedBranch, '--'],
+      args: ['switch', '--force-create', source.requestedBranch, '--'],
       cwd: '/vercel/sandbox/repo',
     });
     expect(requests[0]).toMatchObject({
@@ -1653,6 +1655,46 @@ describe('Vercel lifecycle', () => {
         sourceRevision: 'main',
         needsBranchSetup: true,
       }),
+    });
+  });
+
+  it('checks out an existing remote branch after a detached source clone', async () => {
+    const existingSource: GitHubSourcePlan = {
+      ...source,
+      requestedBranch: 'main',
+      requestedBranchExists: true,
+      needsBranchSetup: false,
+      source: { ...source.source, revision: 'main' },
+    };
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-existing-'));
+    const metadata = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: existingSource.remote.canonical,
+      branch: existingSource.requestedBranch,
+    });
+    const handle = sandbox(existingSource.requestedBranch);
+    const client = {
+      getOrCreate: vi.fn(async (request) => {
+        await request.onCreate?.(handle);
+        return handle;
+      }),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      repoRoot: '/repo',
+      branch: existingSource.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: existingSource,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.up()).resolves.toBe(handle);
+    expect(client.runCommand).toHaveBeenCalledWith(handle, {
+      cmd: 'git',
+      args: ['switch', '--force-create', 'main', '--'],
+      cwd: '/vercel/sandbox/repo',
     });
   });
 });

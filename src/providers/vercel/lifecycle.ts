@@ -245,7 +245,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           tags: { ...effectiveIdentity.tags },
           onCreate: async (sandbox) => {
             createdSandbox = sandbox;
-            if (source.needsBranchSetup) await switchToRequestedBranch(sandbox, context);
+            await switchToRequestedBranch(sandbox, context);
           },
         });
         let sandbox: VercelSandboxHandle;
@@ -883,7 +883,7 @@ async function switchToRequestedBranch(
   const source = requireSource(context);
   const result = await context.client.runCommand(sandbox, {
     cmd: 'git',
-    args: ['switch', '--create', source.requestedBranch, '--'],
+    args: ['switch', '--force-create', source.requestedBranch, '--'],
     cwd: resolveVercelRepositoryCwd(sandbox.cwd, source.remote.repository),
   });
   if (result.exitCode === 0) return;

@@ -95,8 +95,9 @@ EXAMPLES
 VERCEL CORE
   Uses the authenticated GitHub origin; local dirty files and unpushed commits
   are not copied. First use confirms the displayed team/project in a TTY.
-  Without a complete Vercel credential triad, device auth prints the verification
-  URL and user code. Ctrl-C is sent to the remote process. Ctrl-] detaches without stopping it.
+  Without a complete credential triad, OIDC token, or cached Vercel auth, device
+  auth prints the verification URL and user code. Ctrl-C is sent to the remote process.
+  Ctrl-] detaches without stopping it.
   --url prints labeled noVNC and public app routes; --open opens authenticated noVNC.
   --password retrieves Vercel display credentials; the local provider reports
   this action as unsupported.`;

@@ -756,6 +756,7 @@ describe('Vercel display credentials', () => {
         await request.onCreate?.(handle);
         return handle;
       }),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
       get: vi.fn(async () => handle),
       listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => [{
