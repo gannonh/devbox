@@ -20,7 +20,7 @@ npx @gannonh/devbox init      # scaffold .devbox/ + .devcontainer/ config
 npx @gannonh/devbox my-branch # boot a box for that branch, drop into a shell
 ```
 
-Open the headed display in your browser (the `init` output and the ready banner show the URL, of the form `http://<container>.orb.local:6080/vnc.html`).
+Open the headed display in your browser (the `init` output and the ready banner show the URL, of the form `http://<container>.orb.local:6080/vnc.html`). Vercel display routes require HTTP Basic Auth; use `--password` for the generated credentials rather than putting them in a URL.
 
 ## What it does
 
@@ -48,19 +48,22 @@ npx @gannonh/devbox <branch> --attach                # re-enter a running box
 npx @gannonh/devbox <branch> --stop                  # stop (keeps worktree + container)
 npx @gannonh/devbox <branch> --rm                    # remove container + worktree + branch
 npx @gannonh/devbox <branch> --url                   # print current provider routes
+npx @gannonh/devbox --provider vercel <branch> --password # print Vercel display credentials
 npx @gannonh/devbox <branch> --open                  # open the first route in a browser
 npx @gannonh/devbox --list                           # list local devbox containers
 npx @gannonh/devbox --provider local --list          # filter list by provider
 
-# Vercel is core support and uses only the authenticated GitHub origin.
+# Vercel is explicit and uses only the authenticated GitHub origin.
 # Dirty files and unpushed commits are not copied. First use displays the
-# Vercel team/project and requires explicit confirmation in a TTY. Without a
-# complete VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID triad, device auth
-# prints the verification URL and user code (and opens it when requested).
+# Vercel team/project and requires explicit confirmation in a TTY. Credential
+# precedence is complete VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID, then
+# VERCEL_OIDC_TOKEN, then device auth scoped by .vercel/project.json. Confirmed
+# scope is reused from mode-0600 XDG state.
 npx @gannonh/devbox --provider vercel <branch>
 
 # In a Vercel terminal, Ctrl-C reaches the remote process and Ctrl-] detaches
-# without stopping the sandbox. `--url` prints the noVNC pairing link.
+# without stopping the sandbox. `--url` prints bare HTTPS routes and
+# `--password` prints exactly `username: devbox` and `password: <secret>`.
 ```
 
 ## What `init` creates
@@ -95,6 +98,11 @@ To switch, edit `.devbox/provision.sh` (comment-toggle the blocks) and remove th
 The digest-pinned Vercel Sandbox image, publisher/consumer smoke workflow,
 reviewed promotion process, rollback, and orphan cleanup are documented in the
 [`Vercel image supply chain runbook`](docs/runbooks/vercel-image-supply-chain.md).
+Provider lifecycle, public-port policy, benchmark, and credentialed UAT are
+documented in the [`Vercel provider convergence runbook`](docs/runbooks/vercel-provider-convergence.md)
+and [`provider reference`](docs/reference/vercel-provider.md). Only configured
+`forwardPorts` plus authenticated noVNC `6080` are public; VNC `5900` is not
+exposed. Setup status and retry live under `/vercel/.devbox/runtime/`.
 The live image workflow is secret-gated and never auto-promotes upstream drift.
 
 ## Real Vercel provider smoke

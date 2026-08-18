@@ -1,104 +1,84 @@
 #!/usr/bin/env node
 /**
- * Token pairing reverse proxy for noVNC.
+ * Basic-Auth reverse proxy for noVNC.
  *
- * The upstream websockify listener is bound to loopback and has no credentials;
- * this process is the only exposed listener. A valid `token` query param, cookie,
- * or form POST pairs the browser; later requests (including WebSocket upgrades)
- * use the cookie.
+ * The upstream websockify listener is loopback-only. This process is the only
+ * exposed listener and authenticates both HTTP and WebSocket traffic before
+ * forwarding it. Credentials never enter a URL, cookie, form, or upstream
+ * request header.
  */
 import http from 'node:http';
 import net from 'node:net';
 import { timingSafeEqual } from 'node:crypto';
 
 const listenHost = process.env.DEVBOX_NOVNC_BIND ?? '0.0.0.0';
-const listenPort = Number(process.env.DEVBOX_NOVNC_PORT ?? '6081');
+const listenPort = Number(process.env.DEVBOX_NOVNC_PORT ?? '6080');
 const upstreamHost = process.env.DEVBOX_NOVNC_UPSTREAM_HOST ?? '127.0.0.1';
-const upstreamPort = Number(process.env.DEVBOX_NOVNC_INTERNAL_PORT ?? '6080');
-const token = process.env.DEVBOX_NOVNC_PASSWORD;
-const COOKIE = 'devbox_novnc';
+const upstreamPort = Number(process.env.DEVBOX_NOVNC_INTERNAL_PORT ?? '6081');
+const username = 'devbox';
+const password = process.env.DEVBOX_NOVNC_PASSWORD;
+const realm = 'devbox';
 
-if (!token) {
+if (!password) {
   console.error('[devbox-auth-proxy] DEVBOX_NOVNC_PASSWORD is required');
   process.exit(1);
 }
 
-const expected = Buffer.from(token);
+const expectedUsername = Buffer.from(username);
+const expectedPassword = Buffer.from(password);
 
-function matchesToken(value) {
-  if (!value) return false;
-  const supplied = Buffer.from(value);
+function matches(value, expected) {
+  const supplied = Buffer.from(value ?? '');
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
-function queryToken(url) {
-  return new URL(url, 'http://devbox').searchParams.get('token') ?? undefined;
-}
-
-function cookieToken(header) {
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const [name, ...rest] = part.trim().split('=');
-    if (name === COOKIE) return decodeURIComponent(rest.join('='));
+function basicCredentials(request) {
+  const header = request.headers.authorization;
+  if (typeof header !== 'string' || !/^Basic\s+/i.test(header)) return undefined;
+  try {
+    const decoded = Buffer.from(header.replace(/^Basic\s+/i, ''), 'base64').toString('utf8');
+    const separator = decoded.indexOf(':');
+    if (separator < 0) return undefined;
+    return {
+      username: decoded.slice(0, separator),
+      password: decoded.slice(separator + 1),
+    };
+  } catch {
+    return undefined;
   }
 }
 
-function isAuthorized(request, bodyToken) {
-  return matchesToken(queryToken(request.url ?? '/'))
-    || matchesToken(cookieToken(request.headers.cookie))
-    || matchesToken(bodyToken);
+function isAuthorized(request) {
+  const credentials = basicCredentials(request);
+  if (!credentials) return false;
+  const usernameMatches = matches(credentials.username, expectedUsername);
+  const passwordMatches = matches(credentials.password, expectedPassword);
+  return usernameMatches && passwordMatches;
 }
 
-function cookieHeader() {
-  return `${COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax`;
-}
-
-function withCookie(headers) {
-  const forwarded = { ...headers };
-  const existing = forwarded['set-cookie'];
-  forwarded['set-cookie'] = existing
-    ? [...(Array.isArray(existing) ? existing : [existing]), cookieHeader()]
-    : cookieHeader();
-  return forwarded;
-}
-
-function pairingForm() {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>devbox display</title>
-  <style>
-    body { font: 16px system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; }
-    form { display: flex; gap: 0.5rem; }
-    input, button { font: inherit; padding: 0.4rem 0.6rem; }
-  </style>
-</head>
-<body>
-  <form method="post" action="/">
-    <input name="token" type="text" autocomplete="one-time-code" placeholder="Access code" autofocus>
-    <button type="submit">Open display</button>
-  </form>
-</body>
-</html>
-`;
-}
-
-function showForm(response) {
-  response.writeHead(200, {
-    'content-type': 'text/html; charset=utf-8',
+function authHeaders() {
+  return {
+    'www-authenticate': `Basic realm="${realm}"`,
+    'content-type': 'text/plain; charset=utf-8',
     'cache-control': 'no-store',
-  });
-  response.end(pairingForm());
+  };
 }
 
-function readBody(request) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    request.on('data', (chunk) => chunks.push(chunk));
-    request.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    request.on('error', reject);
-  });
+function rejectHttp(response) {
+  response.writeHead(401, authHeaders());
+  response.end('Authentication required\n');
+}
+
+function rejectUpgrade(socket) {
+  socket.write(
+    'HTTP/1.1 401 Unauthorized\r\n'
+      + 'WWW-Authenticate: Basic realm="devbox"\r\n'
+      + 'Content-Type: text/plain; charset=utf-8\r\n'
+      + 'Cache-Control: no-store\r\n'
+      + 'Connection: close\r\n\r\n'
+      + 'Authentication required\n',
+  );
+  socket.destroy();
 }
 
 function stripHttpHeaders(headers) {
@@ -106,6 +86,7 @@ function stripHttpHeaders(headers) {
   for (const name of [
     'authorization',
     'connection',
+    'cookie',
     'keep-alive',
     'proxy-authenticate',
     'proxy-authorization',
@@ -121,6 +102,9 @@ function stripHttpHeaders(headers) {
 function stripWebSocketHeaders(headers) {
   const forwarded = { ...headers };
   delete forwarded.authorization;
+  delete forwarded.cookie;
+  delete forwarded['proxy-authenticate'];
+  delete forwarded['proxy-authorization'];
   forwarded.host = `${upstreamHost}:${upstreamPort}`;
   return forwarded;
 }
@@ -136,7 +120,7 @@ function proxyHttp(request, response) {
       headers: stripHttpHeaders(request.headers),
     },
     (upstreamResponse) => {
-      response.writeHead(upstreamResponse.statusCode ?? 502, withCookie(upstreamResponse.headers));
+      response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
       upstreamResponse.pipe(response);
     },
   );
@@ -150,39 +134,16 @@ function proxyHttp(request, response) {
 }
 
 const server = http.createServer((request, response) => {
-  void (async () => {
-    let bodyToken;
-    if (request.method === 'POST') {
-      bodyToken = new URLSearchParams(await readBody(request)).get('token') ?? undefined;
-    }
-    if (!isAuthorized(request, bodyToken)) {
-      showForm(response);
-      return;
-    }
-    if (request.method === 'POST') {
-      response.writeHead(303, {
-        location: '/vnc.html?autoconnect=1',
-        'set-cookie': cookieHeader(),
-      });
-      response.end();
-      return;
-    }
-    proxyHttp(request, response);
-  })().catch((error) => {
-    console.error(`[devbox-auth-proxy] request error: ${error.message}`);
-    if (!response.headersSent) response.writeHead(500);
-    response.end();
-  });
+  if (!isAuthorized(request)) {
+    rejectHttp(response);
+    return;
+  }
+  proxyHttp(request, response);
 });
 
 server.on('upgrade', (request, socket, head) => {
   if (!isAuthorized(request)) {
-    socket.write(
-      'HTTP/1.1 401 Unauthorized\r\n'
-        + 'Content-Type: text/plain\r\n'
-        + 'Connection: close\r\n\r\nAuthentication required\n',
-    );
-    socket.destroy();
+    rejectUpgrade(socket);
     return;
   }
 
@@ -196,8 +157,7 @@ server.on('upgrade', (request, socket, head) => {
         lines.push(`${name}: ${value}`);
       }
     }
-    // websockify returns the 101 Switching Protocols response through this
-    // byte-for-byte tunnel after the authenticated request is forwarded.
+    // The upstream returns the 101 Switching Protocols response through this tunnel.
     upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
     if (head.length > 0) upstream.write(head);
     socket.pipe(upstream);

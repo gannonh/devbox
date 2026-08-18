@@ -17,6 +17,10 @@ function provider(name: 'local' | 'vercel'): DevboxProvider {
     remove: vi.fn(action),
     list: vi.fn(action),
     url: vi.fn(action),
+    getDisplayCredentials: vi.fn(async () => ({
+      supported: false as const,
+      message: 'unsupported',
+    })),
   };
 }
 
@@ -32,7 +36,7 @@ function streams(): { stdin: PassThrough; stdout: PassThrough; stderr: PassThrou
 }
 
 describe('CLI provider routing', () => {
-  it('rejects --password as an unknown branch flag', async () => {
+  it('returns the local provider unsupported result for --password by default', async () => {
     const io = streams();
     const code = await dispatch(['feature', '--password'], io, {
       repoRoot: '/repo',
@@ -40,7 +44,7 @@ describe('CLI provider routing', () => {
     });
 
     expect(code).toBe(2);
-    expect(io.output().stderr.toLowerCase()).toContain('unknown');
+    expect(io.output().stderr).toContain('unsupported');
   });
 
   it('selects the local provider when --provider is omitted', async () => {
@@ -108,13 +112,32 @@ describe('CLI provider routing', () => {
     expect(vercel.list).toHaveBeenCalledTimes(1);
   });
 
+  it('retrieves labeled display credentials as a first-class action', async () => {
+    const local = provider('local');
+    local.getDisplayCredentials = vi.fn(async () => ({
+      supported: true as const,
+      username: 'display-user',
+      password: 'display-pass',
+    }));
+    const io = streams();
+
+    const code = await dispatch(['feature', '--password'], io, {
+      repoRoot: '/repo',
+      registry: { local, vercel: provider('vercel') },
+      tty: false,
+    });
+
+    expect(code).toBe(0);
+    expect(io.output().stdout).toBe('username: display-user\npassword: display-pass\n');
+    expect(local.getDisplayCredentials).toHaveBeenCalledWith(expect.objectContaining({ branch: 'feature' }));
+  });
+
   it('rejects unsupported, missing, conflicting, and misplaced arguments', async () => {
     const cases: Array<{ args: string[]; message: string }> = [
       { args: ['feature', '--provider'], message: 'missing provider value' },
       { args: ['feature', '--provider', 'aws'], message: 'unsupported provider' },
       { args: ['feature', '--stop', '--rm'], message: 'conflicting action flags' },
       { args: ['feature', '--bogus'], message: 'unknown or misplaced option' },
-      { args: ['feature', '--password'], message: 'unknown or misplaced option' },
       { args: ['--provider', 'local', '--attach'], message: 'branch is required' },
       { args: ['init', '--provider', 'local'], message: 'unknown or misplaced option for init' },
       { args: ['--list', '--password'], message: 'misplaced or unknown flag for --list' },

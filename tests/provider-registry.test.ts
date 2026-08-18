@@ -6,11 +6,17 @@ import {
 } from '../src/providers/registry.js';
 import type {
   DevboxProvider,
+  DisplayCredentialsResult,
   ProviderActionResult,
 } from '../src/providers/types.js';
 
 function stubProvider(name: 'local' | 'vercel'): DevboxProvider {
   const action = async (): Promise<ProviderActionResult> => ({ exitCode: 0 });
+  const credentials = async (): Promise<DisplayCredentialsResult> => ({
+    supported: true,
+    username: 'user',
+    password: 'pass',
+  });
   return {
     name,
     up: async () => action(),
@@ -19,6 +25,7 @@ function stubProvider(name: 'local' | 'vercel'): DevboxProvider {
     remove: async () => action(),
     list: async () => action(),
     url: async () => action(),
+    getDisplayCredentials: async () => credentials(),
   };
 }
 

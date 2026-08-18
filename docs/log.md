@@ -74,3 +74,6 @@
 ## 2026-08-15 (7)
 
 * **Verified phase integration**: Merged the verified provider foundation and Vercel image supply chain, preserved both ADRs and their history during branch convergence, and unblocked the core Vercel workspace lifecycle phase.
+
+## 2026-08-18
+* **Vercel convergence**: Added the provider architecture/reference/runbook bundle and recorded the benchmark, UAT, release, cleanup, and public-port evidence contract for issue [#7](https://github.com/gannonh/devbox/issues/7).

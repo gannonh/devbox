@@ -834,11 +834,11 @@ describe('Vercel provider', () => {
     await expect(provider.url(request({ stdout: urlStdout, open: true, env: { VERCEL_TOKEN: 'new-vercel-token' } }))).resolves.toEqual({ exitCode: 0 });
     expect(urls.join('')).toBe([
       '3000: https://sandbox.example/3000  (public)',
-      '6080: https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1  (noVNC display)',
+      '6080: https://sandbox.example/6080  (noVNC display)',
       '8080: https://sandbox.example/8080  (public)',
       '',
     ].join('\n'));
-    expect(opener).toHaveBeenCalledWith('https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1');
+    expect(opener).toHaveBeenCalledWith('https://sandbox.example/6080');
     currentLifecycle.routes = vi.fn(async () => []);
     await expect(provider.url(request({ env: { VERCEL_TOKEN: 'new-vercel-token' } }))).rejects.toMatchObject({
       code: 'route',

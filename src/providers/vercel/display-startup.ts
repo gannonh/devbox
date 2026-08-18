@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
-  DISPLAY_USERNAME,
   clearDisplayCredentialRotation,
   getDisplayCredentials,
 } from './display-credentials.js';
@@ -159,10 +158,8 @@ export async function startDisplayStack(options: DisplayStartupOptions): Promise
   const start = await runCommand(options, {
     cmd: DISPLAY_START_COMMAND,
     env: {
-      DEVBOX_NOVNC_USER: DISPLAY_USERNAME,
       DEVBOX_NOVNC_PASSWORD: resolution.credentials.password,
-      // The image defaults put unauthenticated websockify on 6080 and the
-      // authenticated proxy on 6081; swap them so only the proxy is public.
+      // Keep the authenticated proxy on public 6080 and websockify on private 6081.
       DEVBOX_NOVNC_PORT: String(DEVBOX_NOVNC_PROXY_PORT),
       DEVBOX_NOVNC_INTERNAL_PORT: String(DEVBOX_NOVNC_INTERNAL_PORT),
     },

@@ -14,7 +14,7 @@
 
 * [Core workspace lifecycle (#5)](https://github.com/gannonh/devbox/issues/5) - unblocked by verified phases #3 and #4.
 * [Full parity and security (#6)](https://github.com/gannonh/devbox/issues/6) - blocked by #5.
-* [Vercel provider convergence (#7)](https://github.com/gannonh/devbox/issues/7) - blocked by #6.
+* [Vercel provider convergence (#7)](https://github.com/gannonh/devbox/issues/7) - approved convergence, UAT, benchmark, release gates, and documentation.
 
 ## Planned
 

@@ -12,8 +12,8 @@ import { basename, join } from 'node:path';
 // Field-name redaction targets exact raw sensitive fields only: a generic parent
 // key like `fixture` must be recursed (its fingerprint subtree is safe evidence),
 // and any *Fingerprint field is a non-reversible hash that must survive.
-const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)/i;
-const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^DEVBOX_GITHUB_FIXTURE_/i;
+const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)/i;
+const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)|^DEVBOX_GITHUB_FIXTURE_/i;
 const isSensitiveField = (name) => !/Fingerprint/i.test(name) && sensitiveFieldName.test(name);
 const secrets = [...new Set(Object.entries(process.env)
   .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === 'string' && value.length > 0)

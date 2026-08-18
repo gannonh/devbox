@@ -70,13 +70,18 @@ describe('Vercel image assets', () => {
     expect(localCheck).toContain('sudo -n true');
   });
 
-  it('pairs noVNC with a URL token for HTTP and WebSocket traffic', async () => {
+  it('uses fixed-user HTTP Basic Auth for HTTP and WebSocket traffic', async () => {
     const proxy = await text(proxyPath);
-    expect(proxy).toContain('token');
-    expect(proxy).toContain('devbox_novnc');
+    expect(proxy).toContain("const username = 'devbox'");
+    expect(proxy).toContain('authorization');
+    expect(proxy).toContain('www-authenticate');
     expect(proxy).toContain('upgrade');
     expect(proxy).toContain('101 Switching Protocols');
     expect(proxy).toContain('timingSafeEqual');
-    expect(proxy).not.toMatch(/www-authenticate/i);
+    expect(proxy).toContain("delete forwarded['proxy-authorization']");
+    expect(proxy).toContain("delete forwarded['proxy-authenticate']");
+    expect(proxy).not.toContain('devbox_novnc');
+    expect(proxy).not.toContain('queryToken');
+    expect(proxy).not.toContain('pairingForm');
   });
 });

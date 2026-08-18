@@ -23,3 +23,6 @@
 
 ## 2026-08-15 (2)
 * **Final cleanup quality correction**: Accepted fail-closed collection discovery, independent final Sandbox/snapshot listings, authoritative delayed snapshot evidence, open-only promotion PR reuse, required resolver evidence writes, and credential-free pinned-SDK list/get/delete coverage.
+
+## 2026-08-18
+* **Provider convergence**: Accepted direct SDK lifecycle, the public digest-pinned image, Basic Auth display access, explicit public-port policy, and benchmark/UAT evidence gates for issue [#7](https://github.com/gannonh/devbox/issues/7).

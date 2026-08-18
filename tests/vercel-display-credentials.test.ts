@@ -4,6 +4,7 @@ import { access, readFile, stat, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { dispatch } from '../src/cli.js';
+import { defaultProviderRegistry } from '../src/providers/registry.js';
 import { createVercelProvider } from '../src/providers/vercel/provider.js';
 import { createVercelBranchMetadataStore, createVercelScopeMetadataStore } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
@@ -15,6 +16,8 @@ import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import {
+  DISPLAY_PASSWORD_BYTES,
+  DISPLAY_PASSWORD_ENCODING,
   DISPLAY_USERNAME,
   generateDisplayPassword,
   getDisplayCredentials,
@@ -158,6 +161,45 @@ describe('Vercel display credentials', () => {
 
     expect(first.credentials).toEqual(second.credentials);
     expect([first.generated, second.generated].sort()).toEqual([true, true]);
+  });
+
+  it('prints exactly the two labeled credential lines through the CLI', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-cli-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/display',
+    });
+    await store.write({});
+    const runner: ShellRunner = {
+      exec: vi.fn(async () => 'git@github.com:Acme/Repo.git'),
+      execQuiet: vi.fn(),
+      spawnInherit: vi.fn(),
+    };
+    const provider = createVercelProvider({ stateHome, runner });
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let stdoutText = '';
+    let stderrText = '';
+    stdout.on('data', (chunk) => { stdoutText += chunk.toString(); });
+    stderr.on('data', (chunk) => { stderrText += chunk.toString(); });
+
+    const code = await dispatch(['--provider', 'vercel', 'feature/display', '--password'], {
+      stdin,
+      stdout,
+      stderr,
+    }, {
+      repoRoot: '/repo',
+      env: {},
+      tty: false,
+      registry: { ...defaultProviderRegistry, vercel: provider },
+    });
+
+    expect(code).toBe(0);
+    const stored = await store.read();
+    expect(stdoutText).toBe(`username: ${DISPLAY_USERNAME}\npassword: ${stored!.displayCredentials!.password}\n`);
+    expect(stderrText).toBe('');
   });
 
   it('redacts the display password from a provider error', async () => {
@@ -661,7 +703,7 @@ describe('Vercel display credentials', () => {
     });
   });
 
-  it('prints the pairing token on noVNC URL surfaces and omits it from list and stop', async () => {
+  it('omits the password from normal list, URL, up, attach, and stop output', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-output-'));
     const remote = 'github.com/acme/repo';
     const branch = 'feature/display';
@@ -760,14 +802,10 @@ describe('Vercel display credentials', () => {
     await provider.up(request({ tty: true }));
 
     expect(outputs).toHaveLength(5);
-    expect(outputs[0]()).not.toContain(password);
-    expect(outputs[1]()).toContain(`token=${password}`);
-    expect(outputs[2]()).toContain(`token=${password}`);
-    expect(outputs[3]()).not.toContain(password);
-    expect(outputs[4]()).toContain(`token=${password}`);
+    expect(outputs.every((readOutput) => !readOutput().includes(password))).toBe(true);
   });
 
-  it('does not advertise Vercel password retrieval as unsupported', async () => {
+  it('advertises Vercel password retrieval and local unsupported behavior', async () => {
     const outputFor = async (args: string[]): Promise<string> => {
       const stdin = new PassThrough();
       const stdout = new PassThrough();
@@ -782,18 +820,22 @@ describe('Vercel display credentials', () => {
     const outputs = await Promise.all([
       outputFor(['--help']),
       outputFor(['feature/display', '--help']),
+      outputFor(['feature/display', '--password', '--help']),
     ]);
 
-    expect(outputs.join('')).not.toContain('--password');
+    expect(outputs.join('')).toContain('--password');
+    expect(outputs.join('')).toContain('local provider reports this action as unsupported');
   });
 
-  it('generates distinct short pairing codes like GEK4-HD6H', () => {
+  it('generates distinct URL-safe passwords with at least 128 bits of entropy', () => {
     const first = generateDisplayPassword();
     const second = generateDisplayPassword();
-    const pairingCode = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
 
-    expect(first).toMatch(pairingCode);
-    expect(second).toMatch(pairingCode);
+    expect(DISPLAY_PASSWORD_BYTES * 8).toBeGreaterThanOrEqual(128);
+    expect(DISPLAY_PASSWORD_ENCODING).toBe('base64url');
+    expect(Buffer.from(first, DISPLAY_PASSWORD_ENCODING)).toHaveLength(DISPLAY_PASSWORD_BYTES);
+    expect(first).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(second).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(second).not.toBe(first);
   });
 });

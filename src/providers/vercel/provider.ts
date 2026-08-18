@@ -50,7 +50,6 @@ import {
 } from './source.js';
 import { recoverMissingBranchSandbox } from './recovery.js';
 import {
-  DisplayCredentialsNotFoundError,
   getDisplayCredentials as resolveDisplayCredentials,
 } from './display-credentials.js';
 import {
@@ -172,7 +171,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
-      await renderVercelReadyBlock(request, sandbox, setupStatus, await displayToken(prepared.branchStore, secrets));
+      await renderVercelReadyBlock(request, sandbox, setupStatus);
       return terminalResult(
         request,
         terminal,
@@ -201,12 +200,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
-      await renderVercelAttachNotice(
-        request,
-        sandbox,
-        setupStatus,
-        await displayToken(prepared.branchStore, secrets),
-      );
+      await renderVercelAttachNotice(request, sandbox, setupStatus);
       return terminalResult(
         request,
         terminal,
@@ -254,8 +248,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         throw new VercelLifecycleError('route_not_found', 'Vercel Sandbox has no routes');
       }
       const labels = await resolveRouteLabels(request.repoRoot);
-      const token = await displayToken(prepared.branchStore, secrets);
-      const renderedRoutes = renderVercelRoutes(routes, labels, token);
+      const renderedRoutes = renderVercelRoutes(routes, labels);
       for (const rendered of renderedRoutes) request.stdout.write(`${rendered.line}\n`);
       if (request.open) {
         const noVnc = renderedRoutes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
@@ -269,6 +262,34 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       }
       return { exitCode: 0 };
     }),
+    getDisplayCredentials: async (request) => {
+      const secrets = secretsFor(request.env);
+      try {
+        const origin = await resolveGitHubSourceOrigin({
+          repoRoot: request.repoRoot,
+          env: request.env,
+          shellRunner: runner,
+        });
+        const branchStore = createBranchStore(
+          origin,
+          normalizeRequestedSourceBranch(request.branch),
+          options,
+        );
+        const resolution = await resolveDisplayCredentials(branchStore);
+        addSecrets(secrets, resolution.credentials.password);
+        return {
+          supported: true,
+          username: resolution.credentials.username,
+          password: resolution.credentials.password,
+        };
+      } catch (error) {
+        throw mapVercelError(error, {
+          action: 'password',
+          branch: request.branch,
+          secrets,
+        });
+      }
+    },
   };
 
   return provider;
@@ -679,19 +700,8 @@ interface RenderedVercelRoute {
 async function renderedRoutesForSandbox(
   sandbox: VercelSandboxHandle,
   repoRoot: string,
-  token: string,
 ): Promise<RenderedVercelRoute[]> {
-  return renderVercelRoutes(sandbox.routes ?? [], await resolveRouteLabels(repoRoot), token);
-}
-
-async function displayToken(
-  store: VercelBranchMetadataStore | undefined,
-  secrets: string[],
-): Promise<string> {
-  if (!store) throw new DisplayCredentialsNotFoundError();
-  const token = (await resolveDisplayCredentials(store)).credentials.password;
-  addSecrets(secrets, token);
-  return token;
+  return renderVercelRoutes(sandbox.routes ?? [], await resolveRouteLabels(repoRoot));
 }
 
 // Labels are cosmetic enrichment on read surfaces. A malformed
@@ -711,9 +721,8 @@ async function renderVercelReadyBlock(
   request: ProviderBranchRequest,
   sandbox: VercelSandboxHandle,
   setupStatus: VercelSetupStatus | null,
-  token: string,
 ): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
+  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot);
   request.stderr.write('Vercel devbox ready\n');
   for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
   request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
@@ -726,9 +735,8 @@ async function renderVercelAttachNotice(
   request: ProviderBranchRequest,
   sandbox: VercelSandboxHandle,
   setupStatus: VercelSetupStatus | null,
-  token: string,
 ): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
+  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot);
   const noVnc = routes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
   request.stderr.write(noVnc
     ? `Vercel devbox resumed; ${noVnc.line}\n`
@@ -740,13 +748,12 @@ async function renderVercelAttachNotice(
 function renderVercelRoutes(
   routes: readonly SandboxRoute[],
   labels: Record<number, string>,
-  token: string,
 ): RenderedVercelRoute[] {
   return [...routes]
     .sort((left, right) => left.port - right.port)
     .map((route) => {
       const safe = assertSafeRouteUrl(route.url);
-      const url = route.port === DEVBOX_NOVNC_PROXY_PORT ? novncPairingUrl(safe, token) : safe;
+      const url = safe;
       const description = route.port === DEVBOX_NOVNC_PROXY_PORT
         ? 'noVNC display'
         : labels[route.port] ? `${labels[route.port]} — public` : 'public';
@@ -756,13 +763,6 @@ function renderVercelRoutes(
         line: `${route.port}: ${url}  (${description})`,
       };
     });
-}
-
-function novncPairingUrl(routeUrl: string, token: string): string {
-  const parsed = new URL('/vnc.html', routeUrl);
-  parsed.searchParams.set('token', token);
-  parsed.searchParams.set('autoconnect', '1');
-  return parsed.toString();
 }
 
 function assertSafeRouteUrl(url: string): string {
@@ -777,6 +777,9 @@ function assertSafeRouteUrl(url: string): string {
   }
   if (parsed.username || parsed.password) {
     throw new VercelProviderError('route', 'Vercel route URL contains embedded credentials', 2);
+  }
+  if (parsed.search || parsed.hash) {
+    throw new VercelProviderError('route', 'Vercel route URL contains query or fragment data', 2);
   }
   return url;
 }

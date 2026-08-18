@@ -80,7 +80,6 @@ describe('Vercel display startup', () => {
     expect(start).toMatchObject({
       cmd: '/usr/local/bin/devbox-start',
       env: {
-        DEVBOX_NOVNC_USER: DISPLAY_USERNAME,
         DEVBOX_NOVNC_PASSWORD: expect.any(String),
         DEVBOX_NOVNC_PORT: String(DEVBOX_NOVNC_PROXY_PORT),
         DEVBOX_NOVNC_INTERNAL_PORT: String(DEVBOX_NOVNC_INTERNAL_PORT),
@@ -90,7 +89,6 @@ describe('Vercel display startup', () => {
       'DEVBOX_NOVNC_INTERNAL_PORT',
       'DEVBOX_NOVNC_PASSWORD',
       'DEVBOX_NOVNC_PORT',
-      'DEVBOX_NOVNC_USER',
     ]);
     expect(start?.env?.DEVBOX_NOVNC_PASSWORD).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(start?.args).toBeUndefined();

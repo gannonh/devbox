@@ -207,9 +207,8 @@ ENV DISPLAY=:99 \
     SCREEN_HEIGHT=1000 \
     SCREEN_DEPTH=24 \
     VNC_PORT=5900 \
-    DEVBOX_NOVNC_INTERNAL_PORT=6080 \
-    DEVBOX_NOVNC_PORT=6081 \
-    DEVBOX_NOVNC_USER=devbox \
+    DEVBOX_NOVNC_INTERNAL_PORT=6081 \
+    DEVBOX_NOVNC_PORT=6080 \
     BROWSER=chromium
 
 # Clear Ubuntu's inherited shell command. Vercel Sandbox still starts all

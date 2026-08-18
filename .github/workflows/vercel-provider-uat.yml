@@ -1,0 +1,194 @@
+name: Vercel provider UAT
+
+# This is the credentialed, owner-triggered end-to-end gate. The fixture
+# command is supplied as a protected secret so it can exercise its own Vite,
+# Electron, localhost OAuth, and authenticated-push contract inside the cloned
+# Sandbox without putting that command or its values in repository files.
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      path:
+        required: false
+        type: string
+        default: both
+    secrets:
+      VERCEL_CONSUMER_TOKEN:
+        required: true
+      VERCEL_CONSUMER_TEAM_ID:
+        required: true
+      VERCEL_CONSUMER_PROJECT_ID:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_TOKEN:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_REPOSITORY:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_BRANCH:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE:
+        required: true
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT:
+        required: true
+      DEVBOX_UAT_PUSH_TOKEN:
+        required: true
+      DEVBOX_UAT_ENV_CONTENT:
+        required: true
+      DEVBOX_UAT_FIXTURE_COMMAND:
+        required: true
+      DEVBOX_UAT_RESUME_COMMAND:
+        required: true
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact 40-character source SHA; empty uses the checked-out commit'
+        required: false
+        type: string
+      path:
+        description: 'Provider smoke path mode'
+        required: false
+        default: both
+        type: choice
+        options: [both]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-provider-uat
+  cancel-in-progress: false
+
+jobs:
+  uat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: vercel-provider-uat
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.event.inputs.source_sha || github.sha }}
+      SMOKE_PATH: ${{ inputs.path || github.event.inputs.path || 'both' }}
+      SMOKE_TIMEOUT_MS: '720000'
+      SMOKE_TOTAL_TIMEOUT_MS: '2400000'
+      SMOKE_OPERATION_TIMEOUT_MS: '30000'
+      SMOKE_COMMAND_TIMEOUT_MS: '60000'
+      SMOKE_TERMINAL_TIMEOUT_MS: '90000'
+      SMOKE_CLEANUP_TIMEOUT_MS: '120000'
+      SMOKE_GITHUB_TIMEOUT_MS: '10000'
+      DEVBOX_UAT_REQUIRED: 'true'
+    steps:
+      - name: Guard default-branch UAT
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_SHA}" =~ ^[a-f0-9]{40}$ ]] || {
+            echo 'SOURCE_SHA must be a full lowercase commit SHA' >&2
+            exit 1
+          }
+          if [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
+            test "${GITHUB_REF_NAME}" = "${{ github.event.repository.default_branch }}" || {
+              echo 'manual UAT runs must use the repository default branch' >&2
+              exit 1
+            }
+          fi
+
+      - name: Checkout exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production adapters
+        run: npm run build
+
+      - name: Prepare evidence directory
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/vercel-provider-uat"
+          mkdir -p "${artifact_dir}"
+          checked_out_sha="$(git rev-parse HEAD)"
+          test "${checked_out_sha}" = "${SOURCE_SHA}"
+          echo "ARTIFACT_DIR=${artifact_dir}" >> "${GITHUB_ENV}"
+          printf '{"schemaVersion":1,"workflow":"vercel-provider-uat","sourceSha":"%s","redacted":false}\n' \
+            "${checked_out_sha}" > "${artifact_dir}/invocation.json"
+
+      # This path proves private source creation, a fresh branch, an interactive
+      # terminal, stop/resume, runtime secret refresh, authenticated push, and
+      # final Sandbox/snapshot/branch removal.
+      - name: Run private-repository provider UAT
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+          DEVBOX_UAT_PUSH_TOKEN: ${{ secrets.DEVBOX_UAT_PUSH_TOKEN }}
+          DEVBOX_UAT_ENV_CONTENT: ${{ secrets.DEVBOX_UAT_ENV_CONTENT }}
+          DEVBOX_UAT_FIXTURE_COMMAND: ${{ secrets.DEVBOX_UAT_FIXTURE_COMMAND }}
+          DEVBOX_UAT_RESUME_COMMAND: ${{ secrets.DEVBOX_UAT_RESUME_COMMAND }}
+          SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/provider-uat.json
+        run: node scripts/vercel/provider-smoke.mjs
+
+      # This independent image path proves all four agents, Chromium, the
+      # fixed-user Basic-Auth HTTP/WebSocket boundary, and the 6080-only public
+      # display policy (VNC 5900 and internal 6081 are never forwarded).
+      - name: Run display, agent, and port UAT
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          SMOKE_ROLE: consumer
+          SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/display-uat.json
+        run: |
+          set -euo pipefail
+          image_ref="$(node --input-type=module -e "import { VERCEL_IMAGE_PIN } from './dist/providers/vercel/image.js'; process.stdout.write(VERCEL_IMAGE_PIN.reference)")"
+          image_digest="${image_ref##*@}"
+          IMAGE_REF="${image_ref}" EXPECTED_IMAGE_DIGEST="${image_digest}" \
+            VERCEL_TOKEN="${VERCEL_TOKEN}" VERCEL_TEAM_ID="${VERCEL_TEAM_ID}" \
+            VERCEL_PROJECT_ID="${VERCEL_PROJECT_ID}" SMOKE_ROLE=consumer \
+            SMOKE_REPORT="${SMOKE_REPORT}" node scripts/vercel/smoke-sandbox.mjs
+
+      - name: Redact all UAT evidence
+        id: redact
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+          DEVBOX_UAT_PUSH_TOKEN: ${{ secrets.DEVBOX_UAT_PUSH_TOKEN }}
+          DEVBOX_UAT_ENV_CONTENT: ${{ secrets.DEVBOX_UAT_ENV_CONTENT }}
+          DEVBOX_UAT_FIXTURE_COMMAND: ${{ secrets.DEVBOX_UAT_FIXTURE_COMMAND }}
+          DEVBOX_UAT_RESUME_COMMAND: ${{ secrets.DEVBOX_UAT_RESUME_COMMAND }}
+        run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      - name: Upload redacted UAT evidence
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vercel-provider-uat-${{ env.SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

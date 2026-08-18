@@ -30,7 +30,7 @@ describe('cli dispatch', () => {
     expect(output).toContain('--list');
     expect(output).toContain('--url');
     expect(output).toContain('--provider local|vercel');
-    expect(output).not.toContain('--password');
+    expect(output).toContain('--password');
   });
 
   it('-h alias also prints help and exits 0', async () => {
@@ -158,5 +158,9 @@ describe('resolveBranchAction', () => {
 
   it('returns { action: "url", open: true } for -o alone', () => {
     expect(resolveBranchAction(['-o'])).toEqual({ action: 'url', open: true });
+  });
+
+  it('returns { action: "password" } for --password', () => {
+    expect(resolveBranchAction(['--password'])).toEqual({ action: 'password' });
   });
 });

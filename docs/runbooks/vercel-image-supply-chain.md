@@ -221,7 +221,7 @@ The managed VMI digest and version inventory are parity evidence only; Docker
 never attempts to pull the managed VMI.
 
 `images/vercel/Dockerfile` reproduces that reviewed upstream recipe, then adds
-Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the token-pairing noVNC proxy.
+Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the Basic-Auth noVNC proxy.
 `start-devbox.sh` starts every service explicitly; the image clears its inherited
 shell command with an empty `CMD []`, so no runtime behavior depends on Docker
 defaults. `status-devbox.sh` and `check-local-image.sh` verify the non-root user,
@@ -237,7 +237,8 @@ images/vercel/check-local-image.sh devbox-vercel:local
 ```
 
 Use a throwaway runtime password and keep the container alive while checking the
-explicit startup path:
+explicit startup path. Probe both HTTP and WebSocket requests with Basic Auth;
+the noVNC upstream and VNC port must remain private:
 
 ```sh
 docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \

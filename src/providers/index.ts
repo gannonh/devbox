@@ -181,6 +181,7 @@ export type {
 } from './vercel/terminal.js';
 export type {
   DevboxProvider,
+  DisplayCredentialsResult,
   ProviderActionResult,
   ProviderBranchRequest,
   ProviderListRequest,
@@ -189,6 +190,8 @@ export type {
   ProviderOutput,
   ProviderRequestContext,
   ProviderUrlRequest,
+  SupportedDisplayCredentials,
+  UnsupportedDisplayCredentials,
 } from './types.js';
 export { ProviderOperationError, ProviderUsageError } from './types.js';
 export type { ProviderRegistry } from './registry.js';

@@ -459,23 +459,20 @@ describe('Vercel provider smoke configuration', () => {
     expect(smokeStep).not.toContain('steps.pin.outcome');
   });
 
-  it('runs quality on a single Node 22 LTS lane', async () => {
+  it('runs provider quality on the minimum and current supported Node lanes', async () => {
     const ci = await readFile('.github/workflows/ci.yml', 'utf8');
     const smoke = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
     const release = await readFile('.github/workflows/release.yml', 'utf8');
     const pkg = JSON.parse(await readFile('package.json', 'utf8')) as { engines: { node: string } };
-    expect(pkg.engines.node).toBe('>=22');
-    expect(ci).toContain("node-version: '22'");
-    expect(ci).not.toContain('matrix:');
-    expect(ci).not.toContain('matrix.node-version');
-    expect(ci).not.toContain('20.18.1');
-    expect(ci).not.toMatch(/node-version:\s*\[/);
+    expect(pkg.engines.node).toBe('>=20.18.1');
+    expect(ci).toContain("node-version: ['20.18.1', '22']");
+    expect(ci).toContain('matrix.node-version');
     expect(ci).toContain('npm run lint');
     expect(ci).toContain('npm run typecheck');
     expect(ci).toContain('npm run build');
     expect(ci).toContain('npm run test');
     expect(smoke).toContain("node-version: '22'");
-    expect(smoke).not.toContain('20.18.1');
+    expect(smoke).not.toContain("node-version: '20.18.1'");
     expect(release).toContain("node-version: '22'");
     expect(release).not.toMatch(/node-version:\s*'20'/);
   });
@@ -500,5 +497,25 @@ describe('Vercel provider smoke configuration', () => {
       'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
       'SMOKE_REPORT',
     ]);
+  });
+
+  it('requires explicit UAT contract markers for the private fixture path', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-uat.yml', 'utf8');
+    const source = await readFile('scripts/vercel/provider-smoke.mjs', 'utf8');
+
+    expect(workflow).toContain("DEVBOX_UAT_REQUIRED: 'true'");
+    for (const marker of [
+      'DEVBOX_UAT:agents',
+      'DEVBOX_UAT:chromium-oauth',
+      'DEVBOX_UAT:electron-vite',
+      'DEVBOX_UAT:push',
+      'DEVBOX_UAT:resume-secret-refresh',
+    ]) {
+      expect(source).toContain(marker);
+    }
+    expect(source).toContain('provider UAT requires non-empty fixture and resume contract commands');
+    expect(source).toContain('provider UAT requires both existing and missing private-repository paths');
+    expect(source).toContain('uatFixtureCommand && label === \'missing\'');
+    expect(source).toContain('uatResumeCommand && label === \'missing\'');
   });
 });
