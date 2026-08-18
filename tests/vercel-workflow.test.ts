@@ -31,6 +31,24 @@ describe('Vercel image supply-chain workflow', () => {
     expect(uat).toContain('cancel-in-progress: false');
   });
 
+  it('chains owner-authorized PR smoke, UAT, and benchmark gates', async () => {
+    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
+
+    expect(ci).toContain('vercel-provider-uat:');
+    expect(ci).toContain('vercel-provider-benchmark:');
+    expect(ci).toContain('needs: vercel-provider-smoke');
+    expect(ci).toContain('needs: vercel-provider-uat');
+    expect(ci).toContain("github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)");
+    for (const secret of [
+      'DEVBOX_UAT_PUSH_TOKEN',
+      'DEVBOX_UAT_ENV_CONTENT',
+      'DEVBOX_UAT_FIXTURE_COMMAND',
+      'DEVBOX_UAT_RESUME_COMMAND',
+    ]) {
+      expect(ci).toContain(`${secret}: \${{ secrets.${secret} }}`);
+    }
+  });
+
   it('runs manually and on a schedule without an auto-merge path', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('workflow_call:');

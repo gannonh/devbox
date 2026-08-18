@@ -91,3 +91,48 @@ jobs:
       DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
       DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
       DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+
+  vercel-provider-uat:
+    name: credentialed Vercel provider UAT
+    needs: vercel-provider-smoke
+    if: >-
+      needs.vercel-provider-smoke.result == 'success' &&
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.actor == github.repository_owner &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vercel-provider-uat.yml
+    with:
+      source_sha: ${{ github.event.pull_request.head.sha }}
+      path: both
+    secrets:
+      VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+      VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+      VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+      DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+      DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+      DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
+      DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+      DEVBOX_UAT_PUSH_TOKEN: ${{ secrets.DEVBOX_UAT_PUSH_TOKEN }}
+      DEVBOX_UAT_ENV_CONTENT: ${{ secrets.DEVBOX_UAT_ENV_CONTENT }}
+      DEVBOX_UAT_FIXTURE_COMMAND: ${{ secrets.DEVBOX_UAT_FIXTURE_COMMAND }}
+      DEVBOX_UAT_RESUME_COMMAND: ${{ secrets.DEVBOX_UAT_RESUME_COMMAND }}
+
+  vercel-provider-benchmark:
+    name: credentialed Vercel provider benchmark
+    needs: vercel-provider-uat
+    if: needs.vercel-provider-uat.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vercel-benchmark.yml
+    with:
+      source_sha: ${{ github.event.pull_request.head.sha }}
+    secrets:
+      VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+      VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+      VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}

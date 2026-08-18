@@ -1,7 +1,7 @@
 name: Vercel provider benchmark
 
-# The benchmark is intentionally secret-gated. It is reproducible from the
-# default branch by dispatch, or from the release workflow through workflow_call.
+# The benchmark is intentionally secret-gated. It is reproducible from an
+# owner-authorized PR, the default branch by dispatch, or the release workflow.
 on:
   workflow_call:
     inputs:

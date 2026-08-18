@@ -44,8 +44,9 @@ failed run, residual resource, or median over `10000ms` exits nonzero.
 
 ## Credentialed UAT
 
-The `Vercel provider UAT` workflow is manual on the default branch or called by
-the release workflow. It is serialized and requires the consumer Vercel triad,
+The `Vercel provider UAT` workflow is called after the owner-authorized PR
+provider smoke, manual on the default branch, or called by the release
+workflow. It is serialized and requires the consumer Vercel triad,
 a private fixture repository, and the fixture Electron/Vite/OAuth contract.
 The run must prove private clone, branch creation, interactive terminal,
 Pi/Claude/Codex/OpenCode, authenticated noVNC HTTP and WebSocket access,

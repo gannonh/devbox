@@ -53,7 +53,8 @@ flowchart LR
 
 Local quality runs on the supported Node 22 LTS lane.
 Credentialed image, provider-UAT, and five-run benchmark workflows are
-secret-gated, serialized by concurrency, and manually or release-triggered.
+secret-gated, serialized by concurrency, and triggered only by an owner-
+authorized PR, a default-branch manual dispatch, or the release workflow.
 They redact evidence before upload and fail on residual Sandboxes, snapshots,
 running sessions, leaked credentials, or a benchmark median above 10 seconds.
 
