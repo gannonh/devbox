@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { collectPiBundle } from '../src/providers/vercel/pi-bundle.js';
+import { collectPiBundle, DEFAULT_PI_BUNDLE_LIMITS } from '../src/providers/vercel/pi-bundle.js';
 
 const fifoSupported = process.platform !== 'win32' && canRunMkfifo();
 const permissionsSupported = process.platform !== 'win32' && (process.getuid?.() ?? 1) !== 0;
@@ -142,6 +142,24 @@ describe('Pi configuration bundle', () => {
     const result = await collectPiBundle({ root });
 
     expect(result.entries.map((entry) => entry.path)).toEqual(['agent/settings.json', 'auth.json']);
+  });
+
+  it('excludes generated fff databases before applying the default file-size limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'devbox-pi-fff-'));
+    await mkdir(join(root, 'agent', 'fff', 'frecency'), { recursive: true });
+    await writeFile(
+      join(root, 'agent', 'fff', 'frecency', 'data.mdb'),
+      Buffer.alloc(DEFAULT_PI_BUNDLE_LIMITS.maxFileBytes + 1),
+    );
+    await writeFile(join(root, 'agent', 'settings.json'), '{}');
+    await writeFile(join(root, 'auth.json'), '{}');
+
+    const result = await collectPiBundle({ root });
+
+    expect(result.entries.map((entry) => entry.path).sort()).toEqual(['agent/settings.json', 'auth.json']);
+    expect(result.totalBytes).toBe(4);
+    expect(result.skipped).toEqual([]);
+    expect(result.skippedCount).toBe(0);
   });
 
   it('returns an empty rootMissing bundle when the Pi root does not exist', async () => {

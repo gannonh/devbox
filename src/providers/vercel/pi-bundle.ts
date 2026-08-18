@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { open, realpath, readdir, stat, type FileHandle } from 'node:fs/promises';
 import { join, relative as relativeFs, sep } from 'node:path';
 
-const EXCLUDED_PREFIXES = ['agent/sessions', 'agent/npm', 'agent/cache'];
+const EXCLUDED_PREFIXES = ['agent/sessions', 'agent/npm', 'agent/cache', 'agent/fff'];
 const MAX_SKIPPED_REPORT = 100;
 
 type SkipReporter = (path: string, reason: string) => void;
