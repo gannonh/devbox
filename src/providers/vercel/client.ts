@@ -1,4 +1,4 @@
-import { Sandbox, Snapshot } from '@vercel/sandbox';
+import { Command, CommandFinished, Sandbox, Snapshot } from '@vercel/sandbox';
 import type { VercelCredentials } from './auth.js';
 import { VERCEL_IMAGE_PIN } from './image.js';
 import type { GitSource } from './source.js';
@@ -61,29 +61,9 @@ export interface VercelStopResult {
   [key: string]: unknown;
 }
 
-export interface VercelCommandResult {
-  exitCode: number | null;
-  stdout?: (options?: { signal?: AbortSignal }) => Promise<string>;
-  stderr?: (options?: { signal?: AbortSignal }) => Promise<string>;
-  wait?: (options?: { signal?: AbortSignal }) => Promise<VercelCommandResult>;
-}
-
-export interface VercelWriteFile {
-  path: string;
-  content: Buffer;
-  mode?: number;
-}
-
-/** The object overload supported by @vercel/sandbox v3. */
-export interface VercelRunCommandRequest {
-  cmd: string;
-  args?: string[];
-  env?: Record<string, string>;
-  cwd?: string;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-  detached?: boolean;
-}
+export type VercelCommandResult = Command | CommandFinished;
+export type VercelWriteFile = Parameters<Sandbox['writeFiles']>[0][number];
+export type VercelRunCommandRequest = Parameters<Sandbox['runCommand']>[0];
 
 export interface VercelSandboxHandle {
   readonly id?: string;

@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { open, realpath, readdir, stat, type FileHandle } from 'node:fs/promises';
-import { join, relative as relativeFs, sep } from 'node:path';
+import { isAbsolute, join, relative as relativeFs, sep } from 'node:path';
 
 const EXCLUDED_PREFIXES = ['agent/sessions', 'agent/npm', 'agent/cache', 'agent/fff'];
 const MAX_SKIPPED_REPORT = 100;
@@ -80,6 +80,9 @@ export async function collectPiBundle(options: PiBundleOptions = {}): Promise<Pi
   };
   const root = resolvePiRoot(options);
   const skipped: { path: string; reason: string }[] = [];
+  if (root === undefined) {
+    return { entries: state.entries, totalBytes: 0, entryCount: 0, skipped, skippedCount: 0, rootMissing: true };
+  }
   let skippedCount = 0;
   const reportSkipped: SkipReporter = (path, reason) => {
     skippedCount += 1;
@@ -290,8 +293,8 @@ async function addFile(
     try {
       content = await readFileFromHandle(file, fileSize, relativePath);
     } catch (error) {
-      if (isSkippablePathError(error)) {
-        reportSkipped(relativePath, `file could not be read (${nodeErrorCode(error)})`);
+      if (error instanceof PiBundleReadError || isSkippablePathError(error)) {
+        reportSkipped(relativePath, `file could not be read (${nodeErrorCode(error) ?? 'short read'})`);
         return;
       }
       throw error;
@@ -371,10 +374,11 @@ function nodeErrorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function resolvePiRoot(options: PiBundleOptions): string {
+function resolvePiRoot(options: PiBundleOptions): string | undefined {
+  if (options.root !== undefined) return options.root;
   const env = options.env ?? process.env;
-  const home = options.home ?? env.HOME ?? process.env.HOME ?? '';
-  return options.root ?? join(home, '.pi');
+  const home = options.home ?? env.HOME;
+  return home !== undefined && isAbsolute(home) ? join(home, '.pi') : undefined;
 }
 
 function isExcluded(path: string): boolean {

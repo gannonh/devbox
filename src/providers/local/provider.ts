@@ -9,7 +9,6 @@ import { url } from './url.js';
 import type { LauncherContext } from './context.js';
 import type {
   DevboxProvider,
-  DisplayCredentialsResult,
   ProviderActionResult,
   ProviderBranchRequest,
   ProviderListRequest,
@@ -58,12 +57,6 @@ export function createLocalProvider(runner: ShellRunner): DevboxProvider {
     },
     async url(request: ProviderUrlRequest): Promise<ProviderActionResult> {
       return action(await url(launcherContext(request, runner), request.branch, request.open));
-    },
-    async getDisplayCredentials(): Promise<DisplayCredentialsResult> {
-      return {
-        supported: false,
-        message: 'display credentials are not supported by the local provider',
-      };
     },
   };
 }

@@ -67,7 +67,7 @@ describe('Pi configuration bundle', () => {
       .rejects.toThrow(/maximum of 4194304 bytes.*observed 4194305.*b\.bin/);
   });
 
-  it('rejects a short regular-file read with both expected and observed sizes', async () => {
+  it('skips a short regular-file read with both expected and observed sizes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'devbox-pi-short-read-'));
     const filePath = join(root, 'settings.json');
     await writeFile(filePath, 'secret');
@@ -91,8 +91,11 @@ describe('Pi configuration bundle', () => {
     });
 
     try {
-      await expect(collectPiBundle({ root }))
-        .rejects.toThrow(/short read.*settings\.json.*expected 6.*received 5/);
+      await expect(collectPiBundle({ root })).resolves.toMatchObject({
+        entries: [],
+        skipped: [{ path: 'settings.json', reason: expect.stringMatching(/short_read/) }],
+        skippedCount: 1,
+      });
     } finally {
       readSpy.mockRestore();
     }
@@ -107,6 +110,13 @@ describe('Pi configuration bundle', () => {
     const result = await collectPiBundle({ root });
 
     expect(result.entries[0].mode).toBe(0o754);
+  });
+
+  it('does not inspect a relative .pi when HOME is unavailable', async () => {
+    await expect(collectPiBundle({ env: {} })).resolves.toMatchObject({
+      entries: [],
+      rootMissing: true,
+    });
   });
 
   it('falls back to HOME/.pi', async () => {

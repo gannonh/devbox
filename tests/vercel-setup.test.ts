@@ -44,17 +44,13 @@ describe('Vercel background setup', () => {
   it('uploads the stable script and launches it detached without waiting for completion', async () => {
     const uploads: VercelWriteFile[][] = [];
     const commands: VercelRunCommandRequest[] = [];
-    let statusReads = 0;
     const detached = { exitCode: null, wait: vi.fn() };
     const client: VercelSandboxClient = {
       writeFiles: vi.fn(async (_sandbox, files) => { uploads.push(files); }),
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === 'cat') {
-          statusReads += 1;
-          return statusReads === 1
-            ? { exitCode: 1 }
-            : { exitCode: 0, stdout: async () => '{"status":"running","startedAt":1,"finishedAt":null}\n' };
+          return { exitCode: 0, stdout: async () => '{"status":"failed","startedAt":1,"finishedAt":2,"failedStep":"dependencies"}\n' };
         }
         if (request.cmd === 'sh') return { exitCode: 1 };
         if (request.detached) return detached;
@@ -84,6 +80,19 @@ describe('Vercel background setup', () => {
     expect(detached.wait).not.toHaveBeenCalled();
     expect(SETUP_STATUS_PATH).toBe('/vercel/.devbox/runtime/setup.status');
     expect(SETUP_LOG_PATH).toBe('/vercel/.devbox/runtime/setup.log');
+  });
+
+  it('rejects a completed detached launch failure', async () => {
+    const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async (_sandbox, request) => request.detached ? { exitCode: 7 } : { exitCode: 1 }),
+    } as unknown as VercelSandboxClient;
+
+    await expect(launchBackgroundSetup({
+      sandbox: sandbox(),
+      client,
+      workspace: '/vercel/sandbox/repo',
+    })).rejects.toThrow('background setup launch failed with exit code 7');
   });
 
   it('parses deterministic statuses and renders only safe setup notices', () => {
@@ -117,7 +126,7 @@ describe('Vercel background setup', () => {
     expect(script.split('\n')[1]).toBe('set -u');
     expect(script).toContain('if [[ -f bun.lock && ! -d node_modules/bun ]]');
     expect(script).toContain('node_modules/.pnpm');
-    expect(script).toContain('node_modules/.package-lock.json');
+    expect(script).toContain('package-lock.json && ! -f node_modules/.package-lock.json');
     expect(script).toContain('bun install');
     expect(script).toContain('pnpm install --frozen-lockfile');
     expect(script).toContain('npm ci');
@@ -242,8 +251,8 @@ describe('Vercel background setup', () => {
 
     await expect(provider.up(request)).resolves.toEqual({ exitCode: 0 });
 
-    expect(output).toContain('setup failed; log: /vercel/.devbox/runtime/setup.log');
-    expect(output).toContain('setup retry: bash /vercel/.devbox/runtime/setup.sh');
+    expect(output).toContain('setup running; log: /vercel/.devbox/runtime/setup.log');
+    expect(output).not.toContain('setup retry: bash /vercel/.devbox/runtime/setup.sh');
     expect(output).not.toContain('github-secret');
     expect(output).not.toContain('vercel-secret');
     expect(output).not.toContain('display-secret');
@@ -408,8 +417,8 @@ describe('Vercel background setup', () => {
 
     const first = makeRequest();
     await expect(provider.attach(first.request)).resolves.toEqual({ exitCode: 0 });
-    expect(first.output()).toContain('setup failed; log: /vercel/.devbox/runtime/setup.log');
-    expect(first.output()).toContain('setup retry: bash /vercel/.devbox/runtime/setup.sh');
+    expect(first.output()).toContain('setup running; log: /vercel/.devbox/runtime/setup.log');
+    expect(first.output()).not.toContain('setup retry: bash /vercel/.devbox/runtime/setup.sh');
 
     setupState = { status: 'succeeded', startedAt: 1, finishedAt: 3 };
     const second = makeRequest();

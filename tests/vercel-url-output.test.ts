@@ -16,17 +16,13 @@ import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js'
 import { createVercelBranchMetadataStore, createVercelScopeMetadataStore } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
+import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 
 const remote = 'github.com/acme/repo';
 const branch = 'feature/ui';
-const DISPLAY_STATUS_OUTPUT = [
-  '[devbox-status] Xvfb=running',
-  '[devbox-status] fluxbox=running',
-  '[devbox-status] x11vnc=running',
-  '[devbox-status] websockify=running',
-  '[devbox-status] auth-proxy=running',
-].join('\n');
-
+const DISPLAY_TOKEN = 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa';
+const NOVNC_URL = `https://sandbox.example/vnc.html?token=${DISPLAY_TOKEN}&autoconnect=1`;
+const NOVNC_LINE = `6080: ${NOVNC_URL}  (noVNC display)`;
 function runner(): ShellRunner {
   return {
     exec: vi.fn(async (_command: string, args: string[]) => {
@@ -76,6 +72,7 @@ async function fixture(
     projectId: 'project-1',
   });
   await createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch }).write({
+    displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
     identity: {
       name: identity.name,
       repository: identity.canonicalRepository,
@@ -151,7 +148,7 @@ describe('Vercel URL output', () => {
     expect(test.output()).toBe([
       '3000: https://sandbox.example/3000  (public)',
       '5173: https://sandbox.example/5173  (Vite dev server — public)',
-      '6080: https://sandbox.example/6080  (noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)',
+      NOVNC_LINE,
       '9000: https://sandbox.example/9000  (public)',
       '',
     ].join('\n'));
@@ -167,7 +164,7 @@ describe('Vercel URL output', () => {
 
     await expect(test.provider.url(test.request)).resolves.toEqual({ exitCode: 0 });
 
-    expect(opener).toHaveBeenCalledWith('https://sandbox.example/6080');
+    expect(opener).toHaveBeenCalledWith(NOVNC_URL);
   });
 
   it('fails --open actionably when authenticated noVNC is absent', async () => {
@@ -216,8 +213,7 @@ describe('Vercel URL output', () => {
       'Vercel devbox ready',
       '  3000: https://sandbox.example/3000  (public)',
       '  5173: https://sandbox.example/5173  (Vite dev server — public)',
-      '  6080: https://sandbox.example/6080  (noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)',
-      '  password: devbox feature/ui --provider vercel --password',
+      `  ${NOVNC_LINE}`,
       '  stop: devbox feature/ui --provider vercel --stop',
       '  remove: devbox feature/ui --provider vercel --rm',
       'setup running; log: /vercel/.devbox/runtime/setup.log',
@@ -241,6 +237,17 @@ describe('Vercel URL output', () => {
 
     expect(test.output()).not.toContain('hunter2');
     expect(opener).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-HTTPS route URLs before rendering or opening them', async () => {
+    for (const url of ['http://host.example/6080', 'ftp://host.example/6080', 'file:///tmp/display']) {
+      const test = await fixture([{ port: 6080, subdomain: 'sandbox', url }]);
+      await expect(test.provider.url(test.request)).rejects.toMatchObject({
+        code: 'route',
+        exitCode: 2,
+        message: expect.stringContaining('https'),
+      });
+    }
   });
 
   it('rejects credential-bearing route URLs in the ready block without revealing them', async () => {
@@ -297,8 +304,7 @@ describe('Vercel URL output', () => {
 
     const notice = test.errorOutput().slice(test.errorOutput().indexOf('Vercel devbox resumed'));
     expect(notice).toBe(
-      'Vercel devbox resumed; 6080: https://sandbox.example/6080  '
-      + '(noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)\n'
+      `Vercel devbox resumed; ${NOVNC_LINE}\n`
       + 'setup running; log: /vercel/.devbox/runtime/setup.log\n',
     );
     expect(notice).not.toContain('--stop');
@@ -317,7 +323,7 @@ describe('Vercel URL output', () => {
 
     expect(test.output()).toBe([
       '5173: https://sandbox.example/5173  (public)',
-      '6080: https://sandbox.example/6080  (noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)',
+      NOVNC_LINE,
       '',
     ].join('\n'));
   });

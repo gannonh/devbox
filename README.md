@@ -49,7 +49,6 @@ npx @gannonh/devbox <branch> --stop                  # stop (keeps worktree + co
 npx @gannonh/devbox <branch> --rm                    # remove container + worktree + branch
 npx @gannonh/devbox <branch> --url                   # print current provider routes
 npx @gannonh/devbox <branch> --open                  # open the first route in a browser
-npx @gannonh/devbox <branch> --password              # retrieve credentials when supported
 npx @gannonh/devbox --list                           # list local devbox containers
 npx @gannonh/devbox --provider local --list          # filter list by provider
 
@@ -61,9 +60,7 @@ npx @gannonh/devbox --provider local --list          # filter list by provider
 npx @gannonh/devbox --provider vercel <branch>
 
 # In a Vercel terminal, Ctrl-C reaches the remote process and Ctrl-] detaches
-# without stopping the sandbox. Core URL output lists current routes; noVNC
-# and password generation/parity are not included in this phase.
-# `--password` remains explicitly unsupported by the Vercel core provider.
+# without stopping the sandbox. `--url` prints the noVNC pairing link.
 ```
 
 ## What `init` creates

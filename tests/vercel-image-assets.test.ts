@@ -50,6 +50,8 @@ describe('Vercel image assets', () => {
     expect(startup).toContain('websockify');
     expect(startup).toContain('127.0.0.1:${NOVNC_INTERNAL_PORT}');
     expect(startup).toContain('DEVBOX_NOVNC_PASSWORD');
+    expect(startup).toContain('proc_start_time');
+    expect(startup).toContain('recorded');
     expect(status).toContain('sudo -n true');
     expect(status).toContain("'Xvfb -help'");
     expect(status).toContain("'websockify --help'");
@@ -68,11 +70,13 @@ describe('Vercel image assets', () => {
     expect(localCheck).toContain('sudo -n true');
   });
 
-  it('supports Basic Auth for both HTTP and WebSocket noVNC traffic', async () => {
+  it('pairs noVNC with a URL token for HTTP and WebSocket traffic', async () => {
     const proxy = await text(proxyPath);
-    expect(proxy).toContain('authorization');
+    expect(proxy).toContain('token');
+    expect(proxy).toContain('devbox_novnc');
     expect(proxy).toContain('upgrade');
     expect(proxy).toContain('101 Switching Protocols');
     expect(proxy).toContain('timingSafeEqual');
+    expect(proxy).not.toMatch(/www-authenticate/i);
   });
 });

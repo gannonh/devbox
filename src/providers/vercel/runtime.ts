@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import type { Writable } from 'node:stream';
 import { resolveDevboxEnv } from '../local/env.js';
-import { redactSecrets } from './redaction.js';
+import { addSecrets, redactSecrets } from './redaction.js';
 import { collectPiBundle } from './pi-bundle.js';
 import { startDisplayStack, VercelDisplayStartupError } from './display-startup.js';
 import { launchBackgroundSetup, type VercelSetupStatus } from './setup.js';
@@ -23,6 +23,7 @@ export const VERCEL_RUNTIME_ENV_PATH = `${VERCEL_SANDBOX_HOME}/.env`;
 export const VERCEL_RUNTIME_GITHUB_TOKEN_PATH = `${VERCEL_RUNTIME_DIRECTORY}/github-token`;
 export const VERCEL_GH_CONFIG_DIRECTORY = `${VERCEL_SANDBOX_HOME}/.config/gh`;
 export const VERCEL_RUNTIME_PI_PATH = `${VERCEL_SANDBOX_HOME}/.pi`;
+export const RUNTIME_PREPARATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class VercelRuntimeSyncError extends Error {
   readonly code = 'runtime_sync_failed';
@@ -76,8 +77,8 @@ export async function prepareSandboxRuntime(
     ...(options.hostHome === undefined ? {} : { home: options.hostHome }),
     env: options.env,
   }));
-  const piRoot = options.piRoot
-    ?? join(options.hostHome ?? options.env.HOME ?? process.env.HOME ?? '', '.pi');
+  const piHome = options.hostHome ?? options.env.HOME;
+  const piRoot = options.piRoot ?? (piHome === undefined ? '<unknown>' : join(piHome, '.pi'));
   if (piBundle.rootMissing) {
     writeRuntimeWarning(options.stderr, `Pi config root missing at ${piRoot}; continuing`, secrets);
   }
@@ -123,8 +124,8 @@ export async function prepareSandboxRuntime(
     cmd: 'sh',
     args: [
       '-c',
-      'find /vercel/.pi -mindepth 1 -maxdepth 1 ! -name agent -exec rm -rf -- {} + '
-        + '&& find /vercel/.pi/agent -mindepth 1 -maxdepth 1 ! -name sessions ! -name npm ! -name cache -exec rm -rf -- {} +',
+      `find ${VERCEL_RUNTIME_PI_PATH} -mindepth 1 -maxdepth 1 ! -name agent -exec rm -rf -- {} + `
+        + `&& find ${VERCEL_RUNTIME_PI_PATH}/agent -mindepth 1 -maxdepth 1 ! -name sessions ! -name npm ! -name cache ! -name fff -exec rm -rf -- {} +`,
     ],
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   }, 'Pi config reconciliation', secrets);
@@ -134,9 +135,9 @@ export async function prepareSandboxRuntime(
       cmd: 'sh',
       args: [
         '-c',
-        'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token '
+        `gh auth login --hostname github.com --with-token < ${VERCEL_RUNTIME_GITHUB_TOKEN_PATH} `
           + '&& gh auth setup-git --hostname github.com '
-          + '&& rm -f /vercel/.devbox/runtime/github-token',
+          + `&& rm -f ${VERCEL_RUNTIME_GITHUB_TOKEN_PATH}`,
       ],
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     }, 'GitHub auth setup', secrets);
@@ -179,9 +180,29 @@ async function uploadRuntimeFiles(
       files,
       options.signal === undefined ? undefined : { signal: options.signal },
     );
-  } catch {
-    throw new VercelRuntimeSyncError(redactSecrets('runtime file upload failed', secrets));
+  } catch (error) {
+    throw new VercelRuntimeSyncError(
+      `runtime file upload failed: ${runtimeUploadErrorDetail(error, secrets)}`,
+    );
   }
+}
+
+function runtimeUploadErrorDetail(error: unknown, secrets: readonly string[]): string {
+  // SDK upload errors may echo uploaded file contents; keep safe structured fields only.
+  if (typeof error !== 'object' || error === null) return 'unknown error';
+  const candidate = error as {
+    operation?: unknown;
+    status?: unknown;
+    code?: unknown;
+    path?: unknown;
+  };
+  const details = [
+    typeof candidate.operation === 'string' ? candidate.operation : undefined,
+    typeof candidate.status === 'number' ? `status ${candidate.status}` : undefined,
+    typeof candidate.code === 'string' ? candidate.code : undefined,
+    typeof candidate.path === 'string' ? candidate.path : undefined,
+  ].filter((value): value is string => value !== undefined);
+  return details.length === 0 ? 'unknown error' : redactSecrets(details.join(', '), secrets);
 }
 
 async function runRuntimeOperation<T>(
@@ -233,17 +254,13 @@ async function runRuntimeCommand(
   }
 }
 
-function addSecrets(secrets: string[], ...values: Array<string | undefined>): void {
-  for (const value of values) {
-    if (typeof value === 'string' && value.length > 0 && !secrets.includes(value)) secrets.push(value);
-  }
-}
-
 function runtimeEnvironmentSecrets(env: Record<string, string | undefined>): string[] {
   return ['GH_TOKEN', 'GITHUB_TOKEN', 'VERCEL_TOKEN', 'VERCEL_OIDC_TOKEN']
     .map((key) => env[key])
     .filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
+
+const MIN_DOTENV_SECRET_LENGTH = 8;
 
 function dotenvSecrets(content: Buffer): string[] {
   const text = content.toString('utf8');
@@ -259,7 +276,7 @@ function dotenvSecrets(content: Buffer): string[] {
         : unquotedValue;
       return [line, rawValue, value];
     }),
-  ].filter((value) => value.length > 0);
+  ].filter((value) => value.length >= MIN_DOTENV_SECRET_LENGTH);
 }
 
 

@@ -107,14 +107,17 @@ export async function launchBackgroundSetup(
     }],
     options.signal === undefined ? undefined : { signal: options.signal },
   );
-  await options.client.runCommand(options.sandbox, {
+  const launch = await options.client.runCommand(options.sandbox, {
     cmd: 'bash',
     args: [SETUP_SCRIPT_PATH],
     cwd: options.workspace,
     detached: true,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  return await readSetupStatus(options) ?? {
+  if (typeof launch.exitCode === 'number' && launch.exitCode !== 0) {
+    throw new Error(`background setup launch failed with exit code ${launch.exitCode}`);
+  }
+  return {
     status: 'running',
     startedAt: Math.floor(Date.now() / 1000),
     finishedAt: null,
@@ -243,7 +246,7 @@ export function renderSetupScript(workspace: string): string {
     'elif [[ -f pnpm-lock.yaml && ! -d node_modules/.pnpm ]]; then',
     '  log "pnpm install"',
     '  if ! pnpm install --frozen-lockfile; then fail_step dependencies; fi',
-    'elif [[ -f package-lock.json && ! -d node_modules/.package-lock.json ]]; then',
+    'elif [[ -f package-lock.json && ! -f node_modules/.package-lock.json ]]; then',
     '  log "npm ci"',
     '  if ! npm ci; then fail_step dependencies; fi',
     'fi',

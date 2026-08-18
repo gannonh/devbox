@@ -18,14 +18,7 @@ import { createVercelBranchMetadataStore, createVercelScopeMetadataStore } from 
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import { prepareSandboxRuntime } from '../src/providers/vercel/runtime.js';
-
-const DISPLAY_STATUS_OUTPUT = [
-  '[devbox-status] Xvfb=running',
-  '[devbox-status] fluxbox=running',
-  '[devbox-status] x11vnc=running',
-  '[devbox-status] websockify=running',
-  '[devbox-status] auth-proxy=running',
-].join('\n');
+import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 
 function sandbox(): VercelSandboxHandle {
   return {
@@ -150,13 +143,11 @@ describe('Vercel runtime sync', () => {
     const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-link-'));
     const envPath = join(hostEnv, '.env');
     await writeFile(envPath, 'API_KEY=dotenv-secret\n');
-    let workspaceEnv = 'existing-workspace-env';
     const fake = client();
     const runCommand = fake.client.runCommand as unknown as ReturnType<typeof vi.fn>;
     runCommand.mockImplementation(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
       if (request.cwd === '/vercel/sandbox/repo' && request.args?.[1]?.includes('ln -s')) {
         if (!request.args[1].includes('[ ! -e .env ]')) throw new Error('workspace link would clobber .env');
-        if (workspaceEnv.length === 0) workspaceEnv = 'symlink:/vercel/.env';
       }
       fake.commands.push(request);
       return { exitCode: 0 };
@@ -178,7 +169,6 @@ describe('Vercel runtime sync', () => {
       args: ['-c', 'if [ ! -e .env ]; then ln -s /vercel/.env .env; fi'],
       cwd: '/vercel/sandbox/repo',
     });
-    expect(workspaceEnv).toBe('existing-workspace-env');
   });
 
   it('authenticates gh and git from a 0600 token file without putting the token in argv', async () => {
@@ -258,7 +248,7 @@ describe('Vercel runtime sync', () => {
     expect(remotePi).toContain('/vercel/.pi/agent/npm/package.json');
     const reconciliation = fake.commands.find((command) => command.args?.[1]?.includes('find /vercel/.pi'));
     expect(reconciliation?.args?.[1]).toContain('! -name agent');
-    expect(reconciliation?.args?.[1]).toContain('! -name sessions ! -name npm ! -name cache');
+    expect(reconciliation?.args?.[1]).toContain('! -name sessions ! -name npm ! -name cache ! -name fff');
   });
 
   it('removes the raw GitHub token file after successful authentication', async () => {
@@ -429,6 +419,7 @@ describe('Vercel runtime sync', () => {
     const envPath = join(hostEnv, '.env');
     await writeFile(envPath, 'API_KEY=dotenv-secret\n');
     const events: string[] = [];
+    const runtimeSignals: AbortSignal[] = [];
     const handle = sandbox();
     const branchMetadata = createVercelBranchMetadataStore({
       stateHome: hostEnv,
@@ -443,8 +434,12 @@ describe('Vercel runtime sync', () => {
       }),
     } as unknown as VercelLifecycle;
     const client: VercelSandboxClient = {
-      writeFiles: vi.fn(async () => { events.push('runtime-upload'); }),
+      writeFiles: vi.fn(async (_sandbox, _files, options) => {
+        if (options?.signal) runtimeSignals.push(options.signal);
+        events.push('runtime-upload');
+      }),
       runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
+        if (request.signal) runtimeSignals.push(request.signal);
         events.push('runtime-command');
         if (request.cmd === '/usr/local/bin/devbox-status') {
           return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
@@ -500,6 +495,8 @@ describe('Vercel runtime sync', () => {
     expect(events.indexOf('lifecycle-up')).toBeGreaterThanOrEqual(0);
     expect(events.indexOf('runtime-upload')).toBeGreaterThan(events.indexOf('lifecycle-up'));
     expect(events.indexOf('terminal-attach')).toBeGreaterThan(events.indexOf('runtime-upload'));
+    expect(runtimeSignals.length).toBeGreaterThan(0);
+    expect(new Set(runtimeSignals)).toHaveLength(1);
   });
 
   it('runs runtime sync on attach before terminal readiness', async () => {
@@ -599,7 +596,12 @@ describe('Vercel runtime sync', () => {
     await mkdir(piRoot);
     await writeFile(join(piRoot, 'auth.json'), `{"password":"${piPassword}"}`);
     const fakeClient = {
-      writeFiles: vi.fn(async () => { throw new Error(`upload failed ${piPassword}`); }),
+      writeFiles: vi.fn(async () => {
+        throw Object.assign(new Error(`upload failed ${piPassword}`), {
+          operation: 'Sandbox.writeFiles',
+          status: 413,
+        });
+      }),
       runCommand: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as VercelSandboxClient;
 
@@ -613,6 +615,8 @@ describe('Vercel runtime sync', () => {
       stderr: new PassThrough(),
       piRoot,
     }).catch((caught: unknown) => caught);
+    expect(String(error)).toContain('Sandbox.writeFiles');
+    expect(String(error)).toContain('status 413');
     expect(String(error)).not.toContain(piPassword);
   });
 
@@ -625,7 +629,7 @@ describe('Vercel runtime sync', () => {
     const plainValue = 'dotenv-plain-runtime-error-secret';
     await writeFile(
       envPath,
-      `QUOTED="${quotedValue}"\nCOMMENTED=${commentedValue} # comment\nPLAIN=${plainValue}\n`,
+      `QUOTED="${quotedValue}"\nCOMMENTED=${commentedValue} # comment\nPLAIN=${plainValue}\nDEBUG=1\n`,
     );
     const uploads: VercelWriteFile[][] = [];
     const commands: VercelRunCommandRequest[] = [];
@@ -641,8 +645,8 @@ describe('Vercel runtime sync', () => {
         const auth = request.args?.[1]?.includes('gh auth login') ?? false;
         return {
           exitCode: auth ? 1 : 0,
-          stdout: async () => `stdout ${token} ${quotedValue} ${commentedValue} ${plainValue}`,
-          stderr: async () => `stderr ${token} ${quotedValue} ${commentedValue} ${plainValue}`,
+          stdout: async () => `stdout ${token} ${quotedValue} ${commentedValue} ${plainValue} status=1`,
+          stderr: async () => `stderr ${token} ${quotedValue} ${commentedValue} ${plainValue} status=1`,
         };
       }),
     } as unknown as VercelSandboxClient;
@@ -661,6 +665,7 @@ describe('Vercel runtime sync', () => {
     expect(String(error)).not.toContain(quotedValue);
     expect(String(error)).not.toContain(commentedValue);
     expect(String(error)).not.toContain(plainValue);
+    expect(String(error)).toContain('status=1');
     expect(output).not.toContain(token);
     expect(output).not.toContain(quotedValue);
     expect(output).not.toContain(commentedValue);

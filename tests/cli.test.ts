@@ -30,7 +30,7 @@ describe('cli dispatch', () => {
     expect(output).toContain('--list');
     expect(output).toContain('--url');
     expect(output).toContain('--provider local|vercel');
-    expect(output).toContain('--password');
+    expect(output).not.toContain('--password');
   });
 
   it('-h alias also prints help and exits 0', async () => {

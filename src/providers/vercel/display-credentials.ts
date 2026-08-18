@@ -7,11 +7,12 @@ import type {
 } from './metadata-schema.js';
 
 export const DISPLAY_USERNAME = 'devbox' as const;
-export const DISPLAY_PASSWORD_BYTES = 32;
-export const DISPLAY_PASSWORD_ENCODING = 'base64url' as const;
+const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export function generateDisplayPassword(): string {
-  return randomBytes(DISPLAY_PASSWORD_BYTES).toString(DISPLAY_PASSWORD_ENCODING);
+  const bytes = randomBytes(8);
+  const chars = Array.from(bytes, (byte) => PAIRING_ALPHABET[byte & 31]).join('');
+  return `${chars.slice(0, 4)}-${chars.slice(4)}`;
 }
 
 export interface DisplayCredentialsResolution {

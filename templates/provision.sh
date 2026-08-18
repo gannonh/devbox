@@ -34,7 +34,7 @@ elif [[ -f bun.lock ]]; then
 elif [[ -f pnpm-lock.yaml && ! -d node_modules/.pnpm ]]; then
   log "pnpm install"
   pnpm install --frozen-lockfile
-elif [[ -f package-lock.json && ! -d node_modules/.package-lock.json ]]; then
+elif [[ -f package-lock.json && ! -f node_modules/.package-lock.json ]]; then
   log "npm ci"
   npm ci
 fi

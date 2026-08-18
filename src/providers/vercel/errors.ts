@@ -285,7 +285,6 @@ function recoveryCommand(context: VercelErrorContext): string {
     case 'stop': return `${base} --stop`;
     case 'remove': return `${base} --rm`;
     case 'url': return `${base} --url`;
-    case 'password': return `${base} --password`;
     case 'up': return base;
     default: return base;
   }

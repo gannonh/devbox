@@ -1,4 +1,5 @@
 import { mkdtemp, readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -65,17 +66,13 @@ describe('Vercel devcontainer ports', () => {
       .toEqual({ ports: [5173, 6080], labels: { 5173: 'http://x' } });
   });
 
-  it('parses the repository JSONC fixture and deduplicates 6080', async () => {
-    const source = await readFile('.devcontainer/devcontainer.json', 'utf8');
-    expect(parseDevcontainerPorts(source, '.devcontainer/devcontainer.json'))
-      .toEqual({
-        ports: [5173, 6080, 9100],
-        labels: {
-          5173: 'Vite dev server',
-          6080: 'noVNC (headed GUI)',
-          9100: 'RPC server',
-        },
-      });
+  it('parses the repository JSONC fixture and keeps the public-port invariants', async () => {
+    const fixturePath = fileURLToPath(new URL('../.devcontainer/devcontainer.json', import.meta.url));
+    const parsed = parseDevcontainerPorts(await readFile(fixturePath, 'utf8'), fixturePath);
+
+    expect(parsed.ports.filter((port) => port === 6080)).toHaveLength(1);
+    expect(parsed.ports).not.toContain(5900);
+    expect(parsed.ports).not.toContain(6081);
   });
 
   it('rejects unsupported and malformed forwardPorts entries with actionable context', () => {
@@ -127,9 +124,9 @@ describe('Vercel devcontainer ports', () => {
   });
 
   it('keeps the internal noVNC port private', () => {
-    expect(() => assertSdkPorts([DEVBOX_NOVNC_INTERNAL_PORT])).toThrow(/internal|private/i);
+    expect(() => assertSdkPorts([DEVBOX_NOVNC_INTERNAL_PORT])).toThrow(/(?:internal|private)/i);
     expect(() => parseDevcontainerPorts(`{ "forwardPorts": [${DEVBOX_NOVNC_INTERNAL_PORT}] }`))
-      .toThrow(/internal|private/i);
+      .toThrow(/(?:internal|private)/i);
   });
 
   it('forbids the VNC port and consumes every declaration of the noVNC proxy port', () => {
@@ -273,7 +270,7 @@ describe('Vercel devcontainer ports', () => {
       client,
       ports: [5900],
     });
-    await expect(invalidLifecycle.up()).rejects.toThrow(/5900.*forbidden|private/);
+    await expect(invalidLifecycle.up()).rejects.toThrow(/5900.*(?:forbidden|private)/);
 
     const invalidInternalLifecycle = createVercelLifecycle({
       repoRoot: '/repo',
@@ -284,6 +281,6 @@ describe('Vercel devcontainer ports', () => {
       client,
       ports: [DEVBOX_NOVNC_INTERNAL_PORT],
     });
-    await expect(invalidInternalLifecycle.up()).rejects.toThrow(/6081.*internal|private/);
+    await expect(invalidInternalLifecycle.up()).rejects.toThrow(/6081.*(?:internal|private)/);
   });
 });

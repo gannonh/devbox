@@ -197,7 +197,6 @@ describe('Vercel provider errors', () => {
       ['stop', 'feature/ui', '--stop'],
       ['remove', 'feature/ui', '--rm'],
       ['url', 'feature/ui', '--url'],
-      ['password', 'feature/ui', '--password'],
     ] as const;
     for (const [action, branch, expected] of actions) {
       const mapped = mapVercelError(new Error('generic failure'), {

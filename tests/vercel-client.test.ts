@@ -248,7 +248,13 @@ describe('Vercel Sandbox client adapter', () => {
     });
 
     await expect(client.writeFiles(handle, [{ path: '/vercel/.env', content: Buffer.from('safe') }]))
-      .rejects.toThrow('[REDACTED]');
+      .rejects.toEqual(expect.objectContaining({
+        message: expect.stringContaining('[REDACTED]'),
+      }));
+    await expect(client.writeFiles(handle, [{ path: '/vercel/.env', content: Buffer.from('safe') }]))
+      .rejects.toEqual(expect.objectContaining({
+        message: expect.not.stringContaining(secret),
+      }));
   });
 
   it('passes an explicit cwd through the SDK object runCommand overload', async () => {

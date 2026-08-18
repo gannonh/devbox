@@ -804,7 +804,7 @@ describe('Vercel lifecycle', () => {
       write: vi.fn(async () => { throw new Error(`metadata write failed with ${token}`); }),
       remove: vi.fn(async () => {}),
       acquireLock: vi.fn(),
-      withLock: vi.fn(async () => { throw new Error('metadata lock unavailable'); }),
+      withLock: vi.fn(async (operation: () => Promise<unknown>) => operation()),
     } as unknown as VercelBranchMetadataStore;
     const client = {
       get: vi.fn(async () => handle),
@@ -851,7 +851,7 @@ describe('Vercel lifecycle', () => {
         reason: expect.any(String),
       }),
     }));
-    expect(branchMetadataStore.withLock).not.toHaveBeenCalled();
+    expect(branchMetadataStore.withLock).toHaveBeenCalledOnce();
   });
 
   it('resumes an existing named sandbox without rerunning branch setup', async () => {

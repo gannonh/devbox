@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,14 +29,7 @@ import type { ShellRunner } from '../src/lib/shell.js';
 import type { ProviderBranchRequest } from '../src/providers/types.js';
 import type { VercelLifecycle } from '../src/providers/vercel/lifecycle.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
-
-const STATUS_OUTPUT = [
-  '[devbox-status] Xvfb=running',
-  '[devbox-status] fluxbox=running',
-  '[devbox-status] x11vnc=running',
-  '[devbox-status] websockify=running',
-  '[devbox-status] auth-proxy=running',
-].join('\n');
+import { DISPLAY_STATUS_OUTPUT as STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 
 function sandbox(): VercelSandboxHandle {
   return {
@@ -55,8 +48,10 @@ describe('Vercel display startup', () => {
       branch: 'feature/display',
     });
     await store.write({});
+    const uploads: Array<Array<{ path: string; content: Buffer }>> = [];
     const commands: VercelRunCommandRequest[] = [];
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async (_sandbox, files) => { uploads.push(files); }),
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === '/usr/local/bin/devbox-status') {
@@ -75,6 +70,13 @@ describe('Vercel display startup', () => {
     });
 
     const start = commands.find((request) => request.cmd === '/usr/local/bin/devbox-start');
+    const overlay = (uploads[0] as Array<{ path: string; content: Buffer }>)[0];
+    expect(overlay.path).toBe('/vercel/.devbox/runtime/novnc-proxy.mjs');
+    expect(overlay.content.equals(await readFile('images/vercel/basic-auth-proxy.mjs'))).toBe(true);
+    expect(commands[0]).toMatchObject({
+      cmd: 'sudo',
+      args: ['-n', 'sh', '-c', expect.stringContaining("cp '/vercel/.devbox/runtime/novnc-proxy.mjs' '/usr/local/lib/devbox/basic-auth-proxy.mjs'")],
+    });
     expect(start).toMatchObject({
       cmd: '/usr/local/bin/devbox-start',
       env: {
@@ -109,6 +111,7 @@ describe('Vercel display startup', () => {
     });
     await store.write({});
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => request.cmd === '/usr/local/bin/devbox-status'
         ? { exitCode: 0, stdout: async () => STATUS_OUTPUT }
         : { exitCode: 0 }),
@@ -131,6 +134,7 @@ describe('Vercel display startup', () => {
     await store.write({});
     const commands: VercelRunCommandRequest[] = [];
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === '/usr/local/bin/devbox-status') {
@@ -147,11 +151,12 @@ describe('Vercel display startup', () => {
       secrets: [],
     });
 
-    expect(commands[0]).toMatchObject({ cmd: 'sh', args: ['-c', expect.stringContaining('kill')] });
-    expect(commands[0].env).toBeUndefined();
-    expect(commands[1]?.cmd).toBe('/usr/local/bin/devbox-start');
-    expect(commands[0].args?.join(' ')).toContain('devbox');
-    expect(JSON.stringify(commands[0])).not.toContain('DEVBOX_NOVNC_PASSWORD');
+    const reset = commands.find((request) => request.cmd === 'sh');
+    expect(reset).toMatchObject({ cmd: 'sh', args: ['-c', expect.stringContaining('kill')] });
+    expect(reset?.env).toBeUndefined();
+    expect(commands[commands.indexOf(reset!) + 1]?.cmd).toBe('/usr/local/bin/devbox-start');
+    expect(reset?.args?.join(' ')).toContain('devbox');
+    expect(JSON.stringify(reset)).not.toContain('DEVBOX_NOVNC_PASSWORD');
   });
 
   it('does not start with a rotated credential when service reset fails', async () => {
@@ -164,6 +169,7 @@ describe('Vercel display startup', () => {
     await store.write({});
     const commands: VercelRunCommandRequest[] = [];
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === 'sh') return { exitCode: 1, stderr: async () => 'reset failed' };
@@ -195,6 +201,7 @@ describe('Vercel display startup', () => {
     const commands: VercelRunCommandRequest[] = [];
     let failStart = true;
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === '/usr/local/bin/devbox-status') {
@@ -235,6 +242,7 @@ describe('Vercel display startup', () => {
     await store.write({});
     const commands: VercelRunCommandRequest[] = [];
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === '/usr/local/bin/devbox-status') {
@@ -246,7 +254,11 @@ describe('Vercel display startup', () => {
 
     await startDisplayStack({ sandbox: sandbox(), client, store, secrets: [] });
 
-    const script = commands[0]?.args?.[1] ?? '';
+    const script = commands.find((request) => request.cmd === 'sh')?.args?.[1] ?? '';
+    expect(script).toContain('proc_start_time()');
+    expect(script).toContain('expected_command()');
+    expect(script).toContain('process_matches()');
+    expect(script).toContain('recorded');
     expect(script).toContain('kill -TERM "${pid}"');
     expect(script).toContain('for attempt in $(seq 1 50); do');
     expect(script).toContain('kill -0 "${pid}"');
@@ -268,6 +280,7 @@ describe('Vercel display startup', () => {
     await store.write({ displayCredentials: { username: DISPLAY_USERNAME, password } });
     const commands: VercelRunCommandRequest[] = [];
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === '/usr/local/bin/devbox-status') {
@@ -296,6 +309,7 @@ describe('Vercel display startup', () => {
     });
     await store.write({ displayCredentials: { username: DISPLAY_USERNAME, password } });
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => {
         if (request.cmd === '/usr/local/bin/devbox-status') {
           return {
@@ -325,6 +339,7 @@ describe('Vercel display startup', () => {
     });
     await store.write({ displayCredentials: { username: DISPLAY_USERNAME, password: 'malformed-status-password' } });
     const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox, request) => {
         if (request.cmd === '/usr/local/bin/devbox-status') {
           return { exitCode: 0, stdout: async () => STATUS_OUTPUT.replace('Xvfb=running', 'not-Xvfb=running-extra') };

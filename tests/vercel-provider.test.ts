@@ -16,14 +16,7 @@ import {
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
-
-const DISPLAY_STATUS_OUTPUT = [
-  '[devbox-status] Xvfb=running',
-  '[devbox-status] fluxbox=running',
-  '[devbox-status] x11vnc=running',
-  '[devbox-status] websockify=running',
-  '[devbox-status] auth-proxy=running',
-].join('\n');
+import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 
 function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranchRequest {
   const defaults: ProviderBranchRequest = {
@@ -100,7 +93,9 @@ async function seedBranchMetadata(stateHome: string, branch = 'feature/ui'): Pro
     stateHome,
     repoKey: 'github.com/acme/repo',
     branch,
-  }).write({});
+  }).write({
+    displayCredentials: { username: 'devbox', password: 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa' },
+  });
 }
 
 describe('Vercel provider', () => {
@@ -538,7 +533,6 @@ describe('Vercel provider', () => {
     const local = {
       name: 'local',
       up: vi.fn(), attach: vi.fn(), stop: vi.fn(), remove: vi.fn(), list: vi.fn(), url: vi.fn(),
-      getDisplayCredentials: vi.fn(),
     } as unknown as DevboxProvider;
     const stdin = new PassThrough();
     const stdout = new PassThrough();
@@ -780,6 +774,7 @@ describe('Vercel provider', () => {
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
     await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
     await metadata.write({
+      displayCredentials: { username: 'devbox', password: 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa' },
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -839,11 +834,11 @@ describe('Vercel provider', () => {
     await expect(provider.url(request({ stdout: urlStdout, open: true, env: { VERCEL_TOKEN: 'new-vercel-token' } }))).resolves.toEqual({ exitCode: 0 });
     expect(urls.join('')).toBe([
       '3000: https://sandbox.example/3000  (public)',
-      '6080: https://sandbox.example/6080  (noVNC display — username devbox; password: devbox feature/ui --provider vercel --password)',
+      '6080: https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1  (noVNC display)',
       '8080: https://sandbox.example/8080  (public)',
       '',
     ].join('\n'));
-    expect(opener).toHaveBeenCalledWith('https://sandbox.example/6080');
+    expect(opener).toHaveBeenCalledWith('https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1');
     currentLifecycle.routes = vi.fn(async () => []);
     await expect(provider.url(request({ env: { VERCEL_TOKEN: 'new-vercel-token' } }))).rejects.toMatchObject({
       code: 'route',

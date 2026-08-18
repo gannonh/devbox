@@ -221,7 +221,7 @@ The managed VMI digest and version inventory are parity evidence only; Docker
 never attempts to pull the managed VMI.
 
 `images/vercel/Dockerfile` reproduces that reviewed upstream recipe, then adds
-Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the Basic Auth proxy.
+Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the token-pairing noVNC proxy.
 `start-devbox.sh` starts every service explicitly; the image clears its inherited
 shell command with an empty `CMD []`, so no runtime behavior depends on Docker
 defaults. `status-devbox.sh` and `check-local-image.sh` verify the non-root user,
