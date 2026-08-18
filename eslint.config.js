@@ -5,6 +5,7 @@ const nodeGlobals = {
   AbortController: 'readonly',
   Buffer: 'readonly',
   URL: 'readonly',
+  URLSearchParams: 'readonly',
   console: 'readonly',
   fetch: 'readonly',
   process: 'readonly',

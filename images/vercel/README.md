@@ -2,7 +2,7 @@
 
 This image mirrors the audited open-source `vercel/sandbox` Universal recipe
 on digest-pinned Ubuntu and Bun bases, then adds Chromium, Xvfb, fluxbox,
-x11vnc, noVNC/websockify, and a small HTTP/WebSocket Basic Auth proxy. The
+x11vnc, noVNC/websockify, and a token-pairing noVNC proxy. The
 checked-in [`provenance.json`](./provenance.json) is the source of truth for
 the upstream commit and recipe hashes, observed managed-VMI inventory, base
 references, Node checksum, apt snapshot, and exact runtime package versions.
@@ -34,8 +34,9 @@ evidence. Do not add credentials or source repositories to this context.
 Vercel Sandbox ignores Docker `ENTRYPOINT` and `CMD`; call the explicit
 `/usr/local/bin/devbox-start` command after `Sandbox.create()`. Supply
 `DEVBOX_NOVNC_PASSWORD` through the SDK command environment. The exposed port
-is `DEVBOX_NOVNC_PORT` (6081 by default), and both `/vnc.html` and its
-WebSocket upgrade require HTTP Basic Auth.
+is `DEVBOX_NOVNC_PORT` (6081 by default). `/vnc.html?token=...` pairs the
+browser; later requests, including the WebSocket upgrade, use the pairing
+cookie. A missing token shows a form.
 
 ```sh
 docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \

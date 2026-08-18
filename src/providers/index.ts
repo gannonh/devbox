@@ -10,6 +10,12 @@ export {
   createVercelProviderConfirmation,
   mapVercelTerminalResult,
 } from './vercel/provider.js';
+export {
+  getDisplayCredentials,
+} from './vercel/display-credentials.js';
+export type {
+  DisplayCredentialsResolution,
+} from './vercel/display-credentials.js';
 export type {
   VercelConfirmation,
   VercelConfirmationBoundary,
@@ -53,6 +59,7 @@ export type {
   VercelBranchMetadataInput,
   VercelBranchMetadataStore,
   VercelCreateConfiguration,
+  VercelDisplayCredentials,
   VercelIdentityTags,
   VercelMetadata,
   VercelMetadataIdentity,
@@ -101,6 +108,7 @@ export type {
   SandboxSnapshotStatus,
   VercelCommandResult,
   VercelRunCommandRequest,
+  VercelWriteFile,
   VercelSandboxDeleteByNameRequest,
   VercelSandboxDeleteByNameResult,
   VercelSandboxApi,
@@ -173,7 +181,6 @@ export type {
 } from './vercel/terminal.js';
 export type {
   DevboxProvider,
-  DisplayCredentialsResult,
   ProviderActionResult,
   ProviderBranchRequest,
   ProviderListRequest,
@@ -182,8 +189,6 @@ export type {
   ProviderOutput,
   ProviderRequestContext,
   ProviderUrlRequest,
-  SupportedDisplayCredentials,
-  UnsupportedDisplayCredentials,
 } from './types.js';
 export { ProviderOperationError, ProviderUsageError } from './types.js';
 export type { ProviderRegistry } from './registry.js';

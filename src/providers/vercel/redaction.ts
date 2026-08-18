@@ -1,5 +1,11 @@
 export const REDACTED_SECRET = '[REDACTED]';
 
+export function addSecrets(secrets: string[], ...values: Array<string | undefined>): void {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0 && !secrets.includes(value)) secrets.push(value);
+  }
+}
+
 /** Redact known secrets from text before it reaches errors, logs, or metadata. */
 export function redactSecrets(value: unknown, secrets: readonly string[] = []): string {
   const text = value instanceof Error

@@ -27,15 +27,6 @@ function request(branch = 'feature'): ProviderBranchRequest {
 }
 
 describe('local provider', () => {
-  it('reports display credentials as explicitly unsupported', async () => {
-    const result = await createLocalProvider(mockRunner()).getDisplayCredentials(request());
-
-    expect(result).toEqual({
-      supported: false,
-      message: expect.stringContaining('local provider'),
-    });
-  });
-
   it('returns a provider error when URL opening cannot spawn its executable', async () => {
     const realRunner = new RealShellRunner();
     const shell = mockRunner();

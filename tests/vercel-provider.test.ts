@@ -16,12 +16,14 @@ import {
 import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
+import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 
 function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranchRequest {
-  return {
+  const defaults: ProviderBranchRequest = {
     repoRoot: '/repo',
     repoName: 'repo',
     env: {
+      HOME: '/tmp/devbox-vercel-provider-no-pi',
       GH_TOKEN: 'github-secret',
       VERCEL_TOKEN: 'vercel-secret',
       VERCEL_TEAM_ID: 'team-1',
@@ -32,7 +34,12 @@ function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranch
     stdout: new PassThrough(),
     stderr: new PassThrough(),
     branch: 'feature/ui',
+  };
+  const env = overrides.env ?? defaults.env;
+  return {
+    ...defaults,
     ...overrides,
+    env: { ...env, HOME: env.HOME ?? defaults.env.HOME },
   };
 }
 
@@ -60,7 +67,10 @@ function sandbox(): VercelSandboxHandle {
     listSessions: vi.fn(),
     stop: vi.fn(),
     delete: vi.fn(),
-    runCommand: vi.fn(),
+    writeFiles: vi.fn(async () => {}),
+    runCommand: vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
+      ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+      : { exitCode: 0 }),
     domain: vi.fn((port: number) => `https://sandbox.example/${port}`),
   } as unknown as VercelSandboxHandle;
 }
@@ -76,6 +86,16 @@ function lifecycle(): VercelLifecycle {
     stop: vi.fn(),
     remove: vi.fn(),
   } as unknown as VercelLifecycle;
+}
+
+async function seedBranchMetadata(stateHome: string, branch = 'feature/ui'): Promise<void> {
+  await createVercelBranchMetadataStore({
+    stateHome,
+    repoKey: 'github.com/acme/repo',
+    branch,
+  }).write({
+    displayCredentials: { username: 'devbox', password: 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa' },
+  });
 }
 
 describe('Vercel provider', () => {
@@ -99,6 +119,8 @@ describe('Vercel provider', () => {
     });
     const pollForToken = vi.fn(() => (async function* () {})());
     const getAuth = vi.fn().mockReturnValue({ token: 'device-vercel-token' });
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-device-auth-state-'));
+    await seedBranchMetadata(stateHome);
     const lifecycleInstance = lifecycle();
     const terminal: VercelTerminalAdapter = {
       attach: vi.fn(async () => ({ status: 'exited' as const, code: 0 })),
@@ -119,6 +141,7 @@ describe('Vercel provider', () => {
       },
       terminal,
       opener,
+      stateHome,
       confirmation: vi.fn(async () => true),
       credentialOptions: { deviceAuthPrimitives: { OAuth, pollForToken, getAuth } },
     });
@@ -321,6 +344,8 @@ describe('Vercel provider', () => {
 
   it('prompts once when concurrent first-use up calls share a repository scope lock', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-concurrent-'));
+    await seedBranchMetadata(stateHome, 'feature/one');
+    await seedBranchMetadata(stateHome, 'feature/two');
     const entered = vi.fn();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -341,9 +366,8 @@ describe('Vercel provider', () => {
     const first = provider.up(request({ branch: 'feature/one' }));
     await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
     const second = provider.up(request({ branch: 'feature/two' }));
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledTimes(2));
     expect(confirmation).toHaveBeenCalledOnce();
-    expect(entered).toHaveBeenCalledTimes(2);
     release();
     await expect(Promise.all([first, second])).resolves.toEqual([
       { exitCode: 0 },
@@ -355,6 +379,8 @@ describe('Vercel provider', () => {
 
   it('releases the scope lock before a first terminal remains open', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-terminal-lock-'));
+    await seedBranchMetadata(stateHome, 'feature/one');
+    await seedBranchMetadata(stateHome, 'feature/two');
     const terminalEntered = vi.fn();
     let releaseTerminal!: () => void;
     const terminalGate = new Promise<void>((resolve) => { releaseTerminal = resolve; });
@@ -448,7 +474,10 @@ describe('Vercel provider', () => {
         await createRequest.onCreate?.(handle);
         return handle;
       }),
-      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
+        ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+        : { exitCode: 0 }),
     } as unknown as VercelSandboxClient;
     const confirmation = vi.fn(async () => true);
     const provider = createVercelProvider({
@@ -504,7 +533,6 @@ describe('Vercel provider', () => {
     const local = {
       name: 'local',
       up: vi.fn(), attach: vi.fn(), stop: vi.fn(), remove: vi.fn(), list: vi.fn(), url: vi.fn(),
-      getDisplayCredentials: vi.fn(),
     } as unknown as DevboxProvider;
     const stdin = new PassThrough();
     const stdout = new PassThrough();
@@ -566,6 +594,7 @@ describe('Vercel provider', () => {
 
   it('uses injected streams for default readline confirmation and preserves terminal stdin', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-readline-'));
+    await seedBranchMetadata(stateHome);
     const stdin = new PassThrough();
     const stderr = new PassThrough();
     let output = '';
@@ -745,6 +774,7 @@ describe('Vercel provider', () => {
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
     await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
     await metadata.write({
+      displayCredentials: { username: 'devbox', password: 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa' },
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -772,6 +802,7 @@ describe('Vercel provider', () => {
     currentLifecycle.routes = vi.fn(async () => [
       { port: 3000, subdomain: 'sandbox', url: 'https://sandbox.example/3000' },
       { port: 8080, subdomain: 'sandbox', url: 'https://sandbox.example/8080' },
+      { port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' },
     ]);
     currentLifecycle.remove = vi.fn(async () => ({
       verified: true,
@@ -801,8 +832,13 @@ describe('Vercel provider', () => {
     const urls: string[] = [];
     urlStdout.on('data', (chunk) => urls.push(chunk.toString()));
     await expect(provider.url(request({ stdout: urlStdout, open: true, env: { VERCEL_TOKEN: 'new-vercel-token' } }))).resolves.toEqual({ exitCode: 0 });
-    expect(urls.join('')).toBe('3000: https://sandbox.example/3000\n8080: https://sandbox.example/8080\n');
-    expect(opener).toHaveBeenCalledWith('https://sandbox.example/3000');
+    expect(urls.join('')).toBe([
+      '3000: https://sandbox.example/3000  (public)',
+      '6080: https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1  (noVNC display)',
+      '8080: https://sandbox.example/8080  (public)',
+      '',
+    ].join('\n'));
+    expect(opener).toHaveBeenCalledWith('https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1');
     currentLifecycle.routes = vi.fn(async () => []);
     await expect(provider.url(request({ env: { VERCEL_TOKEN: 'new-vercel-token' } }))).rejects.toMatchObject({
       code: 'route',
@@ -819,10 +855,12 @@ describe('Vercel provider', () => {
 
   it('maps terminal exit status and detaches without lifecycle cleanup', async () => {
     const currentLifecycle = lifecycle();
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-terminal-result-'));
+    await seedBranchMetadata(stateHome);
     const terminal = { attach: vi.fn(async () => ({ status: 'exited' as const, code: 23 })) } as VercelTerminalAdapter;
     const provider = createVercelProvider({
       runner: runner(),
-      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-terminal-result-')),
+      stateHome,
       lifecycle: currentLifecycle,
       terminal,
       confirmation: vi.fn(async () => true),
@@ -1212,6 +1250,8 @@ describe('Vercel provider', () => {
   });
 
   it('confirms first-use scope before creating and attaches a terminal in sandbox cwd', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-first-use-'));
+    await seedBranchMetadata(stateHome);
     const captured: VercelLifecycleOptions[] = [];
     const currentLifecycle = lifecycle();
     const terminal: VercelTerminalAdapter = {
@@ -1224,7 +1264,7 @@ describe('Vercel provider', () => {
 
     const provider = createVercelProvider({
       runner: runner(),
-      stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-first-use-')),
+      stateHome,
       lifecycle: (options) => {
         captured.push(options);
         return currentLifecycle;

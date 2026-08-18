@@ -1,4 +1,4 @@
-import { Sandbox, Snapshot } from '@vercel/sandbox';
+import { Command, CommandFinished, Sandbox, Snapshot } from '@vercel/sandbox';
 import type { VercelCredentials } from './auth.js';
 import { VERCEL_IMAGE_PIN } from './image.js';
 import type { GitSource } from './source.js';
@@ -61,20 +61,9 @@ export interface VercelStopResult {
   [key: string]: unknown;
 }
 
-export interface VercelCommandResult {
-  exitCode: number;
-  stdout?: (options?: { signal?: AbortSignal }) => Promise<string>;
-  stderr?: (options?: { signal?: AbortSignal }) => Promise<string>;
-}
-
-/** The object overload supported by @vercel/sandbox v3. */
-export interface VercelRunCommandRequest {
-  cmd: string;
-  args?: string[];
-  cwd?: string;
-  signal?: AbortSignal;
-  timeoutMs?: number;
-}
+export type VercelCommandResult = Command | CommandFinished;
+export type VercelWriteFile = Parameters<Sandbox['writeFiles']>[0][number];
+export type VercelRunCommandRequest = Parameters<Sandbox['runCommand']>[0];
 
 export interface VercelSandboxHandle {
   readonly id?: string;
@@ -100,6 +89,7 @@ export interface VercelSandboxHandle {
   listSessions(params?: { signal?: AbortSignal }): Promise<unknown>;
   stop(params?: { signal?: AbortSignal }): Promise<VercelStopResult>;
   delete(params?: { signal?: AbortSignal }): Promise<void>;
+  writeFiles(files: VercelWriteFile[], options?: { signal?: AbortSignal }): Promise<void>;
   runCommand(params: VercelRunCommandRequest): Promise<VercelCommandResult>;
   domain(port: number): string;
 }
@@ -190,6 +180,11 @@ export interface VercelSandboxClient {
     options?: { signal?: AbortSignal },
   ): Promise<VercelStopResult>;
   deleteSandbox(sandbox: VercelSandboxHandle, options?: { signal?: AbortSignal }): Promise<void>;
+  writeFiles(
+    sandbox: VercelSandboxHandle,
+    files: VercelWriteFile[],
+    options?: { signal?: AbortSignal },
+  ): Promise<void>;
   runCommand(
     sandbox: VercelSandboxHandle,
     params: VercelRunCommandRequest,
@@ -350,6 +345,11 @@ export function createVercelSandboxClient(
     ),
     stopSandbox: async (sandbox, options) => call('Sandbox.stop', [], () => sandbox.stop(options)),
     deleteSandbox: async (sandbox, options) => call('Sandbox.delete', [], () => sandbox.delete(options)),
+    writeFiles: async (sandbox, files, options) => call(
+      'Sandbox.writeFiles',
+      [],
+      () => sandbox.writeFiles(files, options),
+    ),
     runCommand: async (sandbox, params) => call(
       'Sandbox.runCommand',
       [],
@@ -447,6 +447,13 @@ function wrapSandboxHandle(
           'Sandbox.delete',
           secrets,
           () => target.delete(options),
+        );
+      }
+      if (property === 'writeFiles') {
+        return (files: VercelWriteFile[], options?: { signal?: AbortSignal }) => callWithSecrets(
+          'Sandbox.writeFiles',
+          secrets,
+          () => target.writeFiles(files, options),
         );
       }
       if (property === 'runCommand') {

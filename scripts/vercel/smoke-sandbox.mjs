@@ -196,7 +196,7 @@ async function command(cmd, args = [], options = {}) {
   return { exitCode: result.exitCode, stdout, stderr };
 }
 
-function probeWebSocket(url, authorization, { signal = smokeSignal, timeoutMs = httpTimeoutMs } = {}) {
+function probeWebSocket(url, cookie, { signal = smokeSignal, timeoutMs = httpTimeoutMs } = {}) {
   return new Promise((resolve, reject) => {
     const target = new URL('/websockify', url);
     const secure = target.protocol === 'https:';
@@ -224,7 +224,7 @@ function probeWebSocket(url, authorization, { signal = smokeSignal, timeoutMs = 
         `Host: ${target.host}`,
         'Connection: Upgrade',
         'Upgrade: websocket',
-        `Authorization: Basic ${authorization}`,
+        `Cookie: ${cookie}`,
         'Sec-WebSocket-Key: ' + key,
         'Sec-WebSocket-Version: 13',
         '\r\n',
@@ -431,14 +431,14 @@ try {
 
   const domain = sandbox.domain(6081);
   report.noVncUrl = domain;
-  const authorization = Buffer.from(`${username}:${password}`).toString('base64');
+  const cookie = `devbox_novnc=${encodeURIComponent(password)}`;
   await timed('http', async (signal) => {
-    const unauthorized = await fetchWithTimeout(`${domain}/vnc.html`, {}, httpTimeoutMs, signal);
-    check('noVNC rejects unauthenticated HTTP', unauthorized.status === 401, `status=${unauthorized.status}`);
-    const authorized = await fetchWithTimeout(`${domain}/vnc.html`, { headers: { Authorization: `Basic ${authorization}` } }, httpTimeoutMs, signal);
-    check('authenticated noVNC HTTP', authorized.status === 200, `status=${authorized.status}`);
+    const unpaired = await fetchWithTimeout(`${domain}/vnc.html`, {}, httpTimeoutMs, signal);
+    check('noVNC rejects unauthenticated HTTP', unpaired.status === 200 && (await unpaired.text()).includes('name="token"'), `status=${unpaired.status}`);
+    const paired = await fetchWithTimeout(`${domain}/vnc.html?token=${encodeURIComponent(password)}`, {}, httpTimeoutMs, signal);
+    check('authenticated noVNC HTTP', paired.status === 200, `status=${paired.status}`);
   }, { timeoutMs: httpTimeoutMs * 2 });
-  const websocketStatus = await timed('websocket', (signal) => probeWebSocket(domain, authorization, { signal, timeoutMs: httpTimeoutMs }), { timeoutMs: httpTimeoutMs });
+  const websocketStatus = await timed('websocket', (signal) => probeWebSocket(domain, cookie, { signal, timeoutMs: httpTimeoutMs }), { timeoutMs: httpTimeoutMs });
   check('authenticated noVNC WebSocket', websocketStatus.includes('101'), websocketStatus);
 
   const terminalRun = await timed('terminal', async (signal) => {

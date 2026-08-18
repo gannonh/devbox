@@ -17,9 +17,9 @@ describe('resolveDevboxEnv', () => {
     expect(result).toBe('/custom/.env');
   });
 
-  it('defaults to $HOME/dotfiles/repos/<repoName>/.env', () => {
-    const result = resolveDevboxEnv('/Volumes/EVO/dev/my-repo', {}, '/home/user');
-    expect(result).toBe('/home/user/dotfiles/repos/my-repo/.env');
+  it('defaults to the repo-local .env', () => {
+    const result = resolveDevboxEnv('/Volumes/EVO/dev/my-repo', {});
+    expect(result).toBe('/Volumes/EVO/dev/my-repo/.env');
   });
 });
 

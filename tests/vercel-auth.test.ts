@@ -66,6 +66,47 @@ describe('Vercel credential resolution', () => {
     expect(deviceAuth).not.toHaveBeenCalled();
   });
 
+  it('reuses an unexpired SDK auth file without starting device auth', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-auth-cached-'));
+    await mkdir(join(repoRoot, '.vercel'));
+    await writeFile(join(repoRoot, '.vercel', 'project.json'), JSON.stringify({
+      orgId: 'cached-team',
+      projectId: 'cached-project',
+    }));
+    const configDir = await mkdtemp(join(tmpdir(), 'devbox-auth-config-'));
+    await writeFile(join(configDir, 'auth.json'), JSON.stringify({
+      token: 'cached-token',
+      expiresAt: Math.floor((Date.now() + 60_000) / 1000),
+    }));
+    const previousConfigDir = process.env.VERCEL_AUTH_CONFIG_DIR;
+    process.env.VERCEL_AUTH_CONFIG_DIR = configDir;
+
+    try {
+      await expect(resolveVercelCredentials({
+        repoRoot,
+        env: {},
+      })).resolves.toEqual({
+        token: 'cached-token',
+        teamId: 'cached-team',
+        projectId: 'cached-project',
+      });
+
+      const storedScopeRepo = await mkdtemp(join(tmpdir(), 'devbox-auth-stored-scope-'));
+      await expect(resolveVercelCredentialsForScope({
+        repoRoot: storedScopeRepo,
+        env: {},
+        scope: { teamId: 'cached-team', projectId: 'cached-project' },
+      })).resolves.toEqual({
+        token: 'cached-token',
+        teamId: 'cached-team',
+        projectId: 'cached-project',
+      });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.VERCEL_AUTH_CONFIG_DIR;
+      else process.env.VERCEL_AUTH_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it('rejects OIDC tokens containing characters outside base64url segments', async () => {
     const payload = Buffer.from(JSON.stringify({
       owner_id: 'team',

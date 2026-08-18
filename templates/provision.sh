@@ -34,7 +34,7 @@ elif [[ -f bun.lock ]]; then
 elif [[ -f pnpm-lock.yaml && ! -d node_modules/.pnpm ]]; then
   log "pnpm install"
   pnpm install --frozen-lockfile
-elif [[ -f package-lock.json && ! -d node_modules/.package-lock.json ]]; then
+elif [[ -f package-lock.json && ! -f node_modules/.package-lock.json ]]; then
   log "npm ci"
   npm ci
 fi
@@ -59,18 +59,19 @@ fi
 
 # --- 4a. Pi (active default) --------------------------------------------------
 # Copy the host ~/.pi (mounted read-only at /tmp/host-pi) into the box, EXCLUDING
-# the bulky / macOS-native dirs (sessions, npm node_modules, cache). Then replay
-# the user's extension set from settings.json so they build Linux-native.
+# bulky/generated state (sessions, npm node_modules, cache, fff frecency data).
+# Then replay the user's extension set from settings.json so they build Linux-native.
 HOST_PI=/tmp/host-pi
 BOX_PI="${HOME}/.pi"
 if [[ -d "${HOST_PI}" ]] && [[ ! -d "${BOX_PI}" ]]; then
-  log "copying Pi config from host (excluding sessions/npm/cache)"
+  log "copying Pi config from host (excluding sessions/npm/cache/fff)"
   mkdir -p "${BOX_PI}"
   # rsync preserves the tree while pruning the heavy dirs.
   rsync -a \
     --exclude 'agent/sessions/' \
     --exclude 'agent/npm/' \
     --exclude 'agent/cache/' \
+    --exclude 'agent/fff/' \
     "${HOST_PI}/" "${BOX_PI}/"
 
   # Replay extensions from settings.json .packages[] (Linux-native rebuild).

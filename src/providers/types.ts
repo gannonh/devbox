@@ -44,24 +44,6 @@ export interface ProviderActionResult {
   exitCode: number;
 }
 
-export interface SupportedDisplayCredentials {
-  supported: true;
-  username: string;
-  password: string;
-}
-
-export interface UnsupportedDisplayCredentials {
-  supported: false;
-  username?: undefined;
-  password?: undefined;
-  message: string;
-}
-
-/** Explicitly labeled credentials, or a provider-owned unsupported result. */
-export type DisplayCredentialsResult =
-  | SupportedDisplayCredentials
-  | UnsupportedDisplayCredentials;
-
 /** Stable lifecycle boundary consumed by CLI routing. */
 export interface DevboxProvider {
   readonly name: ProviderName;
@@ -71,7 +53,6 @@ export interface DevboxProvider {
   remove(request: ProviderBranchRequest): Promise<ProviderActionResult>;
   list(request: ProviderListRequest): Promise<ProviderActionResult>;
   url(request: ProviderUrlRequest): Promise<ProviderActionResult>;
-  getDisplayCredentials(request: ProviderBranchRequest): Promise<DisplayCredentialsResult>;
 }
 
 export class ProviderUsageError extends Error {

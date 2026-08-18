@@ -2,10 +2,28 @@ import { describe, it, expect } from 'vitest';
 import { RealShellRunner, escapeShellSingleQuote, commandExists } from '../src/lib/shell.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Wait for a child to report readiness instead of guessing with a fixed sleep.
+ * A spawned `node -e` process can take arbitrarily long to boot and install its
+ * SIGINT handler on a loaded machine; signalling before that happens kills the
+ * child with the default action and fails the assertion spuriously.
+ */
+async function waitUntil(ready: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting for the child to become ready');
+    await sleep(10);
+  }
 }
 
 describe('RealShellRunner.spawnInherit', () => {
@@ -35,6 +53,7 @@ describe('RealShellRunner.spawnInherit signal forwarding', () => {
         process.stdout.write('GOT_SIGINT\\n');
         process.exit(42);
       });
+      process.stdout.write('READY\\n');
       setInterval(() => {}, 1000);
     `;
     const child = spawn('node', ['-e', childScript], {
@@ -43,7 +62,7 @@ describe('RealShellRunner.spawnInherit signal forwarding', () => {
     let childOut = '';
     child.stdout?.on('data', (d: Buffer) => (childOut += d.toString()));
 
-    await sleep(300);
+    await waitUntil(() => childOut.includes('READY'));
 
     child.kill('SIGINT');
 
@@ -63,11 +82,15 @@ describe('RealShellRunner.spawnInherit signal forwarding', () => {
     const signalSource = new EventEmitter();
     const runner = new RealShellRunner();
 
+    // stdio is inherited here, so the child reports readiness through a marker
+    // file rather than a pipe the test could read.
+    const readyFile = join(await mkdtemp(join(tmpdir(), 'devbox-signal-')), 'ready');
     const childScript = `
       process.on('SIGINT', () => {
         process.stdout.write('GOT_SIGINT\\n');
         process.exit(42);
       });
+      require('node:fs').writeFileSync(${JSON.stringify(readyFile)}, 'ready');
       setInterval(() => {}, 1000);
     `;
 
@@ -83,8 +106,8 @@ describe('RealShellRunner.spawnInherit signal forwarding', () => {
       signalSource,
     );
 
-    // Give the child time to install its handler.
-    await sleep(500);
+    // Wait until the child has actually installed its handler.
+    await waitUntil(() => existsSync(readyFile));
 
     // Emit SIGINT on the fake signal source — this exercises the onSignal
     // handler in spawnInherit, which must forward to child.kill('SIGINT').

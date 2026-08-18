@@ -55,6 +55,7 @@ export interface DeviceAuthPrimitives {
 export interface CredentialResolutionOptions {
   repoRoot: string;
   env?: Record<string, string | undefined>;
+  scope?: VercelScope;
   deviceAuth?: (scope: VercelScope, context: DeviceAuthContext) => Promise<DeviceAuthResult>;
   deviceAuthPrimitives?: Partial<DeviceAuthPrimitives>;
   onDeviceAuthorization?: (request: DeviceAuthorizationRequest) => void | Promise<void>;
@@ -105,10 +106,14 @@ export async function resolveVercelCredentials(
       ) {
         throw new Error('Vercel scope conflict between OIDC token and linked project');
       }
+      if (options.scope) assertCredentialScope(options.scope, oidcScope);
       return { token: oidcToken, ...oidcScope };
     }
 
-    const linkedScope = await readLinkedScope(options.repoRoot, true, cancellation.signal);
+    const linkedScope = options.scope ?? await readLinkedScope(options.repoRoot, true, cancellation.signal);
+    const cachedCredentials = readCachedCredentials(options, linkedScope);
+    if (cachedCredentials) return cachedCredentials;
+
     if (options.deviceAuth) {
       const result = await callWithCancellation(
         () => options.deviceAuth!(linkedScope, {
@@ -147,7 +152,7 @@ export async function resolveVercelCredentialsForScope(
     return { token: requireVercelToken(oidcToken), ...options.scope };
   }
 
-  const credentials = await resolveVercelCredentials(options);
+  const credentials = await resolveVercelCredentials({ ...options, scope: options.scope });
   assertCredentialScope(options.scope, credentials);
   return { ...credentials, ...options.scope };
 }
@@ -238,6 +243,18 @@ function normalizeInjectedDeviceAuth(
     throw new Error('Injected device authentication scope mismatch');
   }
   return { token, teamId: scope.teamId, projectId: scope.projectId };
+}
+
+function readCachedCredentials(
+  options: CredentialResolutionOptions,
+  scope: LinkedScope,
+): VercelCredentials | undefined {
+  // Injected auth seams own credential resolution; only the production path
+  // reads the SDK's persisted auth file.
+  if (options.deviceAuth !== undefined || options.deviceAuthPrimitives !== undefined) return undefined;
+  const auth = sdkGetAuth();
+  if (!auth?.token || (auth.expiresAt && auth.expiresAt.getTime() <= Date.now())) return undefined;
+  return { token: requireVercelToken(auth.token), ...scope };
 }
 
 function requireAuthToken(value: unknown): string {

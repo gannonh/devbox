@@ -169,6 +169,94 @@ describe('Vercel Sandbox client adapter', () => {
     expect(JSON.stringify({ url: createRequest?.url, body })).not.toContain('vercel-token');
   });
 
+  it('forwards writeFiles and object-form runCommand env through the redacted sandbox handle', async () => {
+    const writeFiles = vi.fn(async () => {});
+    const runCommand = vi.fn(async () => ({ exitCode: 0 }));
+    const target = {
+      name: 'runtime-capabilities',
+      status: 'running' as const,
+      writeFiles,
+      runCommand,
+    };
+    const client = createVercelSandboxClient({
+      sandbox: {
+        getOrCreate: vi.fn(async () => target),
+        get: vi.fn(),
+        list: vi.fn(),
+      } as never,
+    });
+    const handle = await client.getOrCreate({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      name: 'runtime-capabilities',
+      image: VERCEL_IMAGE_PIN.reference,
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        revision: 'main',
+        username: 'x-access-token',
+        password: 'github-token',
+      },
+      timeout: 10_000,
+      persistent: true,
+      keepLastSnapshots: { count: 1 },
+      tags: {},
+    });
+    const files = [{ path: '/vercel/.env', content: Buffer.from('safe'), mode: 0o600 }];
+    const request = {
+      cmd: 'gh',
+      args: ['auth', 'status'],
+      env: { GH_CONFIG_DIR: '/vercel/.devbox/runtime/gh' },
+    };
+
+    await client.writeFiles(handle, files);
+    await client.runCommand(handle, request);
+
+    expect(writeFiles).toHaveBeenCalledWith(files, undefined);
+    expect(runCommand).toHaveBeenCalledWith(request);
+  });
+
+  it('redacts secrets from added writeFiles failures', async () => {
+    const secret = 'github-write-secret';
+    const target = {
+      name: 'runtime-write-error',
+      status: 'running' as const,
+      writeFiles: vi.fn(async () => { throw new Error(`write failed ${secret}`); }),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+    };
+    const client = createVercelSandboxClient({
+      sandbox: {
+        getOrCreate: vi.fn(async () => target),
+        get: vi.fn(),
+        list: vi.fn(),
+      } as never,
+    });
+    const handle = await client.getOrCreate({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      name: 'runtime-write-error',
+      image: VERCEL_IMAGE_PIN.reference,
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        revision: 'main',
+        username: 'x-access-token',
+        password: secret,
+      },
+      timeout: 10_000,
+      persistent: true,
+      keepLastSnapshots: { count: 1 },
+      tags: {},
+    });
+
+    await expect(client.writeFiles(handle, [{ path: '/vercel/.env', content: Buffer.from('safe') }]))
+      .rejects.toEqual(expect.objectContaining({
+        message: expect.stringContaining('[REDACTED]'),
+      }));
+    await expect(client.writeFiles(handle, [{ path: '/vercel/.env', content: Buffer.from('safe') }]))
+      .rejects.toEqual(expect.objectContaining({
+        message: expect.not.stringContaining(secret),
+      }));
+  });
+
   it('passes an explicit cwd through the SDK object runCommand overload', async () => {
     const runCommand = vi.fn(async (params: { cmd: string; args?: string[]; cwd?: string; signal?: AbortSignal; timeoutMs?: number }) => {
       expect(params).toEqual({
