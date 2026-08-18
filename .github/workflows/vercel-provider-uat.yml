@@ -58,7 +58,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: vercel-provider-uat
+  group: vercel-provider-gates
   cancel-in-progress: false
 
 jobs:

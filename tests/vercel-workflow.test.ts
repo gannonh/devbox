@@ -12,6 +12,25 @@ async function exists(path: string): Promise<void> {
 }
 
 describe('Vercel image supply-chain workflow', () => {
+  it('provides a branch when the exact-SHA benchmark checkout is detached', async () => {
+    const workflow = await readFile('.github/workflows/vercel-benchmark.yml', 'utf8');
+
+    expect(workflow).toContain('ref: ${{ env.SOURCE_SHA }}');
+    expect(workflow).toContain('SOURCE_BRANCH: ${{ github.event.repository.default_branch }}');
+  });
+
+  it('serializes the secret-gated provider workflows at the project level', async () => {
+    const [benchmark, uat] = await Promise.all([
+      readFile('.github/workflows/vercel-benchmark.yml', 'utf8'),
+      readFile('.github/workflows/vercel-provider-uat.yml', 'utf8'),
+    ]);
+
+    expect(benchmark).toContain('group: vercel-provider-gates');
+    expect(uat).toContain('group: vercel-provider-gates');
+    expect(benchmark).toContain('cancel-in-progress: false');
+    expect(uat).toContain('cancel-in-progress: false');
+  });
+
   it('runs manually and on a schedule without an auto-merge path', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('workflow_call:');

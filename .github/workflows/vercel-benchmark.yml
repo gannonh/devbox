@@ -26,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: vercel-provider-benchmark
+  group: vercel-provider-gates
   cancel-in-progress: false
 
 jobs:
@@ -39,6 +39,7 @@ jobs:
       contents: read
     env:
       SOURCE_SHA: ${{ inputs.source_sha || github.event.inputs.source_sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - name: Guard default-branch benchmark
         run: |
