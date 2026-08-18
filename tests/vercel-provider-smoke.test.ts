@@ -192,7 +192,7 @@ describe('Vercel provider smoke configuration', () => {
       team: 'astro-labs',
       project: 'devbox',
       repository: 'devbox',
-      digest: 'sha256:a4aa03890d74f5251f3861c4f6e96afeab3d0b7881b8206fa0de4223bdf051f7',
+      digest: 'sha256:d7f2d914ce5905cac6bd0ede396039fe9abc7eb651f82289a917c6e173be6d07',
     });
   });
 

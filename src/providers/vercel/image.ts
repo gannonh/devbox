@@ -322,7 +322,7 @@ export function assertValidVercelImagePin(pin: VercelImagePin): VercelImageRefer
 }
 
 export const VERCEL_IMAGE_REFERENCE =
-  'vcr.vercel.com/astro-labs/devbox/devbox@sha256:a4aa03890d74f5251f3861c4f6e96afeab3d0b7881b8206fa0de4223bdf051f7';
+  'vcr.vercel.com/astro-labs/devbox/devbox@sha256:d7f2d914ce5905cac6bd0ede396039fe9abc7eb651f82289a917c6e173be6d07';
 
 /** The exact audited mirror inputs copied from images/vercel/provenance.json. */
 export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = {
@@ -395,9 +395,9 @@ export const VERCEL_IMAGE_PIN: VercelImagePin = {
   reference: VERCEL_IMAGE_REFERENCE,
   provenance: VERCEL_IMAGE_PROVENANCE,
   provenanceDigest: 'sha256:56b660cafb8fef028df83c6ecec45ddeaee03496e70da02386d526c556b3092b',
-  sourceCommit: 'ebf9cb7e3072c7414952eaca034157cbbdb55449',
-  publisherSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/31905089142#publisher-smoke',
-  consumerSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/31905089142#consumer-smoke',
+  sourceCommit: '8077cb4e51680c25a7d8fa2c0db5a67d141f4588',
+  publisherSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/32197069706#publisher-smoke',
+  consumerSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/32197069706#consumer-smoke',
   publisher: { team: 'astro-labs', project: 'devbox' },
   consumer: { team: 'astro-labs', project: 'devbox-uat' },
   testedReference: VERCEL_IMAGE_REFERENCE,
