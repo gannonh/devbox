@@ -459,14 +459,15 @@ describe('Vercel provider smoke configuration', () => {
     expect(smokeStep).not.toContain('steps.pin.outcome');
   });
 
-  it('runs provider quality on the minimum and current supported Node lanes', async () => {
+  it('runs provider quality on the supported Node 22 LTS lane', async () => {
     const ci = await readFile('.github/workflows/ci.yml', 'utf8');
     const smoke = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
     const release = await readFile('.github/workflows/release.yml', 'utf8');
     const pkg = JSON.parse(await readFile('package.json', 'utf8')) as { engines: { node: string } };
-    expect(pkg.engines.node).toBe('>=20.18.1');
-    expect(ci).toContain("node-version: ['20.18.1', '22']");
-    expect(ci).toContain('matrix.node-version');
+    expect(pkg.engines.node).toBe('>=22');
+    expect(ci).toContain("name: quality and provider contracts (Node 22)");
+    expect(ci).toContain("node-version: '22'");
+    expect(ci).not.toContain('matrix.node-version');
     expect(ci).toContain('npm run lint');
     expect(ci).toContain('npm run typecheck');
     expect(ci).toContain('npm run build');

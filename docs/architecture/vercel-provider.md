@@ -51,7 +51,7 @@ flowchart LR
 
 ## CI and acceptance
 
-Local quality runs on Node `20.18.1` and the current supported Node 22 lane.
+Local quality runs on the supported Node 22 LTS lane.
 Credentialed image, provider-UAT, and five-run benchmark workflows are
 secret-gated, serialized by concurrency, and manually or release-triggered.
 They redact evidence before upload and fail on residual Sandboxes, snapshots,
