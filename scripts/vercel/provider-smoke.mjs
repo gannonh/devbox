@@ -318,7 +318,9 @@ async function runUatContract(client, sandbox, config, pathReport, cwd, signal, 
       pathReport.checks.push({
         name: `${label} UAT ${name}`,
         ok,
-        detail: `exitCode=${result.exitCode}`,
+        detail: result.exitCode === 0
+          ? `exitCode=${result.exitCode}`
+          : `exitCode=${result.exitCode}; ${redactText(result.stderr).trim().slice(0, 240)}`,
       });
       if (!ok) failed.push(name);
     }
