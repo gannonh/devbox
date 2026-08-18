@@ -328,7 +328,7 @@ describe('Vercel provider smoke configuration', () => {
     expect(guardRun).toContain('test "${EXPECTED_LABEL_NAME}" = "psmoke:${SOURCE_SHA}"');
   });
 
-  it('structurally maps the caller gate inputs to explicit read-only secrets', async () => {
+  it('structurally maps the caller gate inputs to explicit fixture secrets', async () => {
     const ci = await loadWorkflow('.github/workflows/ci.yml');
     const on = ci.on as Record<string, { types?: string[] }>;
     expect(on.pull_request?.types).toContain('labeled');
@@ -503,8 +503,19 @@ describe('Vercel provider smoke configuration', () => {
   it('requires explicit UAT contract markers for the private fixture path', async () => {
     const workflow = await readFile('.github/workflows/vercel-provider-uat.yml', 'utf8');
     const source = await readFile('scripts/vercel/provider-smoke.mjs', 'utf8');
+    const fixture = await readFile('scripts/vercel/uat-fixture.mjs', 'utf8');
 
     expect(workflow).toContain("DEVBOX_UAT_REQUIRED: 'true'");
+    expect(workflow).toContain('name: vercel-provider-smoke');
+    for (const secret of [
+      'DEVBOX_UAT_PUSH_TOKEN',
+      'DEVBOX_UAT_ENV_CONTENT',
+      'DEVBOX_UAT_FIXTURE_COMMAND',
+      'DEVBOX_UAT_RESUME_COMMAND',
+    ]) {
+      expect(workflow).not.toContain(secret);
+      expect(source).not.toContain(secret);
+    }
     for (const marker of [
       'DEVBOX_UAT:agents',
       'DEVBOX_UAT:chromium-oauth',
@@ -513,10 +524,13 @@ describe('Vercel provider smoke configuration', () => {
       'DEVBOX_UAT:resume-secret-refresh',
     ]) {
       expect(source).toContain(marker);
+      expect(fixture).toContain(marker);
     }
-    expect(source).toContain('provider UAT requires non-empty fixture and resume contract commands');
     expect(source).toContain('provider UAT requires both existing and missing private-repository paths');
-    expect(source).toContain('uatFixtureCommand && label === \'missing\'');
-    expect(source).toContain('uatResumeCommand && label === \'missing\'');
+    expect(source).toContain('runUatContract');
+    expect(source).toContain("readFile(new URL('./uat-fixture.mjs', import.meta.url)");
+    expect(fixture).toContain("electron: '31.7.7'");
+    expect(fixture).toContain("vite: '5.4.20'");
+    expect(fixture).toContain("git', ['push'");
   });
 });

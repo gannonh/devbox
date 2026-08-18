@@ -84,7 +84,7 @@ Create these exact repository secrets:
 | `VERCEL_CONSUMER_TOKEN` | Verified Issue #4 consumer token for the `devbox-uat` Sandbox project |
 | `VERCEL_CONSUMER_TEAM_ID` | Exact Vercel team/account ID for that consumer token |
 | `VERCEL_CONSUMER_PROJECT_ID` | Exact Vercel project ID for that consumer token |
-| `DEVBOX_GITHUB_FIXTURE_TOKEN` | Read-only token able to clone the private fixture |
+| `DEVBOX_GITHUB_FIXTURE_TOKEN` | Scoped token able to clone, push a run-unique branch, and delete it in the private fixture |
 | `DEVBOX_GITHUB_FIXTURE_REPOSITORY` | Exact `owner/repository` pair |
 | `DEVBOX_GITHUB_FIXTURE_BRANCH` | Branch expected to exist for the existing path |
 | `DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH` | Expected GitHub API default branch |

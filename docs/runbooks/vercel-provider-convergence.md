@@ -53,17 +53,20 @@ Pi/Claude/Codex/OpenCode, authenticated noVNC HTTP and WebSocket access,
 Chromium localhost OAuth, Electron/Vite, authenticated push, stop/resume with
 secret refresh, and remove.
 
-The protected environment supplies `DEVBOX_UAT_PUSH_TOKEN`,
-`DEVBOX_UAT_ENV_CONTENT`, `DEVBOX_UAT_FIXTURE_COMMAND`, and
-`DEVBOX_UAT_RESUME_COMMAND`. The fixture command is responsible for starting
-its Vite and Electron entry points, opening its localhost OAuth URL with
-Chromium, checking all four agent executables, and pushing the run-unique
-branch in the missing-branch path. It must print these exact standalone
-markers only after each action succeeds: `DEVBOX_UAT:agents`,
-`DEVBOX_UAT:chromium-oauth`, `DEVBOX_UAT:electron-vite`, and
-`DEVBOX_UAT:push`. The resume command must refresh runtime secrets and print
-`DEVBOX_UAT:resume-secret-refresh`. The provider records each marker as an
-independent check; command output and credentials are not evidence.
+The workflow reuses the existing `vercel-provider-smoke` environment and the
+same `DEVBOX_GITHUB_FIXTURE_TOKEN` for clone, authenticated push, and
+run-unique branch deletion. The checked-in `scripts/vercel/uat-fixture.mjs`
+is uploaded into the disposable Sandbox and installs pinned Vite/Electron
+dependencies in a temporary workspace. It starts the image display, checks all
+four agent executables, opens localhost OAuth with Chromium, loads the same app
+in Electron, pushes a generated marker, and verifies the remote branch. After
+resume, it verifies the branch and a newly generated runtime secret marker.
+The provider records these exact standalone markers only after each action
+succeeds: `DEVBOX_UAT:agents`, `DEVBOX_UAT:chromium-oauth`,
+`DEVBOX_UAT:electron-vite`, `DEVBOX_UAT:push`, and
+`DEVBOX_UAT:resume-secret-refresh`. The runner and its temporary workspace are
+removed before the Sandbox path is cleaned up; command output and credentials
+are not evidence.
 
 Every evidence directory is redacted before upload. Search artifacts for the
 fixture token, Vercel token, Basic Auth password, `.env` values, URLs with

@@ -40,10 +40,15 @@ describe('Vercel image supply-chain workflow', () => {
     expect(ci).toContain('needs: vercel-provider-uat');
     expect(ci).toContain("github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)");
     for (const secret of [
-      'DEVBOX_UAT_PUSH_TOKEN',
-      'DEVBOX_UAT_ENV_CONTENT',
-      'DEVBOX_UAT_FIXTURE_COMMAND',
-      'DEVBOX_UAT_RESUME_COMMAND',
+      'VERCEL_CONSUMER_TOKEN',
+      'VERCEL_CONSUMER_TEAM_ID',
+      'VERCEL_CONSUMER_PROJECT_ID',
+      'DEVBOX_GITHUB_FIXTURE_TOKEN',
+      'DEVBOX_GITHUB_FIXTURE_REPOSITORY',
+      'DEVBOX_GITHUB_FIXTURE_BRANCH',
+      'DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH',
+      'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
+      'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
     ]) {
       expect(ci).toContain(`${secret}: \${{ secrets.${secret} }}`);
     }
@@ -86,7 +91,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain("github.event_name != 'pull_request'");
   });
 
-  it('authorizes provider smoke only from an owner exact-head label with explicit read-only secrets', async () => {
+  it('authorizes provider smoke only from an owner exact-head label with explicit secrets', async () => {
     const ci = await readFile('.github/workflows/ci.yml', 'utf8');
     expect(ci).toContain('vercel-provider-smoke:');
     expect(ci).toContain("github.event.action == 'labeled'");

@@ -1,9 +1,9 @@
 name: Vercel provider UAT
 
-# This is the credentialed, owner-triggered end-to-end gate. The fixture
-# command is supplied as a protected secret so it can exercise its own Vite,
-# Electron, localhost OAuth, and authenticated-push contract inside the cloned
-# Sandbox without putting that command or its values in repository files.
+# This is the credentialed, owner-triggered end-to-end gate. The UAT fixture
+# runner is checked into the repository and uploaded into the disposable
+# Sandbox, so every run exercises the same reviewed Vite/Electron/OAuth/push
+# contract without per-run commands or environment secrets.
 on:
   workflow_call:
     inputs:
@@ -33,14 +33,6 @@ on:
         required: true
       DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT:
         required: true
-      DEVBOX_UAT_PUSH_TOKEN:
-        required: true
-      DEVBOX_UAT_ENV_CONTENT:
-        required: true
-      DEVBOX_UAT_FIXTURE_COMMAND:
-        required: true
-      DEVBOX_UAT_RESUME_COMMAND:
-        required: true
   workflow_dispatch:
     inputs:
       source_sha:
@@ -66,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment:
-      name: vercel-provider-uat
+      name: vercel-provider-smoke
     permissions:
       contents: read
     env:
@@ -139,10 +131,6 @@ jobs:
           DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
           DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
           DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
-          DEVBOX_UAT_PUSH_TOKEN: ${{ secrets.DEVBOX_UAT_PUSH_TOKEN }}
-          DEVBOX_UAT_ENV_CONTENT: ${{ secrets.DEVBOX_UAT_ENV_CONTENT }}
-          DEVBOX_UAT_FIXTURE_COMMAND: ${{ secrets.DEVBOX_UAT_FIXTURE_COMMAND }}
-          DEVBOX_UAT_RESUME_COMMAND: ${{ secrets.DEVBOX_UAT_RESUME_COMMAND }}
           SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/provider-uat.json
         run: node scripts/vercel/provider-smoke.mjs
 
@@ -178,10 +166,6 @@ jobs:
           DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
           DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
           DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
-          DEVBOX_UAT_PUSH_TOKEN: ${{ secrets.DEVBOX_UAT_PUSH_TOKEN }}
-          DEVBOX_UAT_ENV_CONTENT: ${{ secrets.DEVBOX_UAT_ENV_CONTENT }}
-          DEVBOX_UAT_FIXTURE_COMMAND: ${{ secrets.DEVBOX_UAT_FIXTURE_COMMAND }}
-          DEVBOX_UAT_RESUME_COMMAND: ${{ secrets.DEVBOX_UAT_RESUME_COMMAND }}
         run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
 
       - name: Upload redacted UAT evidence
