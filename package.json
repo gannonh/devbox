@@ -9,7 +9,8 @@
   "files": [
     "dist",
     "templates",
-    "skills"
+    "skills",
+    "images"
   ],
   "engines": {
     "node": ">=22"
