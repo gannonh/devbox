@@ -1,6 +1,6 @@
 import { Command, CommandFinished, Sandbox, Snapshot } from '@vercel/sandbox';
 import type { VercelCredentials } from './auth.js';
-import { VERCEL_IMAGE_PIN } from './image.js';
+import { parseVercelImageReference } from './image.js';
 import type { GitSource } from './source.js';
 import { redactSecrets } from './redaction.js';
 
@@ -132,6 +132,8 @@ export interface VercelSandboxDeleteByNameResult {
 
 export interface VercelSandboxCreateInput {
   name: string;
+  /** Fully-qualified digest reference resolved for this run. */
+  image: string;
   source: GitSource;
   timeoutMs: number;
   ports?: number[];
@@ -147,9 +149,11 @@ export function buildVercelSandboxCreateRequest(
   if (!Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');
   }
+  // Throws unless the reference is fully qualified and digest-pinned.
+  parseVercelImageReference(input.image);
   return {
     name: input.name,
-    image: VERCEL_IMAGE_PIN.reference,
+    image: input.image,
     source: input.source,
     timeout: input.timeoutMs,
     ...(input.ports === undefined ? {} : { ports: [...input.ports] }),
@@ -270,9 +274,9 @@ export function createVercelSandboxClient(
 
   return {
     getOrCreate: async (request) => {
-      if (request.image !== VERCEL_IMAGE_PIN.reference) {
-        throw new Error('Vercel Sandbox creation must use VERCEL_IMAGE_PIN.reference');
-      }
+      // The resolver decides which digest; the client only guarantees that a
+      // digest is what reaches the SDK, so a floating tag can never create one.
+      parseVercelImageReference(request.image);
       const { credentials, ...createRequest } = request;
       const sourcePassword = createRequest.source.password;
       const params = {

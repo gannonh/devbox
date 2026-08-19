@@ -22,8 +22,8 @@ export const DISPLAY_STARTUP_TIMEOUT_MS = 30_000;
 const DISPLAY_START_COMMAND = '/usr/local/bin/devbox-start';
 const DISPLAY_STATUS_COMMAND = '/usr/local/bin/devbox-status';
 const DISPLAY_PROXY_OVERLAY_PATH = '/vercel/.devbox/runtime/novnc-proxy.mjs';
-const DISPLAY_PROXY_IMAGE_PATH = '/usr/local/lib/devbox/basic-auth-proxy.mjs';
-const DISPLAY_PROXY_SOURCE = fileURLToPath(new URL('../../../images/vercel/basic-auth-proxy.mjs', import.meta.url));
+const DISPLAY_PROXY_IMAGE_PATH = '/usr/local/lib/devbox/novnc-proxy.mjs';
+const DISPLAY_PROXY_SOURCE = fileURLToPath(new URL('../../../images/vercel/novnc-proxy.mjs', import.meta.url));
 const DISPLAY_PROXY_INSTALL_SCRIPT = [
   `cp '${DISPLAY_PROXY_OVERLAY_PATH}' '${DISPLAY_PROXY_IMAGE_PATH}'`,
 ].join('\n');
@@ -43,7 +43,7 @@ const DISPLAY_SERVICE_RESET_SCRIPT = [
   '    fluxbox) printf "%s\\n" fluxbox ;;',
   '    x11vnc) printf "%s\\n" x11vnc ;;',
   '    websockify) printf "%s\\n" websockify ;;',
-  '    auth-proxy) printf "%s\\n" basic-auth-proxy.mjs ;;',
+  '    auth-proxy) printf "%s\\n" novnc-proxy.mjs ;;',
   '    *) return 1 ;;',
   '  esac',
   '}',

@@ -4,11 +4,11 @@ import { describe, expect, it } from 'vitest';
 import {
   matchesVercelSandboxImageDigest,
   parseVercelImageReference,
-  VERCEL_IMAGE_PIN,
   VERCEL_IMAGE_PROVENANCE,
   validateVercelImagePin,
 } from '../src/providers/vercel/image.js';
 import { assertReleaseProvenanceMatches } from '../src/providers/vercel/release-validation.js';
+import { TEST_IMAGE_PIN } from './vercel-image.fixture.js';
 
 const reference = 'vcr.vercel.com/publisher-team/publisher-project/devbox@sha256:' + 'a'.repeat(64);
 const provenanceDigest = 'sha256:' + 'b'.repeat(64);
@@ -119,13 +119,23 @@ describe('Vercel image pin validation', () => {
     )).toThrow(/provenance does not match/);
   });
 
-  it('keeps the checked-in pin provenance canonical and byte-digest bound', () => {
+  it('accepts an emitted pin at the release gate', () => {
+    const raw = readFileSync('images/vercel/provenance.json', 'utf8');
+
+    // emit-image-pin.mjs produces exactly this shape, so a release cut from a
+    // validated candidate passes the same gate that rejects an unemitted one.
+    expect(() => assertReleaseProvenanceMatches(TEST_IMAGE_PIN, raw)).not.toThrow();
+  });
+
+  it('binds an emitted pin to the canonical provenance bytes', () => {
     const raw = readFileSync('images/vercel/provenance.json', 'utf8');
     const digest = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
 
-    expect(VERCEL_IMAGE_PIN.provenanceDigest).toBe(digest);
-    expect(JSON.stringify(VERCEL_IMAGE_PIN.provenance)).toBe(JSON.stringify(JSON.parse(raw)));
-    expect(validateVercelImagePin(VERCEL_IMAGE_PIN).ok).toBe(true);
+    // The pin is a build output now, so this proves the emitted shape stays
+    // bound to the reviewed provenance rather than proving a checked-in value.
+    expect(TEST_IMAGE_PIN.provenanceDigest).toBe(digest);
+    expect(JSON.stringify(TEST_IMAGE_PIN.provenance)).toBe(JSON.stringify(JSON.parse(raw)));
+    expect(validateVercelImagePin(TEST_IMAGE_PIN).ok).toBe(true);
   });
 
   it('rejects a floating tag, mismatched smoke reference, and unproven consumer', () => {

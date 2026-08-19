@@ -112,11 +112,11 @@ start_detached x11vnc x11vnc x11vnc -display "${DISPLAY}" -rfbport "${VNC_PORT}"
 wait_for_port "${VNC_PORT}"
 start_detached websockify websockify websockify --web=/usr/share/novnc "127.0.0.1:${NOVNC_INTERNAL_PORT}" "127.0.0.1:${VNC_PORT}"
 wait_for_port "${NOVNC_INTERNAL_PORT}"
-start_detached auth-proxy basic-auth-proxy.mjs env \
+start_detached auth-proxy novnc-proxy.mjs env \
   DEVBOX_NOVNC_PORT="${NOVNC_PORT}" \
   DEVBOX_NOVNC_INTERNAL_PORT="${NOVNC_INTERNAL_PORT}" \
   DEVBOX_NOVNC_PASSWORD="${DEVBOX_NOVNC_PASSWORD}" \
-  node /usr/local/lib/devbox/basic-auth-proxy.mjs
+  node /usr/local/lib/devbox/novnc-proxy.mjs
 wait_for_port "${NOVNC_PORT}"
 
 log "display ready on ${DISPLAY}; authenticated noVNC is exposed on port ${NOVNC_PORT}"

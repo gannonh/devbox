@@ -34,17 +34,24 @@ reused from mode-`0600` XDG state under `~/.local/state/devbox/providers/vercel`
 credentials are never written to the repository.
 
 Vercel reads the existing `.devcontainer/devcontainer.json` `forwardPorts` and
-`portsAttributes`. Only those app ports and authenticated noVNC `6080` are
-public. VNC `5900` and the internal noVNC listener are never exposed. Public
-URLs contain no credentials. Retrieve the display credential explicitly:
+`portsAttributes`. Only those app ports and the paired noVNC `6080` are public.
+VNC `5900` and the internal noVNC listener are never exposed.
+
+The printed `6080` link carries the branch access code as a `token` parameter.
+Opening it pairs the browser: the proxy sets an `HttpOnly; Secure; SameSite=Lax`
+cookie and redirects to the same path without the code, so the secret does not
+remain in the address bar, in history, or in a `Referer`. The WebSocket upgrade
+is authenticated by that cookie, and neither the code nor the cookie is
+forwarded to websockify. An unpaired client gets a form that accepts the same
+code; `--password` prints it:
 
 ```text
 username: devbox
 password: <generated-secret>
 ```
 
-The display proxy rejects missing or incorrect HTTP/WebSocket Basic Auth. The
-password is generated with at least 128 bits of CSPRNG entropy.
+The code is generated with at least 128 bits of CSPRNG entropy. See
+[ADR 0003](../adrs/0003-novnc-access-code-pairing.md).
 
 ## Runtime and cleanup
 

@@ -17,7 +17,9 @@ import {
   type VercelSandboxHandle,
   type VercelStopResult,
 } from './client.js';
-import { matchesVercelSandboxImageDigest, parseVercelImageReference, VERCEL_IMAGE_PIN } from './image.js';
+import { matchesVercelSandboxImageDigest, parseVercelImageReference } from './image.js';
+import { resolveVercelImage } from './image-resolution.js';
+import { createVcrChannelResolver } from './image-registry.js';
 import { createVercelIdentity, createVercelRepositoryTag, type VercelSandboxIdentity } from './identity.js';
 import {
   type VercelBranchMetadata,
@@ -138,6 +140,12 @@ export class VercelCreationCompensationError extends VercelCleanupError {
 
 export interface VercelLifecycleOptions {
   repoRoot: string;
+  /**
+   * Resolve the Sandbox image reference. Defaults to the release pin when the
+   * package carries one and the nightly channel otherwise; injected by tests so
+   * they never reach the registry.
+   */
+  resolveImage?: () => Promise<string>;
   branch?: string;
   packageVersion?: string;
   ports?: number[];
@@ -239,6 +247,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         let createdSandbox: VercelSandboxHandle | undefined;
         const createRequest = buildVercelSandboxCreateRequest({
           name: effectiveIdentity.name,
+          image: context.imageReference,
           source: source.source,
           timeoutMs: context.timeoutMs,
           ports,
@@ -719,7 +728,13 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
         ? {}
         : { scope: { teamId: credentials.teamId, projectId: credentials.projectId } }),
     });
-  const imageReference = VERCEL_IMAGE_PIN.reference;
+  const imageReference = options.resolveImage
+    ? await options.resolveImage()
+    : (await resolveVercelImage({
+      env: options.env ?? {},
+      credentials,
+      resolveChannel: createVcrChannelResolver(),
+    })).reference;
   const timeoutMs = options.timeoutMs ?? DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');

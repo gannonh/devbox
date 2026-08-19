@@ -15,10 +15,10 @@ import type { ProviderBranchRequest } from '../src/providers/types.js';
 import type { VercelLifecycle } from '../src/providers/vercel/lifecycle.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import { createVercelBranchMetadataStore, createVercelScopeMetadataStore } from '../src/providers/vercel/metadata.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import { prepareSandboxRuntime } from '../src/providers/vercel/runtime.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
+import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 function sandbox(): VercelSandboxHandle {
   return {
@@ -518,7 +518,7 @@ describe('Vercel runtime sync', () => {
         tags: { ...identity.tags },
       },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: branch,

@@ -7,7 +7,7 @@ import {
   isVercelStale,
   VercelSdkError,
 } from '../src/providers/vercel/client.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
+import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 describe('Vercel Sandbox client adapter', () => {
   it('deletes a stale named sandbox through the authenticated v2 fetch seam', async () => {
@@ -83,7 +83,7 @@ describe('Vercel Sandbox client adapter', () => {
         sandbox: {
           name: 'fetch-create',
           persistent: true,
-          image: VERCEL_IMAGE_PIN.reference,
+          image: TEST_IMAGE_REFERENCE,
           timeout: 1_800_000,
           createdAt: now,
           updatedAt: now,
@@ -110,7 +110,7 @@ describe('Vercel Sandbox client adapter', () => {
     const handle = await client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'fetch-create',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -144,7 +144,7 @@ describe('Vercel Sandbox client adapter', () => {
     const body = JSON.parse(String(createRequest?.init.body)) as Record<string, unknown>;
     expect(body).toMatchObject({
       projectId: 'project',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       name: 'fetch-create',
       persistent: true,
       keepLastSnapshots: { count: 1 },
@@ -188,7 +188,7 @@ describe('Vercel Sandbox client adapter', () => {
     const handle = await client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'runtime-capabilities',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -233,7 +233,7 @@ describe('Vercel Sandbox client adapter', () => {
     const handle = await client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'runtime-write-error',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -314,7 +314,7 @@ describe('Vercel Sandbox client adapter', () => {
         sandbox: {
           name: 'resume-false',
           persistent: true,
-          image: VERCEL_IMAGE_PIN.reference,
+          image: TEST_IMAGE_REFERENCE,
           timeout: 1_800_000,
           createdAt: now,
           updatedAt: now,
@@ -349,7 +349,7 @@ describe('Vercel Sandbox client adapter', () => {
     const handle = await client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'mock-client-adapter',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       ports: [3000],
       source: {
         type: 'git',
@@ -410,7 +410,7 @@ describe('Vercel Sandbox client adapter', () => {
   it('covers snapshot create, list, get, and delete through sandbox-mock', async () => {
     const sandbox = await MockSandbox.create({
       name: 'mock-snapshot-lifecycle',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       timeout: 10_000,
       persistent: true,
       keepLastSnapshots: { count: 1 },
@@ -596,7 +596,7 @@ describe('Vercel Sandbox client adapter', () => {
     await client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'serialized',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -614,7 +614,7 @@ describe('Vercel Sandbox client adapter', () => {
       token: 'vercel-token',
       teamId: 'team',
       projectId: 'project',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: { username: 'x-access-token', password: 'github-token', revision: 'feature' },
       persistent: true,
       keepLastSnapshots: { count: 1 },
@@ -635,7 +635,7 @@ describe('Vercel Sandbox client adapter', () => {
     await expect(client.getOrCreate({
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
       name: 'redaction-test',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -650,7 +650,7 @@ describe('Vercel Sandbox client adapter', () => {
     })).rejects.toThrow('[REDACTED] [REDACTED] leaked');
   });
 
-  it('rejects direct create requests that do not use the exact promoted image', async () => {
+  it('rejects direct create requests whose image is not a fully-qualified digest', async () => {
     const client = createVercelSandboxClient({
       sandbox: { getOrCreate: vi.fn(), get: vi.fn(), list: vi.fn() } as never,
     });
@@ -670,12 +670,29 @@ describe('Vercel Sandbox client adapter', () => {
       persistent: true,
       keepLastSnapshots: { count: 1 },
       tags: {},
-    })).rejects.toThrow(/VERCEL_IMAGE_PIN\.reference/);
+    })).rejects.toThrow(/sha256:<64 hex digits>/);
+  });
+
+  it('refuses a floating tag so only a resolved digest can create a Sandbox', () => {
+    expect(() => buildVercelSandboxCreateRequest({
+      name: 'devbox-vercel-repo-main',
+      image: 'vcr.vercel.com/astro-labs/devbox/devbox:nightly',
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        revision: 'main',
+        username: 'x-access-token',
+        password: 'github-token',
+      },
+      timeoutMs: 1_800_000,
+      tags: {},
+    })).toThrow(/sha256:<64 hex digits>/);
   });
 
   it('builds the v3 persistent Git source request without a runtime field', () => {
     const request = buildVercelSandboxCreateRequest({
       name: 'devbox-vercel-repo-main',
+      image: TEST_IMAGE_REFERENCE,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',
@@ -695,7 +712,7 @@ describe('Vercel Sandbox client adapter', () => {
 
     expect(request).toMatchObject({
       name: 'devbox-vercel-repo-main',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: {
         type: 'git',
         url: 'https://github.com/acme/repo.git',

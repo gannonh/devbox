@@ -8,6 +8,10 @@ on:
       source_sha:
         required: true
         type: string
+      image_reference:
+        description: 'Fully-qualified digest reference to benchmark'
+        required: true
+        type: string
     secrets:
       VERCEL_CONSUMER_TOKEN:
         required: true
@@ -17,6 +21,10 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      image_reference:
+        description: 'Fully-qualified digest reference to benchmark (e.g. vcr.vercel.com/<team>/<project>/devbox@sha256:...)'
+        required: true
+        type: string
       source_sha:
         description: 'Exact 40-character source SHA; empty uses the checked-out commit'
         required: false
@@ -91,6 +99,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GH_TOKEN: ${{ github.token }}
+          DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
         run: node scripts/vercel/benchmark.mjs --report "${ARTIFACT_DIR}"
 
       - name: Redact benchmark evidence

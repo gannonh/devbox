@@ -3,11 +3,10 @@ import http from 'node:http';
 import net from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 
-const PROXY = 'images/vercel/basic-auth-proxy.mjs';
-const USERNAME = 'devbox';
-const PASSWORD = 'test-novnc-password-aaaaaaaaaaaaaaaa';
-const AUTHORIZATION = `Basic ${Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64')}`;
-const WRONG_AUTHORIZATION = `Basic ${Buffer.from(`${USERNAME}:wrong-password`).toString('base64')}`;
+const PROXY = 'images/vercel/novnc-proxy.mjs';
+const CODE = 'test-novnc-password-aaaaaaaaaaaaaaaa';
+const WRONG_CODE = 'test-novnc-password-bbbbbbbbbbbbbbbb';
+const COOKIE = `devbox_novnc=${CODE}`;
 
 let child: ChildProcess | undefined;
 let upstream: http.Server | undefined;
@@ -23,62 +22,69 @@ afterEach(async () => {
   upstreamWebSocketHeaders = undefined;
 });
 
-describe('noVNC Basic Auth proxy', () => {
-  it('requires HTTP Basic Auth and strips Authorization before HTTP/WebSocket forwarding', async () => {
+describe('noVNC access-code pairing proxy', () => {
+  it('pairs a code into a cookie, scrubs it from the URL, and never forwards it upstream', async () => {
     const upstreamPort = await listenUpstream();
     const proxyPort = await listenProxy(upstreamPort);
     const base = `http://127.0.0.1:${proxyPort}`;
 
-    const missing = await fetch(`${base}/vnc.html`, { redirect: 'manual' });
-    expect(missing.status).toBe(401);
-    expect(missing.headers.get('www-authenticate')).toBe('Basic realm="devbox"');
+    // An unpaired browser gets the form rather than an upstream response.
+    const unpaired = await fetch(`${base}/vnc.html`, { redirect: 'manual' });
+    expect(unpaired.status).toBe(200);
+    expect(await unpaired.text()).toContain('Access code');
+    expect(upstreamHttpHeaders).toBeUndefined();
 
-    const wrong = await fetch(`${base}/vnc.html`, {
-      headers: { authorization: WRONG_AUTHORIZATION },
-      redirect: 'manual',
-    });
-    expect(wrong.status).toBe(401);
-    expect(wrong.headers.get('www-authenticate')).toBe('Basic realm="devbox"');
+    // The printed link pairs on click and redirects the code out of the URL.
+    const paired = await fetch(`${base}/vnc.html?token=${CODE}&autoconnect=1`, { redirect: 'manual' });
+    expect(paired.status).toBe(303);
+    expect(paired.headers.get('location')).toBe('/vnc.html?autoconnect=1');
+    const setCookie = paired.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain(`devbox_novnc=${CODE}`);
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
 
-    const query = await fetch(`${base}/vnc.html?token=${PASSWORD}`, { redirect: 'manual' });
-    expect(query.status).toBe(401);
+    const wrongQuery = await fetch(`${base}/vnc.html?token=${WRONG_CODE}`, { redirect: 'manual' });
+    expect(wrongQuery.status).toBe(401);
+    expect(wrongQuery.headers.get('set-cookie')).toBeNull();
 
-    const cookie = await fetch(`${base}/vnc.html`, {
-      headers: { cookie: `devbox_novnc=${PASSWORD}` },
-      redirect: 'manual',
-    });
-    expect(cookie.status).toBe(401);
-
+    // Pasting the code into the form pairs the same way.
     const form = await fetch(base, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: `token=${PASSWORD}`,
+      body: `token=${CODE}`,
       redirect: 'manual',
     });
-    expect(form.status).toBe(401);
+    expect(form.status).toBe(303);
+    expect(form.headers.get('location')).toBe('/vnc.html?autoconnect=1');
 
-    const authorized = await fetch(`${base}/vnc.html?autoconnect=1`, {
-      headers: { authorization: AUTHORIZATION },
+    const wrongForm = await fetch(base, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: `token=${WRONG_CODE}`,
+      redirect: 'manual',
     });
-    expect(authorized.status).toBe(200);
-    expect(await authorized.text()).toBe('upstream:/vnc.html?autoconnect=1');
+    expect(wrongForm.status).toBe(401);
+    expect(wrongForm.headers.get('set-cookie')).toBeNull();
+
+    // A paired cookie reaches the upstream, which never sees the credential.
+    const viewer = await fetch(`${base}/vnc.html?autoconnect=1`, { headers: { cookie: COOKIE } });
+    expect(viewer.status).toBe(200);
+    expect(await viewer.text()).toBe('upstream:/vnc.html?autoconnect=1');
+    expect(upstreamHttpHeaders?.cookie).toBeUndefined();
     expect(upstreamHttpHeaders?.authorization).toBeUndefined();
 
-    const missingWebSocket = await upgrade(proxyPort, {});
-    expect(missingWebSocket).toContain('401 Unauthorized');
-    expect(missingWebSocket.toLowerCase()).toContain('www-authenticate: basic realm="devbox"');
-
-    const wrongWebSocket = await upgrade(proxyPort, { authorization: WRONG_AUTHORIZATION });
-    expect(wrongWebSocket).toContain('401 Unauthorized');
-    expect(wrongWebSocket.toLowerCase()).toContain('www-authenticate: basic realm="devbox"');
+    // The WebSocket upgrade pairs by cookie and is refused without one.
+    expect(await upgrade(proxyPort, {})).toContain('401 Unauthorized');
+    expect(await upgrade(proxyPort, { cookie: `devbox_novnc=${WRONG_CODE}` })).toContain('401 Unauthorized');
 
     expect(await upgrade(proxyPort, {
-      authorization: AUTHORIZATION,
+      cookie: COOKIE,
       'proxy-authenticate': 'Basic realm="upstream"',
       'proxy-authorization': 'Basic should-not-forward',
     })).toContain('101 Switching Protocols');
-    expect(upstreamWebSocketHeaders?.authorization).toBeUndefined();
     expect(upstreamWebSocketHeaders?.cookie).toBeUndefined();
+    expect(upstreamWebSocketHeaders?.authorization).toBeUndefined();
     expect(upstreamWebSocketHeaders?.['proxy-authenticate']).toBeUndefined();
     expect(upstreamWebSocketHeaders?.['proxy-authorization']).toBeUndefined();
   });
@@ -118,7 +124,7 @@ function listenProxy(upstreamPort: number): Promise<number> {
         child = spawn('node', [PROXY], {
           env: {
             ...process.env,
-            DEVBOX_NOVNC_PASSWORD: PASSWORD,
+            DEVBOX_NOVNC_PASSWORD: CODE,
             DEVBOX_NOVNC_BIND: '127.0.0.1',
             DEVBOX_NOVNC_PORT: String(port),
             DEVBOX_NOVNC_INTERNAL_PORT: String(upstreamPort),
@@ -142,6 +148,7 @@ function listenProxy(upstreamPort: number): Promise<number> {
 }
 
 function upgrade(port: number, headers: {
+  cookie?: string;
   authorization?: string;
   'proxy-authenticate'?: string;
   'proxy-authorization'?: string;
@@ -149,6 +156,7 @@ function upgrade(port: number, headers: {
   return new Promise((resolve, reject) => {
     const socket = net.connect(port, '127.0.0.1');
     const extra = [
+      headers.cookie ? `Cookie: ${headers.cookie}` : '',
       headers.authorization ? `Authorization: ${headers.authorization}` : '',
       headers['proxy-authenticate'] ? `Proxy-Authenticate: ${headers['proxy-authenticate']}` : '',
       headers['proxy-authorization'] ? `Proxy-Authorization: ${headers['proxy-authorization']}` : '',

@@ -69,7 +69,8 @@ removed before the Sandbox path is cleaned up; command output and credentials
 are not evidence.
 
 Every evidence directory is redacted before upload. Search artifacts for the
-fixture token, Vercel token, Basic Auth password, `.env` values, URLs with
+fixture token, Vercel token, display access code (`token=` or
+`devbox_novnc=`), `.env` values, URLs with
 credentials, port `5900`, and residual resource IDs. Any match fails the run.
 
 ## Incident cleanup

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 const dockerfilePath = 'images/vercel/Dockerfile';
 const startupPath = 'images/vercel/start-devbox.sh';
 const statusPath = 'images/vercel/status-devbox.sh';
-const proxyPath = 'images/vercel/basic-auth-proxy.mjs';
+const proxyPath = 'images/vercel/novnc-proxy.mjs';
 const localCheckPath = 'images/vercel/check-local-image.sh';
 
 async function text(path: string): Promise<string> {
@@ -47,7 +47,7 @@ describe('Vercel image assets', () => {
     const startup = await text(startupPath);
     const status = await text(statusPath);
     const localCheck = await text(localCheckPath);
-    expect(startup).toContain('basic-auth-proxy.mjs');
+    expect(startup).toContain('novnc-proxy.mjs');
     expect(startup).toContain('x11vnc');
     expect(startup).toContain('websockify');
     expect(startup).toContain('127.0.0.1:${NOVNC_INTERNAL_PORT}');
@@ -63,6 +63,12 @@ describe('Vercel image assets', () => {
     for (const process of ['Xvfb', 'fluxbox', 'x11vnc', 'websockify', 'auth-proxy']) {
       expect(status).toContain(process);
     }
+    // The liveness probe must pgrep the filename actually shipped and launched,
+    // or it reports a running proxy as stopped.
+    const proxyFile = proxyPath.split('/').at(-1) as string;
+    expect(status).toContain(`[${proxyFile[0]}]${proxyFile.slice(1)}`);
+    expect(startup).toContain(proxyFile);
+    expect(await text(dockerfilePath)).toContain(proxyFile);
     expect(status).toContain('pi');
     expect(status).toContain('claude');
     expect(status).toContain('codex');
@@ -72,18 +78,21 @@ describe('Vercel image assets', () => {
     expect(localCheck).toContain('sudo -n true');
   });
 
-  it('uses fixed-user HTTP Basic Auth for HTTP and WebSocket traffic', async () => {
+  it('pairs an access code into a cookie for HTTP and WebSocket traffic', async () => {
     const proxy = await text(proxyPath);
-    expect(proxy).toContain("const username = 'devbox'");
-    expect(proxy).toContain('request.headers.authorization');
-    expect(proxy).toContain('www-authenticate');
+    expect(proxy).toContain("const COOKIE = 'devbox_novnc'");
+    expect(proxy).toContain('pairingForm');
+    expect(proxy).toContain('HttpOnly; Secure; SameSite=Lax');
+    // Pairing must consume the code and redirect it out of the address bar.
+    expect(proxy).toContain("searchParams.delete('token')");
+    expect(proxy).toContain('303');
     expect(proxy).toContain("server.on('upgrade',");
     expect(proxy).toContain('101 Switching Protocols');
     expect(proxy).toContain('timingSafeEqual');
+    // The credential never reaches websockify on either transport.
     expect(proxy).toContain("delete forwarded['proxy-authorization']");
     expect(proxy).toContain("delete forwarded['proxy-authenticate']");
-    expect(proxy).not.toContain('devbox_novnc');
-    expect(proxy).not.toContain('queryToken');
-    expect(proxy).not.toContain('pairingForm');
+    expect(proxy).toContain('delete forwarded.cookie');
+    expect(proxy).not.toContain('www-authenticate');
   });
 });

@@ -196,10 +196,10 @@ RUN set -eux; \
     chromium --version | grep -F "${CHROMIUM_VERSION}"
 
 COPY provenance.json /usr/local/share/devbox/universal-provenance.json
-COPY basic-auth-proxy.mjs /usr/local/lib/devbox/basic-auth-proxy.mjs
+COPY novnc-proxy.mjs /usr/local/lib/devbox/novnc-proxy.mjs
 COPY start-devbox.sh /usr/local/bin/devbox-start
 COPY status-devbox.sh /usr/local/bin/devbox-status
-RUN chmod 0755 /usr/local/lib/devbox/basic-auth-proxy.mjs \
+RUN chmod 0755 /usr/local/lib/devbox/novnc-proxy.mjs \
       /usr/local/bin/devbox-start /usr/local/bin/devbox-status \
     && install -d -o ubuntu -g ubuntu /var/log/devbox \
     && chown ubuntu:ubuntu /usr/local/share/devbox/universal-provenance.json

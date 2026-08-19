@@ -10,6 +10,10 @@ on:
       source_sha:
         required: true
         type: string
+      image_reference:
+        description: 'Fully-qualified digest reference to exercise'
+        required: true
+        type: string
       path:
         required: false
         type: string
@@ -35,6 +39,10 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      image_reference:
+        description: 'Fully-qualified digest reference to exercise (e.g. vcr.vercel.com/<team>/<project>/devbox@sha256:...)'
+        required: true
+        type: string
       source_sha:
         description: 'Exact 40-character source SHA; empty uses the checked-out commit'
         required: false
@@ -147,10 +155,11 @@ jobs:
           DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
           DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
           SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/provider-uat.json
+          DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
         run: node scripts/vercel/provider-smoke.mjs
 
       # This independent image path proves all four agents, Chromium, the
-      # fixed-user Basic-Auth HTTP/WebSocket boundary, and the 6080-only public
+      # access-code pairing HTTP/WebSocket boundary, and the 6080-only public
       # display policy (VNC 5900 and internal 6081 are never forwarded).
       - name: Run display, agent, and port UAT
         env:
@@ -159,9 +168,11 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           SMOKE_ROLE: consumer
           SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/display-uat.json
+          DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
         run: |
           set -euo pipefail
-          image_ref="$(node --input-type=module -e "import { VERCEL_IMAGE_PIN } from './dist/providers/vercel/image.js'; process.stdout.write(VERCEL_IMAGE_PIN.reference)")"
+          # The caller names the image; the pin is a build output, not source.
+          image_ref="${DEVBOX_VERCEL_IMAGE}"
           image_digest="${image_ref##*@}"
           IMAGE_REF="${image_ref}" EXPECTED_IMAGE_DIGEST="${image_digest}" \
             VERCEL_TOKEN="${VERCEL_TOKEN}" VERCEL_TEAM_ID="${VERCEL_TEAM_ID}" \

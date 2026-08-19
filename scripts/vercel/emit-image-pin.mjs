@@ -1,9 +1,15 @@
 #!/usr/bin/env node
-/** Update the sole checked-in Vercel image pin after validated smoke evidence. */
-import { createHash, randomUUID } from 'node:crypto';
-import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
-import { inspect, isDeepStrictEqual } from 'node:util';
+/**
+ * Emit the Vercel image pin from validated publisher/consumer smoke evidence.
+ *
+ * The pin is a build output, never source: it is written into the package at
+ * publish time so a release carries the exact digest its evidence proves. A git
+ * checkout has no pin and follows the nightly channel instead.
+ */
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   parseFullyQualifiedVcrReference,
   REQUIRED_SMOKE_CHECKS,
@@ -11,7 +17,6 @@ import {
 } from './smoke-contract.mjs';
 import { isStrictEvidenceUrl } from '../../src/providers/vercel/strict-url.js';
 
-const sourcePath = process.env.VERCEL_IMAGE_PIN_FILE ?? 'src/providers/vercel/image.ts';
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
   const key = process.argv[index];
@@ -253,82 +258,22 @@ if (publisherEvidence.scope.teamId === consumerEvidence.scope.teamId && publishe
   throw new Error('publisher and consumer evidence prove the same project scope');
 }
 
-let source = await readFile(sourcePath, 'utf8');
-function replaceStringField(field, value) {
-  const pattern = new RegExp(`(^\\s*${field}:\\s*)'[^']*'(,?)$`, 'm');
-  const next = source.replace(pattern, (_match, prefix, suffix) => `${prefix}'${value}'${suffix}`);
-  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
-  source = next;
-}
+const outPath = args.get('out') ?? 'dist/vercel-image-pin.json';
+const pin = {
+  reference,
+  provenance,
+  provenanceDigest,
+  sourceCommit: args.get('source-commit'),
+  publisherSmokeUrl: args.get('publisher-url'),
+  consumerSmokeUrl: args.get('consumer-url'),
+  publisher: { team: args.get('publisher-team'), project: args.get('publisher-project') },
+  consumer: { team: args.get('consumer-team'), project: args.get('consumer-project') },
+  testedReference: reference,
+  publisherSmokeStatus: 'passed',
+  consumerSmokeStatus: 'passed',
+  crossProjectVerified: true,
+};
 
-function replaceScopeField(field, team, project) {
-  const pattern = new RegExp(
-    `(^\\s*${field}:\\s*\\{\\s*team:\\s*)'[^']*'(,\\s*project:\\s*)'[^']*'(\\s*\\},?)$`,
-    'm',
-  );
-  const next = source.replace(pattern, (_match, prefix, separator, suffix) => `${prefix}'${team}'${separator}'${project}'${suffix}`);
-  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
-  source = next;
-}
-
-function replaceEnumField(field, values, replacement) {
-  const pattern = new RegExp(`(^\\s*${field}:\\s*)'(${values.join('|')})'(,?)$`, 'm');
-  const next = source.replace(pattern, (_match, prefix, _value, suffix) => `${prefix}'${replacement}'${suffix}`);
-  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
-  source = next;
-}
-
-function replaceBooleanField(field, replacement) {
-  const pattern = new RegExp(`(^\\s*${field}:\\s*)(true|false)(,?)$`, 'm');
-  const next = source.replace(pattern, (_match, prefix, _value, suffix) => `${prefix}${replacement}${suffix}`);
-  if (next === source && !pattern.test(source)) throw new Error(`could not update ${field} in ${sourcePath}`);
-  source = next;
-}
-
-source = source.replace(
-  /export const VERCEL_IMAGE_REFERENCE =\n\s*'[^']+';/m,
-  `export const VERCEL_IMAGE_REFERENCE =\n  '${reference}';`,
-);
-if (!source.includes(`'${reference}'`)) throw new Error('could not update VERCEL_IMAGE_REFERENCE');
-function formatProvenance(value) {
-  const lines = inspect(value, { breakLength: Infinity, compact: false, depth: null }).split('\n');
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    const line = lines[index].trim();
-    const nextLine = lines[index + 1].trim();
-    if (line === '}') {
-      lines[index] += ',';
-    } else if (line && (nextLine === '}' || nextLine === '},') && !/[,{]$/.test(line) && !line.endsWith('}')) {
-      lines[index] += ',';
-    }
-  }
-  return lines.join('\n');
-}
-const provenanceSource = `export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = ${formatProvenance(provenance)};`;
-const provenancePattern = /export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = \{[\s\S]*?\n\};/m;
-const nextSource = source.replace(provenancePattern, provenanceSource);
-if (nextSource === source && !provenancePattern.test(source)) {
-  throw new Error('could not update VERCEL_IMAGE_PROVENANCE');
-}
-source = nextSource;
-replaceStringField('provenanceDigest', provenanceDigest);
-replaceStringField('sourceCommit', args.get('source-commit'));
-replaceStringField('publisherSmokeUrl', args.get('publisher-url'));
-replaceStringField('consumerSmokeUrl', args.get('consumer-url'));
-replaceScopeField('publisher', args.get('publisher-team'), args.get('publisher-project'));
-replaceScopeField('consumer', args.get('consumer-team'), args.get('consumer-project'));
-replaceEnumField('publisherSmokeStatus', ['pending', 'passed'], 'passed');
-replaceEnumField('consumerSmokeStatus', ['pending', 'passed'], 'passed');
-replaceBooleanField('crossProjectVerified', 'true');
-async function writeAtomically(path, content) {
-  const temporaryPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    const mode = (await stat(path)).mode;
-    await writeFile(temporaryPath, content, { encoding: 'utf8', mode, flag: 'wx' });
-    await rename(temporaryPath, path);
-  } finally {
-    await rm(temporaryPath, { force: true });
-  }
-}
-
-await writeAtomically(sourcePath, source);
-console.log(`prepared promotion pin for ${reference}`);
+await mkdir(dirname(outPath), { recursive: true });
+await writeFile(outPath, `${JSON.stringify(pin, null, 2)}\n`, 'utf8');
+console.log(`emitted Vercel image pin for ${reference} to ${outPath}`);

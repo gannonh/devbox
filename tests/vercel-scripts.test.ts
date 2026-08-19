@@ -198,9 +198,11 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(deletes).toBeGreaterThanOrEqual(3);
   });
 
-  it('does not ship the obsolete runtime Universal digest resolver', async () => {
+  it('does not ship obsolete runtime resolvers or the source-rewriting promoter', async () => {
     await expect(access('scripts/vercel/resolve-universal-digest.mjs')).rejects.toThrow();
-    const workflow = await readFile('.github/workflows/vercel-image.yml', 'utf8');
+    // The pin is emitted into the build; nothing rewrites the source tree.
+    await expect(access('scripts/vercel/promote-image.mjs')).rejects.toThrow();
+    const workflow = await readFile('.github/workflows/nightly.yml', 'utf8');
     expect(workflow).not.toContain('resolve-universal-digest.mjs');
     expect(workflow).not.toContain('universal_digest');
     expect(workflow).toContain('images/vercel/provenance.json');
@@ -521,8 +523,7 @@ describe('Vercel supply-chain script boundaries', () => {
         deleteSnapshot: async () => {},
         sleep: async () => {},
       });
-      const sourcePath = join(temp, 'image.ts');
-      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const provenancePath = join(temp, 'provenance.json');
       await writeRedactedProvenance(provenancePath);
       const publisher = validEvidence('publisher', 'publisher-team-id', 'publisher-project-id') as any;
@@ -548,8 +549,8 @@ describe('Vercel supply-chain script boundaries', () => {
       await writeFile(publisherPath, JSON.stringify(publisher));
       await writeFile(consumerPath, JSON.stringify(consumer));
       const result = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [
           '--reference', reference,
           '--provenance-file', provenancePath,
@@ -561,6 +562,7 @@ describe('Vercel supply-chain script boundaries', () => {
           '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
           '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
           '--publisher-evidence', publisherPath, '--consumer-evidence', consumerPath,
+          '--out', sourcePath,
         ],
       );
       expect(result.code).toBe(0);
@@ -964,8 +966,7 @@ describe('Vercel supply-chain script boundaries', () => {
   it('promotes redacted provenance using the canonical artifact bytes', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-canonical-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
-      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const canonicalRaw = await readFile('images/vercel/provenance.json', 'utf8');
       const candidatePath = join(temp, 'provenance.json');
       await writeFile(candidatePath, JSON.stringify({ ...JSON.parse(canonicalRaw), redacted: true }));
@@ -975,8 +976,8 @@ describe('Vercel supply-chain script boundaries', () => {
       await writeFile(consumerEvidence, JSON.stringify(validEvidence('consumer', 'consumer-team-id', 'consumer-project-id')));
 
       const result = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [
           '--reference', reference,
           '--provenance-file', candidatePath,
@@ -988,13 +989,14 @@ describe('Vercel supply-chain script boundaries', () => {
           '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
           '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
           '--publisher-evidence', publisherEvidence, '--consumer-evidence', consumerEvidence,
+          '--out', sourcePath,
         ],
       );
       expect(result.code, result.stderr).toBe(0);
-      const promoted = await readFile(sourcePath, 'utf8');
+      const promoted = JSON.parse(await readFile(sourcePath, 'utf8'));
       const canonicalDigest = `sha256:${createHash('sha256').update(canonicalRaw).digest('hex')}`;
-      expect(promoted).toContain(`provenanceDigest: '${canonicalDigest}'`);
-      expect(promoted).not.toContain('redacted');
+      expect(promoted.provenanceDigest).toBe(canonicalDigest);
+      expect(JSON.stringify(promoted)).not.toContain('redacted');
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -1003,8 +1005,6 @@ describe('Vercel supply-chain script boundaries', () => {
   it('distinguishes missing, unreadable, and malformed candidate and canonical provenance loading', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-loading-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
-      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
       const publisherEvidence = join(temp, 'publisher.json');
       const consumerEvidence = join(temp, 'consumer.json');
       await writeFile(publisherEvidence, JSON.stringify(validEvidence('publisher', 'publisher-team-id', 'publisher-project-id')));
@@ -1022,8 +1022,8 @@ describe('Vercel supply-chain script boundaries', () => {
       ];
 
       const missingCandidate = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [...commonArgs, '--provenance-file', join(temp, 'absent-candidate.json')],
       );
       expect(missingCandidate.code).not.toBe(0);
@@ -1035,8 +1035,8 @@ describe('Vercel supply-chain script boundaries', () => {
       // (EISDIR) even for root, unlike mode-based unreadability.
       await mkdir(unreadableCandidate);
       const unreadableResult = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [...commonArgs, '--provenance-file', unreadableCandidate],
       );
       expect(unreadableResult.code).not.toBe(0);
@@ -1045,8 +1045,8 @@ describe('Vercel supply-chain script boundaries', () => {
       const malformedCandidate = join(temp, 'malformed-candidate.json');
       await writeFile(malformedCandidate, '{not-json');
       const malformedResult = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [...commonArgs, '--provenance-file', malformedCandidate],
       );
       expect(malformedResult.code).not.toBe(0);
@@ -1057,11 +1057,11 @@ describe('Vercel supply-chain script boundaries', () => {
       await mkdir(isolated);
       const canonicalProvenance = join(isolated, 'canonical-provenance.json');
       await writeRedactedProvenance(canonicalProvenance);
-      const canonicalSourcePath = join(isolated, 'image.ts');
+      const canonicalSourcePath = join(isolated, 'vercel-image-pin.json');
       await writeFile(canonicalSourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
       const missingCanonical = await runNode(
-        join(process.cwd(), 'scripts/vercel/promote-image.mjs'),
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: canonicalSourcePath },
+        join(process.cwd(), 'scripts/vercel/emit-image-pin.mjs'),
+        process.env,
         [...commonArgs, '--provenance-file', canonicalProvenance],
         undefined,
         isolated,
@@ -1072,8 +1072,8 @@ describe('Vercel supply-chain script boundaries', () => {
       await mkdir(join(isolated, 'images', 'vercel'));
       await writeFile(join(isolated, 'images', 'vercel', 'provenance.json'), '{not-json');
       const malformedCanonical = await runNode(
-        join(process.cwd(), 'scripts/vercel/promote-image.mjs'),
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: canonicalSourcePath },
+        join(process.cwd(), 'scripts/vercel/emit-image-pin.mjs'),
+        process.env,
         [...commonArgs, '--provenance-file', canonicalProvenance],
         undefined,
         isolated,
@@ -1085,12 +1085,10 @@ describe('Vercel supply-chain script boundaries', () => {
     }
   });
 
-  it('rejects provenance drift or extra fields without changing the generated pin', async () => {
+  it('rejects provenance drift or extra fields without emitting a pin', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-provenance-drift-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
-      const originalSource = await readFile('src/providers/vercel/image.ts', 'utf8');
-      await writeFile(sourcePath, originalSource);
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const candidate = JSON.parse(await readFile('images/vercel/provenance.json', 'utf8')) as Record<string, any>;
       candidate.redacted = true;
       candidate.aptSnapshot = '20260802T000000Z';
@@ -1103,8 +1101,8 @@ describe('Vercel supply-chain script boundaries', () => {
       await writeFile(consumerEvidence, JSON.stringify(validEvidence('consumer', 'consumer-team-id', 'consumer-project-id')));
 
       const result = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [
           '--reference', reference,
           '--provenance-file', candidatePath,
@@ -1116,11 +1114,12 @@ describe('Vercel supply-chain script boundaries', () => {
           '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
           '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
           '--publisher-evidence', publisherEvidence, '--consumer-evidence', consumerEvidence,
+          '--out', sourcePath,
         ],
       );
       expect(result.code).not.toBe(0);
       expect(result.stderr).toMatch(/canonical reviewed provenance|provenance/i);
-      await expect(readFile(sourcePath, 'utf8')).resolves.toBe(originalSource);
+      await expect(readFile(sourcePath, 'utf8')).rejects.toThrow();
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -1129,7 +1128,7 @@ describe('Vercel supply-chain script boundaries', () => {
   it('promotes only after both redacted evidence reports prove exact cleanup', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-valid-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const source = await readFile('src/providers/vercel/image.ts', 'utf8');
       await writeFile(sourcePath, source);
       const provenancePath = join(temp, 'provenance.json');
@@ -1152,8 +1151,8 @@ describe('Vercel supply-chain script boundaries', () => {
       await writeFile(publisherEvidence, JSON.stringify(evidence('publisher', 'publisher-team-id', 'publisher-project-id')));
       await writeFile(consumerEvidence, JSON.stringify(evidence('consumer', 'consumer-team-id', 'consumer-project-id')));
       const result = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [
           '--reference', reference,
           '--provenance-file', provenancePath,
@@ -1165,12 +1164,13 @@ describe('Vercel supply-chain script boundaries', () => {
           '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
           '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
           '--publisher-evidence', publisherEvidence, '--consumer-evidence', consumerEvidence,
+          '--out', sourcePath,
         ],
       );
       expect(result.code).toBe(0);
-      const promoted = await readFile(sourcePath, 'utf8');
-      expect(promoted).toContain("publisherSmokeStatus: 'passed'");
-      expect(promoted).toContain('crossProjectVerified: true');
+      const promoted = JSON.parse(await readFile(sourcePath, 'utf8'));
+      expect(promoted.publisherSmokeStatus).toBe('passed');
+      expect(promoted.crossProjectVerified).toBe(true);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -1179,8 +1179,7 @@ describe('Vercel supply-chain script boundaries', () => {
   it('re-promotes a second candidate from an already-promoted source pin', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-repeat-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
-      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const provenancePath = join(temp, 'provenance.json');
       await writeRedactedProvenance(provenancePath);
       const firstPublisher = join(temp, 'first-publisher.json');
@@ -1192,8 +1191,8 @@ describe('Vercel supply-chain script boundaries', () => {
       await writeFile(firstPublisher, JSON.stringify(firstPublisherReport));
       await writeFile(firstConsumer, JSON.stringify(firstConsumerReport));
       const invoke = async (candidateReference: string, candidateDigest: string, publisherEvidence: string, consumerEvidence: string, sourceCommit: string) => runNode(
-        'scripts/vercel/promote-image.mjs',
-        { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [
           '--reference', candidateReference,
           '--provenance-file', provenancePath,
@@ -1205,6 +1204,7 @@ describe('Vercel supply-chain script boundaries', () => {
           '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
           '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
           '--publisher-evidence', publisherEvidence, '--consumer-evidence', consumerEvidence,
+          '--out', sourcePath,
         ],
       );
       const first = await invoke(reference, digest, firstPublisher, firstConsumer, '4af448f5daba0f9daf02071250f4f5ad389c80df');
@@ -1227,13 +1227,13 @@ describe('Vercel supply-chain script boundaries', () => {
       await writeFile(secondConsumerPath, JSON.stringify(secondConsumer));
       const second = await invoke(secondReference, secondDigest, secondPublisherPath, secondConsumerPath, '5bf448f5daba0f9daf02071250f4f5ad389c80df');
       expect(second.code, second.stderr).toBe(0);
-      const promoted = await readFile(sourcePath, 'utf8');
+      const promoted = JSON.parse(await readFile(sourcePath, 'utf8'));
       const canonicalRaw = await readFile('images/vercel/provenance.json', 'utf8');
       const canonicalDigest = `sha256:${createHash('sha256').update(canonicalRaw).digest('hex')}`;
-      expect(promoted).toContain(`'${secondReference}'`);
-      expect(promoted).toContain("sourceCommit: '5bf448f5daba0f9daf02071250f4f5ad389c80df'");
-      expect(promoted).toContain(`provenanceDigest: '${canonicalDigest}'`);
-      expect(promoted).not.toContain('redacted');
+      expect(promoted.reference).toBe(secondReference);
+      expect(promoted.sourceCommit).toBe('5bf448f5daba0f9daf02071250f4f5ad389c80df');
+      expect(promoted.provenanceDigest).toBe(canonicalDigest);
+      expect(JSON.stringify(promoted)).not.toContain('redacted');
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -1242,8 +1242,7 @@ describe('Vercel supply-chain script boundaries', () => {
   it('rejects minimal, failed, URL-mismatched, and timing-incomplete evidence', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-forgery-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
-      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const provenancePath = join(temp, 'provenance.json');
       await writeRedactedProvenance(provenancePath);
       const consumer = validEvidence('consumer', 'consumer-team-id', 'consumer-project-id');
@@ -1259,8 +1258,8 @@ describe('Vercel supply-chain script boundaries', () => {
         await writeFile(publisherPath, JSON.stringify(variant.report));
         await writeFile(consumerPath, JSON.stringify(consumer));
         const result = await runNode(
-          'scripts/vercel/promote-image.mjs',
-          { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+          'scripts/vercel/emit-image-pin.mjs',
+          process.env,
           [
             '--reference', reference,
             '--provenance-file', provenancePath,
@@ -1272,6 +1271,7 @@ describe('Vercel supply-chain script boundaries', () => {
             '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
             '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
             '--publisher-evidence', publisherPath, '--consumer-evidence', consumerPath,
+          '--out', sourcePath,
           ],
         );
         expect(result.code, variant.name).not.toBe(0);
@@ -1286,8 +1286,7 @@ describe('Vercel supply-chain script boundaries', () => {
   it('rejects malformed evidence primitives and cleanup shapes', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-malformed-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
-      await writeFile(sourcePath, await readFile('src/providers/vercel/image.ts', 'utf8'));
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const provenancePath = join(temp, 'provenance.json');
       await writeRedactedProvenance(provenancePath);
       const variants = [
@@ -1307,8 +1306,8 @@ describe('Vercel supply-chain script boundaries', () => {
         await writeFile(publisherPath, JSON.stringify(publisher));
         await writeFile(consumerPath, JSON.stringify(validEvidence('consumer', 'consumer-team-id', 'consumer-project-id')));
         const result = await runNode(
-          'scripts/vercel/promote-image.mjs',
-          { ...process.env, VERCEL_IMAGE_PIN_FILE: sourcePath },
+          'scripts/vercel/emit-image-pin.mjs',
+          process.env,
           [
             '--reference', reference,
             '--provenance-file', provenancePath,
@@ -1320,6 +1319,7 @@ describe('Vercel supply-chain script boundaries', () => {
             '--publisher-team-id', 'publisher-team-id', '--publisher-project-id', 'publisher-project-id',
             '--consumer-team-id', 'consumer-team-id', '--consumer-project-id', 'consumer-project-id',
             '--publisher-evidence', publisherPath, '--consumer-evidence', consumerPath,
+          '--out', sourcePath,
           ],
         );
         expect(result.code, name).not.toBe(0);
@@ -1334,7 +1334,7 @@ describe('Vercel supply-chain script boundaries', () => {
   it('rejects promotion when redacted smoke evidence is not valid', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-promote-'));
     try {
-      const sourcePath = join(temp, 'image.ts');
+      const sourcePath = join(temp, 'vercel-image-pin.json');
       const source = await readFile('src/providers/vercel/image.ts', 'utf8');
       await writeFile(sourcePath, source);
       const provenancePath = join(temp, 'provenance.json');
@@ -1342,11 +1342,8 @@ describe('Vercel supply-chain script boundaries', () => {
       const invalidEvidence = join(temp, 'invalid.json');
       await writeFile(invalidEvidence, JSON.stringify({ redacted: false }));
       const result = await runNode(
-        'scripts/vercel/promote-image.mjs',
-        {
-          ...process.env,
-          VERCEL_IMAGE_PIN_FILE: sourcePath,
-        },
+        'scripts/vercel/emit-image-pin.mjs',
+        process.env,
         [
           '--reference', reference,
           '--provenance-file', provenancePath,

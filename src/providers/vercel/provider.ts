@@ -50,6 +50,7 @@ import {
 } from './source.js';
 import { recoverMissingBranchSandbox } from './recovery.js';
 import {
+  DisplayCredentialsNotFoundError,
   getDisplayCredentials as resolveDisplayCredentials,
 } from './display-credentials.js';
 import {
@@ -77,6 +78,8 @@ export type VercelOpener = (url: string) => void | Promise<void>;
 
 export interface VercelProviderOptions {
   runner?: ShellRunner;
+  /** Resolve the Sandbox image reference; defaults to release pin or channel. */
+  resolveImage?: () => Promise<string>;
   lifecycle?: VercelLifecycleFactory | VercelLifecycle;
   lifecycleFactory?: VercelLifecycleFactory;
   terminal?: VercelTerminalAdapter;
@@ -114,7 +117,11 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
   const client = options.client ?? createVercelSandboxClient();
   const makeLifecycle = options.lifecycleFactory
     ?? (typeof options.lifecycle === 'function' ? options.lifecycle : undefined)
-    ?? ((lifecycleOptions: VercelLifecycleOptions) => createVercelLifecycle({ ...lifecycleOptions, client }));
+    ?? ((lifecycleOptions: VercelLifecycleOptions) => createVercelLifecycle({
+      ...lifecycleOptions,
+      client,
+      ...(options.resolveImage === undefined ? {} : { resolveImage: options.resolveImage }),
+    }));
   const injectedLifecycle = options.lifecycle && typeof options.lifecycle !== 'function'
     ? options.lifecycle
     : undefined;
@@ -171,7 +178,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
-      await renderVercelReadyBlock(request, sandbox, setupStatus);
+      await renderVercelReadyBlock(request, sandbox, setupStatus, await displayToken(prepared.branchStore, secrets));
       return terminalResult(
         request,
         terminal,
@@ -200,7 +207,12 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
-      await renderVercelAttachNotice(request, sandbox, setupStatus);
+      await renderVercelAttachNotice(
+        request,
+        sandbox,
+        setupStatus,
+        await displayToken(prepared.branchStore, secrets),
+      );
       return terminalResult(
         request,
         terminal,
@@ -248,7 +260,8 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         throw new VercelLifecycleError('route_not_found', 'Vercel Sandbox has no routes');
       }
       const labels = await resolveRouteLabels(request.repoRoot);
-      const renderedRoutes = renderVercelRoutes(routes, labels);
+      const token = await displayToken(prepared.branchStore, secrets);
+      const renderedRoutes = renderVercelRoutes(routes, labels, token);
       for (const rendered of renderedRoutes) request.stdout.write(`${rendered.line}\n`);
       if (request.open) {
         const noVnc = renderedRoutes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
@@ -700,8 +713,19 @@ interface RenderedVercelRoute {
 async function renderedRoutesForSandbox(
   sandbox: VercelSandboxHandle,
   repoRoot: string,
+  token: string,
 ): Promise<RenderedVercelRoute[]> {
-  return renderVercelRoutes(sandbox.routes ?? [], await resolveRouteLabels(repoRoot));
+  return renderVercelRoutes(sandbox.routes ?? [], await resolveRouteLabels(repoRoot), token);
+}
+
+async function displayToken(
+  store: VercelBranchMetadataStore | undefined,
+  secrets: string[],
+): Promise<string> {
+  if (!store) throw new DisplayCredentialsNotFoundError();
+  const token = (await resolveDisplayCredentials(store)).credentials.password;
+  addSecrets(secrets, token);
+  return token;
 }
 
 // Labels are cosmetic enrichment on read surfaces. A malformed
@@ -721,8 +745,9 @@ async function renderVercelReadyBlock(
   request: ProviderBranchRequest,
   sandbox: VercelSandboxHandle,
   setupStatus: VercelSetupStatus | null,
+  token: string,
 ): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot);
+  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
   request.stderr.write('Vercel devbox ready\n');
   for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
   request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
@@ -735,8 +760,9 @@ async function renderVercelAttachNotice(
   request: ProviderBranchRequest,
   sandbox: VercelSandboxHandle,
   setupStatus: VercelSetupStatus | null,
+  token: string,
 ): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot);
+  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
   const noVnc = routes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
   request.stderr.write(noVnc
     ? `Vercel devbox resumed; ${noVnc.line}\n`
@@ -748,13 +774,14 @@ async function renderVercelAttachNotice(
 function renderVercelRoutes(
   routes: readonly SandboxRoute[],
   labels: Record<number, string>,
+  token: string,
 ): RenderedVercelRoute[] {
   return [...routes]
     .sort((left, right) => left.port - right.port)
     .map((route) => {
       const safe = assertSafeRouteUrl(route.url);
       const url = route.port === DEVBOX_NOVNC_PROXY_PORT
-        ? new URL('vnc.html?autoconnect=1', safe.endsWith('/') ? safe : `${safe}/`).href
+        ? novncPairingUrl(safe, token)
         : safe;
       const description = route.port === DEVBOX_NOVNC_PROXY_PORT
         ? 'noVNC display'
@@ -765,6 +792,18 @@ function renderVercelRoutes(
         line: `${route.port}: ${url}  (${description})`,
       };
     });
+}
+
+// The display link carries the branch access code so a click pairs the browser.
+// The proxy exchanges it for an HttpOnly cookie and redirects the code out of
+// the address bar; see images/vercel/novnc-proxy.mjs.
+function novncPairingUrl(routeUrl: string, token: string): string {
+  // Resolve relatively: a Vercel route may carry a path prefix that an
+  // absolute '/vnc.html' would discard.
+  const parsed = new URL('vnc.html', routeUrl.endsWith('/') ? routeUrl : `${routeUrl}/`);
+  parsed.searchParams.set('token', token);
+  parsed.searchParams.set('autoconnect', '1');
+  return parsed.href;
 }
 
 function assertSafeRouteUrl(url: string): string {

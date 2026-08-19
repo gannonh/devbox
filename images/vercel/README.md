@@ -2,7 +2,7 @@
 
 This image mirrors the audited open-source `vercel/sandbox` Universal recipe
 on digest-pinned Ubuntu and Bun bases, then adds Chromium, Xvfb, fluxbox,
-x11vnc, noVNC/websockify, and a Basic-Auth noVNC proxy. The
+x11vnc, noVNC/websockify, and an access-code pairing noVNC proxy. The
 checked-in [`provenance.json`](./provenance.json) is the source of truth for
 the upstream commit and recipe hashes, observed managed-VMI inventory, base
 references, Node checksum, apt snapshot, and exact runtime package versions.
@@ -20,7 +20,7 @@ docker buildx build \
   images/vercel
 ```
 
-Build the promoted candidate through `.github/workflows/vercel-image.yml` so
+Build the candidate through `.github/workflows/nightly.yml` so
 Buildx publishes one zstd-compressed `linux/amd64` manifest that VCR can
 optimize and report as ready. The workflow preserves a byte-exact raw inspection
 of the selected digest, verifies its SHA-256, and rejects any layer that is not
@@ -37,7 +37,8 @@ Vercel Sandbox ignores Docker `ENTRYPOINT` and `CMD`; call the explicit
 environment. The exposed proxy port is `DEVBOX_NOVNC_PORT` (6080 by default),
 while the upstream noVNC listener remains private on
 `DEVBOX_NOVNC_INTERNAL_PORT`. Every HTTP request and WebSocket upgrade requires
-Basic Auth; credentials are never query parameters or cookies.
+an access code that pairs into an HttpOnly cookie; the code is never
+forwarded upstream.
 
 ```sh
 docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \

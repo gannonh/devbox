@@ -28,8 +28,9 @@ provider.
    repository `.env`, start the display explicitly, and report setup as a
    separate background status.
 4. Expose only port `6080` and configured app ports. `5900` and the internal
-   noVNC listener remain private. The display proxy requires HTTP Basic Auth
-   with username `devbox`; credentials are retrieved only with `--password`.
+   noVNC listener remain private. The display proxy pairs a browser from the
+   access code on the printed link, exchanging it for an HttpOnly cookie and
+   redirecting the code out of the URL (ADR 0003).
 5. Stop, resume, and remove use terminal session proof plus snapshot relisting.
    Metadata is removed only after cloud cleanup converges; residual IDs remain
    in a mode-`0600` retry record after partial cleanup.

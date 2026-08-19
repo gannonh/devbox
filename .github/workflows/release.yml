@@ -31,6 +31,10 @@ on:
         description: 'Full semver (e.g. 1.2.0). Empty = patch bump from last tag.'
         required: false
         type: string
+      nightly_version:
+        description: 'Nightly prerelease to promote (e.g. 1.2.0-nightly.41). Empty = current @nightly dist-tag.'
+        required: false
+        type: string
       dry_run:
         description: 'Run everything except npm publish and tag/release creation'
         required: false
@@ -41,14 +45,107 @@ permissions:
   contents: write
 
 jobs:
+  # Resolve the digest the nightly channel already proved, and move it to the
+  # stable channel.  imagetools retags an existing manifest, so no image is
+  # rebuilt and the digest a user installs is byte-identical to the one smoked.
+  promote-image:
+    name: Promote the nightly digest to stable
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_reference: ${{ steps.pin.outputs.image_reference }}
+    steps:
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      # The nightly package already carries a pin emitted from validated
+      # publisher and consumer evidence. Stable reuses those exact bytes rather
+      # than re-deriving a claim from evidence this run does not have.
+      - name: Take the pin from the nightly prerelease
+        id: pin
+        run: |
+          set -euo pipefail
+          version='${{ github.event.inputs.nightly_version }}'
+          [[ -n "${version}" ]] || version="$(npm view @gannonh/devbox dist-tags.nightly)"
+          [[ -n "${version}" ]] || { echo 'no nightly prerelease is available to promote' >&2; exit 1; }
+          echo "Promoting nightly ${version}"
+          work="${RUNNER_TEMP}/nightly"
+          mkdir -p "${work}"
+          ( cd "${work}" && npm pack "@gannonh/devbox@${version}" >/dev/null && tar -xzf ./*.tgz )
+          pin="${work}/package/dist/vercel-image-pin.json"
+          [[ -f "${pin}" ]] || { echo "nightly ${version} carries no image pin" >&2; exit 1; }
+          mkdir -p "${RUNNER_TEMP}/pin"
+          cp "${pin}" "${RUNNER_TEMP}/pin/vercel-image-pin.json"
+          reference="$(node -p "require('${pin}').reference")"
+          echo "image_reference=${reference}" >> "${GITHUB_OUTPUT}"
+          echo "nightly_version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Move the proven digest to the stable channel
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          IMAGE_REFERENCE: ${{ steps.pin.outputs.image_reference }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${VERCEL_PUBLISHER_TOKEN}" | docker login vcr.vercel.com \
+            --username "${VERCEL_PUBLISHER_TEAM_ID}" --password-stdin
+          repository="${IMAGE_REFERENCE%@*}"
+          digest="${IMAGE_REFERENCE##*@}"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo "nightly pin is not digest-pinned: ${IMAGE_REFERENCE}" >&2
+            exit 1
+          }
+          docker buildx imagetools create --tag "${repository}:stable" "${IMAGE_REFERENCE}"
+          stable="$(docker buildx imagetools inspect "${repository}:stable" --format '{{.Manifest.Digest}}')"
+          [[ "${stable}" == "${digest}" ]] || {
+            echo "stable channel resolved to ${stable}, expected ${digest}" >&2
+            exit 1
+          }
+
+      - name: Upload the pin for the release job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vercel-image-pin-${{ github.run_id }}
+          path: ${{ runner.temp }}/pin/vercel-image-pin.json
+          retention-days: 7
+
+  vercel-provider-smoke:
+    name: Vercel provider terminal smoke gate
+    needs: promote-image
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vercel-provider-smoke.yml
+    with:
+      source_sha: ${{ github.sha }}
+      path: both
+      image_reference: ${{ needs.promote-image.outputs.image_reference }}
+    secrets:
+      VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+      VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+      VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+      DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+      DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+      DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
+      DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
+      DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+
   vercel-provider-uat:
     name: Vercel provider UAT gate
+    needs: [promote-image, vercel-provider-smoke]
     permissions:
       contents: read
     uses: ./.github/workflows/vercel-provider-uat.yml
     with:
       source_sha: ${{ github.sha }}
       path: both
+      image_reference: ${{ needs.promote-image.outputs.image_reference }}
     secrets:
       VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
       VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
@@ -62,19 +159,20 @@ jobs:
 
   vercel-benchmark:
     name: Vercel five-run benchmark gate
-    needs: vercel-provider-uat
+    needs: [promote-image, vercel-provider-uat]
     permissions:
       contents: read
     uses: ./.github/workflows/vercel-benchmark.yml
     with:
       source_sha: ${{ github.sha }}
+      image_reference: ${{ needs.promote-image.outputs.image_reference }}
     secrets:
       VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
       VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
       VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
 
   release:
-    needs: [vercel-provider-uat, vercel-benchmark]
+    needs: [promote-image, vercel-provider-smoke, vercel-provider-uat, vercel-benchmark]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -140,6 +238,14 @@ jobs:
       - name: Test
         run: npm run test
 
+      # The pin is the nightly's own validated bytes, so the release ships the
+      # exact digest that evidence proves.
+      - name: Download the promoted image pin
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vercel-image-pin-${{ github.run_id }}
+          path: dist
+
       - name: Validate Vercel image pin
         run: npm run validate:release
 
@@ -154,8 +260,12 @@ jobs:
         run: |
           set -euo pipefail
           TARGET_VERSION="${{ steps.version.outputs.target_version }}"
-          echo "Publishing @gannonh/devbox@$TARGET_VERSION"
-          npm publish --access public
+          [[ "${GITHUB_REF_NAME}" == "${{ github.event.repository.default_branch }}" ]] || {
+            echo 'a stable release may only be cut from the default branch' >&2
+            exit 1
+          }
+          echo "Publishing @gannonh/devbox@$TARGET_VERSION to latest"
+          npm publish --access public --tag latest
 
       # --- Commit, tag, and GitHub Release ------------------------------------
       # Only after publish succeeds (or dry_run). Each step gates on the

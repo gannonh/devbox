@@ -25,10 +25,9 @@ until a replacement has completed the same independent verification gates.
 Run **Actions → Vercel provider terminal smoke → Run workflow** manually from
 the default branch as the repository owner. Select `both` for the normal gate,
 or select `existing`/`missing` while diagnosing one deterministic source
-path. This workflow is separate from the image candidate workflow and has no
-`pull_request` trigger of its own; pre-merge runs arrive through the caller's
-exact-SHA `psmoke:` label gate (below). Its job guard rejects fork or
-non-default-branch dispatches and unlabeled PR calls, grants only
+path. This workflow has no `pull_request` trigger; it is called by the release
+workflow or dispatched directly, and it takes the image under test as an
+input. Its job guard rejects fork or non-default-branch dispatches, grants only
 `contents: read`, serializes runs, and uses the `vercel-provider-smoke` GitHub
 environment. Configure required reviewers on that environment before enabling
 the credentialed secrets when a human approval boundary is desired; the
@@ -40,42 +39,19 @@ path), a 2-minute stale-resource preflight, and a 30-second fixture-validation
 budget under a 38-minute-50-second outer smoke budget. The workflow reserves a
 40-minute total timeout.
 
-### Pre-merge authorization for Issue #5
+### Authorizing a credentialed run
 
-When the workflow exists only on a same-repository pull request, authorize the
-reviewed current head with one exact, full lowercase SHA label. This label is an
-authorization only, not a smoke result and **not a pass**. Obtain the current
-head SHA immediately before applying it:
+There is no label ritual. Pull requests never receive cloud credentials:
+CI on a pull request runs lint, typecheck, build, and tests only. To prove a
+branch against real infrastructure, dispatch **Nightly** against that ref;
+to prove a release, run **Release**, which drives the smoke, UAT, and
+benchmark gates against the digest it is promoting.
 
-```bash
-head_sha="$(gh pr view <number> --json headRefOid --jq .headRefOid)"
-[[ "${head_sha}" =~ ^[a-f0-9]{40}$ ]] || { echo 'head SHA is not a full lowercase SHA' >&2; exit 1; }
-gh label create "psmoke:${head_sha}" --color B60205 --description 'Authorize Issue #5 provider smoke for this exact SHA' --force
-gh pr edit <number> --add-label "psmoke:${head_sha}"
-```
+Both paths still require the protected `vercel-provider-smoke` environment
+and the repository owner. Environment approval is a human boundary, not a
+cryptographic one: on a single-owner repository it is self-review, and the
+event guard is the real control.
 
-The caller starts the reusable workflow only for the repository owner's
-`labeled` event, a same-repository PR head, and the exact label
-`psmoke:<40-character-head-SHA>`. The called workflow repeats those
-checks, validates the SHA, and checks out that exact commit. A fork PR never
-qualifies.
-
-The caller's `github.actor == github.repository_owner` condition means the
-repository owner must apply the label: in a user-owned repository only the
-owner can authorize a PR smoke, and in an organization-owned repository only
-the owner (not any other member) can. The `vercel-provider-smoke` GitHub
-environment may additionally require reviewers, but when the only required
-reviewer is the owner themselves (the usual user-owned-repository case),
-GitHub permits self-review; treat environment approval as a human boundary,
-never as a replacement for the event guard.
-
-A later `synchronize` event changes the head and cannot reuse the old
-authorization: the stale label may remain visible, but no credentialed job is
-called for that event, and a labeled event for the old SHA fails the exact-head
-check. Review the new head, remove the stale label if desired, then create and
-apply a **new exact-SHA label** to authorize a new attempt. Starting a job or
-adding a label never establishes smoke acceptance; record acceptance only from
-completed redacted evidence after the real smoke has run.
 
 Create these exact repository secrets:
 
@@ -108,10 +84,9 @@ The script builds the checked-in production adapters and validates
 `VERCEL_IMAGE_PIN` before reading the cloud configuration. This checkout now
 contains the reviewed Issue #4 image promotion, so a local run reaches secret
 configuration validation and fails only when the required configuration is
-missing. That is not provider-smoke evidence: real provider smoke runs only
-from a trusted source — the exact-SHA `psmoke:` label gate on the caller's
-`labeled` PR event, or a repository-owner manual dispatch from the default
-branch.
+missing. That is not provider-smoke evidence: real provider smoke runs only from a
+trusted source — a release workflow call, or a repository-owner manual dispatch
+from the default branch.
 
 With the promoted pin, the gate validates that the fixture is private, the
 API `full_name` and default branch match, and the requested branch has the
@@ -221,7 +196,7 @@ The managed VMI digest and version inventory are parity evidence only; Docker
 never attempts to pull the managed VMI.
 
 `images/vercel/Dockerfile` reproduces that reviewed upstream recipe, then adds
-Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the Basic-Auth noVNC proxy.
+Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the pairing noVNC proxy.
 `start-devbox.sh` starts every service explicitly; the image clears its inherited
 shell command with an empty `CMD []`, so no runtime behavior depends on Docker
 defaults. `status-devbox.sh` and `check-local-image.sh` verify the non-root user,
@@ -237,7 +212,8 @@ images/vercel/check-local-image.sh devbox-vercel:local
 ```
 
 Use a throwaway runtime password and keep the container alive while checking the
-explicit startup path. Probe both HTTP and WebSocket requests with Basic Auth;
+explicit startup path. Probe both HTTP and WebSocket requests with a paired
+`devbox_novnc` cookie;
 the noVNC upstream and VNC port must remain private:
 
 ```sh
@@ -245,7 +221,8 @@ docker run --detach --rm --name devbox-vercel-local \
   -p 127.0.0.1:6080:6080 \
   -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \
   sh -c '/usr/local/bin/devbox-start && exec sleep infinity'
-# Probe HTTP and WebSocket on http://127.0.0.1:6080 with Basic Auth, then remove the probe container.
+# Probe HTTP and WebSocket on http://127.0.0.1:6080 with a paired devbox_novnc cookie,
+# then remove the probe container.
 docker rm -f devbox-vercel-local
 ```
 
@@ -256,151 +233,78 @@ changes, then update every affected digest, checksum, version, and snapshot in
 pass the local image check and both real Sandbox smoke gates; never update only
 the commit or restore floating inputs.
 
-## Candidate, readiness, and smoke workflow
+## The three channels
 
-Run **Actions → Vercel image supply chain → Run workflow** for a manual
-candidate only as the repository owner and only against the default branch.
-Before the workflow lands on the default branch, the repository owner may
-authorize one reviewed same-repository PR commit by creating and applying the
-exact label `vcr:<40-character-head-SHA>`:
+The image pin is a build output, never source. Nothing in git contains a
+digest, so a commit's code and its image always come from the same commit —
+which is why an image change needs one pull request, not two.
 
-```bash
-head_sha="$(gh pr view <number> --json headRefOid --jq .headRefOid)"
-gh label create "vcr:${head_sha}" --color B60205 --description 'Authorize credentialed VCR verification for this exact SHA' --force
-gh pr edit <number> --add-label "vcr:${head_sha}"
-```
+| Channel | Produced by | Image tag | npm dist-tag |
+| --- | --- | --- | --- |
+| Branch | **Nightly** dispatched at a ref | `sha-<commit>-...` only | `dev-<branch>` (opt in) |
+| Nightly | **Nightly** on schedule against main | `nightly` | `nightly` |
+| Stable | **Release**, manual | `stable` | `latest` |
 
-Only an owner-triggered `labeled` event whose payload head SHA exactly matches
-that label starts the credentialed job. A later push is not authorized; create
-and apply its new exact-SHA label after review. To rerun one SHA, remove and
-reapply its label. The candidate job has read-only repository contents
-permission and receives only the ten required publisher/consumer Vercel secrets.
-All pull-request events are excluded from the separate write-capable promotion
-job. Fork PRs and all other PR events cannot receive this credentialed job. The
-workflow validates `provenance.json`, fetches the exact `UPSTREAM_COMMIT`, and
-verifies both recorded upstream Dockerfile hashes before building. The nightly
-schedule compares upstream HEAD with `UPSTREAM_COMMIT`.
-Unchanged provenance skips cleanly; drift fails closed with
-`upstream-drift.json` and requires a reviewed provenance update before the
-normal candidate, smoke, and promotion path can run. It never builds floating
-upstream state, auto-merges, or releases.
+A git checkout carries no pin, so it resolves the `nightly` tag to a digest at
+launch. A published package carries a frozen pin and never resolves anything.
+`DEVBOX_VERCEL_IMAGE` overrides the channel in a checkout for local image work;
+it is refused against a published release.
 
-Every third-party action used by the credentialed workflow is pinned to a full
-reviewed commit SHA. The candidate job has a 45-minute GitHub Actions timeout.
-It gives each HTTP
-request 10 seconds, ordinary SDK calls 30 seconds, commands 60 seconds, each
-smoke gate 10 minutes, deletion verification 30 seconds, and cleanup 2
-minutes; these `SMOKE_*` bounds are intentionally explicit and should only be
-changed with a reviewed contract update.
+### What a nightly run does
 
-The workflow serializes candidate runs with a non-canceling concurrency group.
-Every run builds before smoke and publishes a never-reused candidate tag containing
-the devbox source commit, upstream recipe commit, Ubuntu base digest prefix,
-GitHub run ID, and run attempt. After smoke and redaction complete, a separate
-write-capable job generates the pin from the verified source before inspecting
-any remote promotion branch. It reuses an open promotion PR only when that
-branch is exactly one commit rooted at the verified source and changes only the
-identical generated pin. A closed branch causes a fresh run-suffixed proposal;
-a pin already present on the selected source exits without pushing an
-unpublished branch or attempting PR creation.
+1. Validates `provenance.json` against the exact upstream commit, recomputing
+   both recorded Dockerfile hashes, before building anything.
+2. Builds one `linux/amd64` zstd manifest to a never-reused immutable tag
+   (`sha-<source-commit>-<upstream-commit>-<ubuntu-digest>-<run-id>-<attempt>`),
+   resolves its digest, re-fetches that digest as raw OCI JSON, and requires the
+   bytes to hash to the digest and every layer to be zstd.
+3. Waits for VCR readiness under a bounded deadline.
+4. Runs the **publisher** Sandbox smoke gate, then the **consumer** gate with
+   independent credentials in a different project. The consumer gate is what
+   proves the image is genuinely public and pullable by someone who is not the
+   publisher; it fails if the consumer token is reused or its scope matches the
+   publisher pair.
+5. Only after both gates pass, retags the proven digest as `nightly` and
+   verifies the channel resolves back to that exact digest.
+6. Emits the pin from the redacted evidence into `dist/vercel-image-pin.json`,
+   runs `npm run validate:release`, and publishes the prerelease.
 
-The workflow:
+No job in this workflow can write to the repository. Emitting a pin replaced
+opening a promotion pull request, so there is no branch to reconcile and no
+window where main disagrees with its own image.
 
-1. Installs the audited `vercel@58.11.0` CLI, then logs Buildx into VCR
-   through `--password-stdin`, builds the immutable
-   `sha-<commit>-<upstream-commit>-<ubuntu-digest>-<run-id>-<attempt>` tag as
-   one `linux/amd64` manifest with zstd, and resolves its digest. It then
-   inspects that exact digest as raw OCI JSON and fails unless every layer has
-   media type `application/vnd.oci.image.layer.v1.tar+zstd`. The assertion also
-   hashes the byte-exact raw response and requires it to equal the selected
-   digest. Redaction refuses to upload that raw file if it contains credential
-   material, but otherwise preserves its exact bytes; a redacted compression
-   summary records the digest and layer descriptors. BuildKit's optional
-   provenance attestation is disabled because its
-   OCI index has no VCR readiness status; the checked-in, embedded,
-   upstream-verified `provenance.json` and uploaded workflow artifact remain the
-   reviewed provenance record.
-2. Verifies the flat publisher repository response with an explicit
-   `--scope <publisher-team-slug>`, then correlates the publisher project/team
-   through scoped project/team responses without unioning unrelated objects;
-   the independent consumer project/team is checked with the consumer token.
-3. Polls VCR with the explicit publisher team scope and a bounded deadline.
-   `Preparing` and `image_not_ready` are
-   transient observations; `Unoptimized`, authentication failures, and a
-   timeout fail with an actionable message and preserved evidence.
-4. Creates a real publisher Sandbox from the exact fully-qualified VCR digest.
-   The smoke boundary rejects tags, bare names, and other registries before an
-   API call. It starts `/usr/local/bin/devbox-start` explicitly, checks
-   identity, sudo, bounded executable version probes for all agents/runtimes,
-   `gh`/Chromium/display tools, and the auth proxy, then probes authenticated
-   noVNC HTTP/WebSocket access and a terminal command. Each HTTP request has a
-   ten-second abortable deadline; SDK operations and the whole smoke have
-   bounded deadlines, with cleanup using its own hard deadline.
-5. Stops or aborts the Sandbox, enumerates every VM session, requires terminal
-   `stopped`/`aborted` states, verifies deletion with repeated non-resuming
-   lookups, and treats eventual `running`/`stopping` responses as transient:
-   it attempts another stop/delete, re-enumerates sessions, and performs a
-   final bounded cleanup attempt before failing closed. Snapshot listings are
-   plain metadata, so cleanup resolves each `id` with `Snapshot.get` before
-   bounded instance deletion and records that metadata `id` in evidence. After
-   a lost create handle, owned name/tag discovery and snapshot listings poll
-   through the independent cleanup deadline; collection 404s are errors, not
-   empty results. A fresh final owned Sandbox listing must omit the exact
-   recovered name, and the final snapshot listing is authoritative: every
-   matching item must be absent or `deleted`; recoverable intermediate errors
-   are cleared only after that convergence, otherwise residual IDs/statuses are
-   recorded and the gate fails closed.
-6. Repeats creation and cleanup with the independent consumer credentials.
-   The consumer uses the same public digest and fails if its token is empty,
-   reused, or its team/project scope matches the publisher pair.
-7. After both gates pass, the isolated promotion job consumes the redacted
-   reports and rejects mismatched digests/scopes, failed checks, non-terminal
-   sessions, unsuccessful deletion, missing final owned-resource convergence,
-   or residual snapshots before updating the sole image pin. It also compares
-   the downloaded redacted `provenance.json` with the checked-in canonical
-   artifact, allowing only the top-level `redacted: true` marker, and embeds
-   the canonical bytes and digest. It never executes scripts from a pre-existing
-   promotion branch. The PR is reviewed and merged by an operator; the workflow
-   cannot auto-merge or release it.
+## Cutting a stable release
 
-Artifacts are written under the workflow evidence directory and uploaded only
-after the final `scripts/vercel/redact-artifacts.mjs` step succeeds; a redaction
-failure removes/withholds the directory. Reports retain readiness states,
-structured build/manifest/readiness/startup/HTTP/WebSocket/terminal/stop/delete
-timings, selected digests, byte-exact credential-scanned raw OCI manifest and
-zstd-layer proof, session states, snapshot statuses, and cleanup recovery
-evidence without credential values. Promotion requires every named
-smoke check, the exact smoke URL, nonempty IDs, HTTPS noVNC URLs, ordered ISO
-stage/aggregate timestamps with sane durations, valid cleanup-error arrays,
-and complete identity/cleanup fields.
+Run **Release** manually from the default branch. Optionally name the nightly
+prerelease to promote; empty uses whatever `@nightly` currently points at.
 
-## Pin validation and release
+The release **does not rebuild the image**. It takes the pin out of the chosen
+nightly package, moves that exact digest to the `stable` channel, and runs the
+provider terminal smoke, the UAT, and the five-run benchmark against it. The
+package it publishes carries the nightly's own validated pin bytes, so the
+digest a user installs is byte-identical to the one the evidence proves.
 
-After merging a promotion PR, run:
+`npm run validate:release` fails closed when no pin was emitted, which is what
+stops a release being cut without the evidence that produced a digest.
 
-```sh
-npm run typecheck
-npm run lint
-npm run build
-npm test
-npm run validate:release
-```
-
-Release validation rejects floating tags, bare project-relative references,
-malformed digests, malformed team/project slugs, publisher metadata that does
-not match the parsed image reference, missing smoke evidence, a mismatched
-tested reference, and a consumer scope that was not independently proven. A
-package release must therefore use the reviewed pin; a failed or
-publisher-only candidate cannot update it.
+Every publish passes an explicit dist-tag. `latest` is reachable only from the
+release workflow, only on the default branch.
 
 ## Rollback
 
-Rollback is a normal reviewed source change: restore a previously tested
-`VERCEL_IMAGE_REFERENCE`, its matching provenance/evidence metadata, and publish the
-package through the normal release process. Do not retag a digest or edit a
-registry image in place. Existing **named Sandboxes retain their creation
-image** until they are removed; delete and recreate a named Sandbox to pick up
-the rollback (or any later image pin).
+Rollback does not touch the source tree. Dispatch **Release** naming an earlier
+known-good nightly prerelease: it re-resolves that pin, moves `stable` back to
+that digest, re-runs the gates against it, and publishes.
+
+To take users off a bad stable release immediately without waiting for the
+gates, repoint the npm dist-tag:
+
+```sh
+npm dist-tag add @gannonh/devbox@<previous-good-version> latest
+```
+
+Then follow up with a Release run so the `stable` image channel and `latest`
+agree again.
 
 ## Orphan cleanup
 

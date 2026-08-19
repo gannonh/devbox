@@ -13,7 +13,9 @@ okf_version: "0.1"
 
 * [ADRs index](/adrs/index.md) - architecture decisions and history.
 * [Digest-pinned Vercel image promotion](/adrs/0001-vercel-image-promotion.md) - public digest pin, dual-project smoke, and reviewed promotion.
-* [Vercel provider convergence](/adrs/0002-vercel-provider-convergence.md) - direct SDK lifecycle, Basic Auth, digest pin, and evidence-gated release.
+* [Vercel provider convergence](/adrs/0002-vercel-provider-convergence.md) - direct SDK lifecycle, digest pin, and evidence-gated release.
+* [noVNC access-code pairing](/adrs/0003-novnc-access-code-pairing.md) - the printed display link pairs the browser on click.
+* [Image pin as a build output](/adrs/0004-image-pin-as-build-output.md) - three channels, zero CI-authored pull requests.
 
 ## Architecture and references
 

@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "Vercel provider convergence and release proof"
-description: "Direct SDK lifecycle, public digest pin, Basic Auth, and evidence-gated release."
+description: "Direct SDK lifecycle, public digest pin, and evidence-gated release (display auth superseded by ADR 0003)."
 status: Accepted
 issue: https://github.com/gannonh/devbox/issues/7
 ---
@@ -14,9 +14,12 @@ Use the direct `@vercel/sandbox` v3 SDK behind the provider boundary. Release
 consumes one public, fully-qualified, digest-pinned custom image reference and
 requires independent publisher and consumer smoke evidence plus the five-run
 readiness benchmark. Runtime credentials/configuration are synchronized after
-creation and never baked into the image. The noVNC proxy uses fixed-username
-(`devbox`) HTTP Basic Auth, while the password is retrieved only through
-`--password` and is never put in a URL.
+creation and never baked into the image.
+
+The display-auth clause of this ADR — fixed-username HTTP Basic Auth with the
+password retrieved only through `--password` — is **superseded by
+[ADR 0003](0003-novnc-access-code-pairing.md)**, which restores access-code
+pairing so the printed display link works on click.
 
 ## Alternatives rejected
 

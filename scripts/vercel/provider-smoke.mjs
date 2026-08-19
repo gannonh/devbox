@@ -11,7 +11,6 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
-  assertPromotedVercelImagePin,
   calculateVercelProviderSmokeBudget,
   parseVercelProviderSmokeConfig,
 } from '../../dist/providers/vercel/smoke-config.js';
@@ -27,7 +26,7 @@ import {
 } from '../../dist/providers/vercel/identity.js';
 import {
   matchesVercelSandboxImageDigest,
-  VERCEL_IMAGE_PIN,
+  parseVercelImageReference,
 } from '../../dist/providers/vercel/image.js';
 import {
   normalizeGitHubSourceRemote,
@@ -66,13 +65,20 @@ import {
 const startedAt = Date.now();
 const reportPath = process.env.SMOKE_REPORT;
 let secretValues = [];
+// The image under test is supplied by the caller: the pin is a build output,
+// so CI passes the exact candidate digest it just built and smoked.
+const expectedImageReference = process.env.DEVBOX_VERCEL_IMAGE;
+if (!expectedImageReference) {
+  throw new Error('DEVBOX_VERCEL_IMAGE must be the fully-qualified digest reference under test');
+}
+
 const runIdentity = createRunIdentity();
 const report = {
   schemaVersion: 1,
   redacted: false,
   failed: false,
   runIdentity,
-  imageDigest: VERCEL_IMAGE_PIN.reference.split('@').at(-1),
+  imageDigest: expectedImageReference.split('@').at(-1),
   paths: [],
   cleanup: createEmptyCleanupEvidence(),
   preflight: createEmptyPreflightEvidence(),
@@ -124,6 +130,10 @@ function redactText(value) {
   return output
     .replace(/(authorization\s*:\s*Basic\s+)[^\s"']+/gi, '$1[REDACTED]')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]')
+    // The display access code travels as a pairing query parameter and as the
+    // cookie it is exchanged for; neither may reach an evidence artifact.
+    .replace(/([?&]token=)[^&\s"']+/gi, '$1[REDACTED]')
+    .replace(/(devbox_novnc=)[^;\s"']+/gi, '$1[REDACTED]')
     .replace(/\b(?:ghp_|github_pat_|vcp_|vercel_)[A-Za-z0-9_~-]+/gi, '[REDACTED]');
 }
 
@@ -681,7 +691,7 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       signal,
       smokeTimeoutMs,
     );
-    const expectedImageDigest = VERCEL_IMAGE_PIN.reference.split('@').at(-1);
+    const expectedImageDigest = expectedImageReference.split('@').at(-1);
     recordCheck(pathReport, 'Sandbox image pin', matchesVercelSandboxImageDigest(sandbox.image, expectedImageDigest), 'created Sandbox reports the expected promoted image digest');
     recordCheck(pathReport, 'Sandbox scope identity', sandbox.tags?.identity === identity.tags.identity, 'created Sandbox returned the run-unique identity tags');
 
@@ -933,9 +943,9 @@ async function writeReport() {
 async function main() {
   let config;
   try {
-    // This is intentionally the first provider-specific operation. An invalid
-    // pin must fail before credentials or a cloud API are touched.
-    const image = assertPromotedVercelImagePin(VERCEL_IMAGE_PIN);
+    // Intentionally the first provider-specific operation: a reference that is
+    // not digest-pinned must fail before credentials or a cloud API are touched.
+    const image = parseVercelImageReference(expectedImageReference);
     initializeSecretValues();
     report.image = { digest: image.digest };
     config = parseVercelProviderSmokeConfig(process.env);

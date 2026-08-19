@@ -384,7 +384,7 @@ async function loadConfig(env, repoRoot) {
   if (!COMMIT.test(sourceCommit)) throw new Error('SOURCE_SHA must be a full lowercase 40-character commit SHA');
   const branch = (env.SOURCE_BRANCH ?? await git(repoRoot, ['branch', '--show-current'])).trim();
   if (!branch) throw new Error('SOURCE_BRANCH or a checked-out branch is required');
-  const image = await resolveImage(env);
+  const image = resolveImage(env);
   const envPath = env.DEVBOX_ENV ?? join(repoRoot, '.env');
   let envFile = '';
   try {
@@ -411,15 +411,13 @@ async function loadConfig(env, repoRoot) {
   };
 }
 
-async function resolveImage(env) {
-  const reference = env.IMAGE_REF ?? env.VERCEL_IMAGE_REF;
-  if (reference) return parseImage(reference);
-  try {
-    const module = await import('../../dist/providers/vercel/image.js');
-    return parseImage(module.VERCEL_IMAGE_PIN.reference);
-  } catch {
-    throw new Error('IMAGE_REF is required when compiled dist/providers/vercel/image.js is unavailable');
+function resolveImage(env) {
+  // The pin is a build output rather than source, so the caller names the image.
+  const reference = env.IMAGE_REF ?? env.VERCEL_IMAGE_REF ?? env.DEVBOX_VERCEL_IMAGE;
+  if (!reference) {
+    throw new Error('IMAGE_REF (or DEVBOX_VERCEL_IMAGE) must name the fully-qualified digest reference to benchmark');
   }
+  return parseImage(reference);
 }
 
 function parseImage(reference) {
@@ -743,17 +741,17 @@ function waitForOutput(stream, marker, timeoutMs, signal, currentOutput) {
 }
 
 async function probeAuthenticatedNoVnc(domain, password, signal) {
-  const authorization = `Basic ${Buffer.from(`devbox:${password}`).toString('base64')}`;
-  const authenticated = await fetch(new URL('/vnc.html?autoconnect=1', domain), {
-    headers: { authorization },
+  const cookie = `devbox_novnc=${encodeURIComponent(password)}`;
+  const paired = await fetch(new URL('/vnc.html?autoconnect=1', domain), {
+    headers: { cookie },
     signal,
   });
-  if (authenticated.status !== 200) throw new Error('noVNC authenticated HTTP probe failed');
-  const status = await probeWebSocket(domain, authorization, signal);
-  if (!status.includes('101')) throw new Error('noVNC authenticated WebSocket probe failed');
+  if (paired.status !== 200) throw new Error('noVNC paired HTTP probe failed');
+  const status = await probeWebSocket(domain, cookie, signal);
+  if (!status.includes('101')) throw new Error('noVNC paired WebSocket probe failed');
 }
 
-function probeWebSocket(domain, authorization, signal, timeoutMs = 10_000) {
+function probeWebSocket(domain, cookie, signal, timeoutMs = 10_000) {
   return new Promise((resolvePromise, reject) => {
     const target = new URL('/websockify', domain);
     const secure = target.protocol === 'https:';
@@ -779,7 +777,7 @@ function probeWebSocket(domain, authorization, signal, timeoutMs = 10_000) {
       `Host: ${target.host}`,
       'Connection: Upgrade',
       'Upgrade: websocket',
-      ...(authorization === undefined ? [] : [`Authorization: ${authorization}`]),
+      ...(cookie === undefined ? [] : [`Cookie: ${cookie}`]),
       `Sec-WebSocket-Key: ${key}`,
       'Sec-WebSocket-Version: 13',
       '\r\n',

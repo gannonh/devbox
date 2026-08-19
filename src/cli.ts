@@ -35,7 +35,7 @@ USAGE
   devbox [--provider local|vercel] <branch> --url [--open|-o]  print or open provider routes
   devbox [--provider local|vercel] <branch> --stop             stop (keeps worktree + container)
   devbox [--provider local|vercel] <branch> --rm               remove container, worktree, and branch
-  devbox [--provider local|vercel] <branch> --password         retrieve display credentials (when supported)
+  devbox [--provider local|vercel] <branch> --password         print the display access code (when supported)
   devbox [--provider local|vercel] --list|-l                  list provider devboxes
   devbox --help|-h                                             show this help
 
@@ -54,10 +54,11 @@ NOTE
   local dirty files and unpushed commits are not copied to the sandbox.
   First use displays the Vercel team/project and requires TTY confirmation.
   In the remote terminal, Ctrl-C reaches the remote process and Ctrl-]
-  detaches without stopping the sandbox. Core URL output uses plain HTTPS routes;
-  display credentials are only shown by --password (username: devbox, then
-  password: <generated-secret>). Vercel exposes only configured app ports and
-  authenticated noVNC 6080; VNC 5900 and internal 6081 stay private. Setup
+  detaches without stopping the sandbox. App routes are plain HTTPS; the noVNC
+  link carries a one-use access code that pairs the browser on click and is then
+  dropped from the URL. --password prints that code for the pairing form.
+  Vercel exposes only configured app ports and paired noVNC 6080; VNC 5900 and
+  internal 6081 stay private. Setup
   status/retry lives under /vercel/.devbox/runtime/. Cleanup retains retry
   metadata until Sandbox sessions and snapshots are verified absent. Review
   Vercel pricing and limits before choosing ports or timeouts.`;
@@ -85,7 +86,7 @@ ACTIONS
   --stop         stop the box (keeps local resources)
   --rm           remove the box and local resources
   --url [--open|-o]  print or open provider routes
-  --password     retrieve labeled display credentials when supported
+  --password     print the display access code when supported
 
 FLAGS
   --provider local|vercel   select a provider (local is the default)
@@ -94,7 +95,7 @@ EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box
   devbox ${branch} --attach              # re-enter the running box
   devbox ${branch} --stop                # stop it
-  devbox ${branch} --password            # retrieve credentials if supported
+  devbox ${branch} --password            # print the display access code
   devbox --provider vercel ${branch}     # remote Vercel sandbox; confirm scope on first use
 
 VERCEL CORE
@@ -103,9 +104,9 @@ VERCEL CORE
   Without a complete credential triad, OIDC token, or cached Vercel auth, device
   auth prints the verification URL and user code. Ctrl-C is sent to the remote process.
   Ctrl-] detaches without stopping it.
-  --url prints labeled plain HTTPS routes; --open opens the noVNC route.
-  --password retrieves Vercel display credentials; the local provider reports
-  this action as unsupported. Setup status/retry is under
+  --url prints labeled routes; the noVNC link pairs the browser on click and
+  --open opens it. --password prints the Vercel display access code for the
+  pairing form; the local provider reports this action as unsupported. Setup status/retry is under
   /vercel/.devbox/runtime/; cleanup keeps mode-0600 retry metadata until
   sessions and snapshots converge. See Vercel pricing and limits before use.`;
 
@@ -178,14 +179,16 @@ EXAMPLES
   devbox ${branch} --url
   devbox --provider local ${branch} --url --open`;
 
-const PASSWORD_HELP = (branch: string) => `devbox ${branch} --password — retrieve display credentials
+const PASSWORD_HELP = (branch: string) => `devbox ${branch} --password — print the display access code
 
 USAGE
   devbox [--provider local|vercel] <branch> --password
 
 DESCRIPTION
-  Retrieves explicitly supported display credentials and prints labeled
-  username/password fields. The local provider reports this action as unsupported.
+  Prints the access code for the Vercel display as labeled username/password
+  fields. Opening the printed noVNC link pairs the browser without this code;
+  use it when you land on the pairing form instead. The local provider reports
+  this action as unsupported.
 
 EXAMPLES
   devbox ${branch} --password
