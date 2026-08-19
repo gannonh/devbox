@@ -262,7 +262,10 @@ existing image at near-zero cost.
 
 A reuse run has no evidence of its own and does not invent any: it takes the
 pin the previous nightly published for that same digest and refuses to proceed
-if the digests disagree.
+if the digests disagree. Reuse therefore requires that pin to be recoverable —
+if the image is unchanged but no published nightly carries a pin for it, the run
+builds instead, producing the evidence that makes later reuse possible. That is
+also how the first run bootstraps, before any nightly exists.
 
 On a scheduled run the upstream Universal commit is checked first and fails
 closed on drift. That check is a guard against building unreviewed upstream
