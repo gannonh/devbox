@@ -753,7 +753,9 @@ function renderVercelRoutes(
     .sort((left, right) => left.port - right.port)
     .map((route) => {
       const safe = assertSafeRouteUrl(route.url);
-      const url = safe;
+      const url = route.port === DEVBOX_NOVNC_PROXY_PORT
+        ? new URL('vnc.html?autoconnect=1', safe.endsWith('/') ? safe : `${safe}/`).href
+        : safe;
       const description = route.port === DEVBOX_NOVNC_PROXY_PORT
         ? 'noVNC display'
         : labels[route.port] ? `${labels[route.port]} — public` : 'public';

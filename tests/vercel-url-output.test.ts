@@ -21,7 +21,7 @@ import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 const remote = 'github.com/acme/repo';
 const branch = 'feature/ui';
 const DISPLAY_TOKEN = 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa';
-const NOVNC_URL = 'https://sandbox.example/6080';
+const NOVNC_URL = 'https://sandbox.example/6080/vnc.html?autoconnect=1';
 const NOVNC_LINE = `6080: ${NOVNC_URL}  (noVNC display)`;
 function runner(): ShellRunner {
   return {
