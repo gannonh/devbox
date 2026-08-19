@@ -15,12 +15,12 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish a prerelease to npm under a dev/nightly dist-tag'
+        description: 'Also publish to npm under a nightly/dev dist-tag (scheduled runs always publish)'
         required: false
         type: boolean
         default: false
       readiness_timeout_minutes:
-        description: 'Bounded VCR readiness deadline'
+        description: 'Bounded VCR readiness deadline, in minutes'
         required: false
         default: '15'
         type: string
