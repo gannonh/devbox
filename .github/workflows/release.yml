@@ -46,8 +46,8 @@ permissions:
 
 jobs:
   # Resolve the digest the nightly channel already proved, and move it to the
-  # stable channel.  imagetools retags an existing manifest, so no image is
-  # rebuilt and the digest a user installs is byte-identical to the one smoked.
+  # stable channel.  Retagging is an OCI manifest PUT, so no image is rebuilt
+  # and the digest a user installs is byte-identical to the one that was smoked.
   promote-image:
     name: Promote the nightly digest to stable
     runs-on: ubuntu-latest
@@ -56,9 +56,6 @@ jobs:
     outputs:
       image_reference: ${{ steps.pin.outputs.image_reference }}
     steps:
-      - name: Setup Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
-
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -93,20 +90,14 @@ jobs:
           IMAGE_REFERENCE: ${{ steps.pin.outputs.image_reference }}
         run: |
           set -euo pipefail
-          printf '%s' "${VERCEL_PUBLISHER_TOKEN}" | docker login vcr.vercel.com \
-            --username "${VERCEL_PUBLISHER_TEAM_ID}" --password-stdin
           repository="${IMAGE_REFERENCE%@*}"
           digest="${IMAGE_REFERENCE##*@}"
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || {
             echo "nightly pin is not digest-pinned: ${IMAGE_REFERENCE}" >&2
             exit 1
           }
-          docker buildx imagetools create --tag "${repository}:stable" "${IMAGE_REFERENCE}"
-          stable="$(docker buildx imagetools inspect "${repository}:stable" --format '{{.Manifest.Digest}}')"
-          [[ "${stable}" == "${digest}" ]] || {
-            echo "stable channel resolved to ${stable}, expected ${digest}" >&2
-            exit 1
-          }
+          node scripts/vercel/retag-image.mjs \
+            --repository "${repository}" --digest "${digest}" --tag stable
 
       - name: Upload the pin for the release job
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

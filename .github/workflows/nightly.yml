@@ -230,7 +230,7 @@ jobs:
           existing="$(vercel vcr tag inspect "${VERCEL_IMAGE_REPOSITORY}" "${content_tag}" \
             --project "${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}" \
             --scope "${PUBLISHER_TEAM_SLUG}" --format json 2>/dev/null \
-            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s.slice(s.indexOf("{")));process.stdout.write(j.status==="ready"?(j.manifestDigest??""):"")}catch{process.stdout.write("")}})' || true)"
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s.slice(s.indexOf("{")));const usable=j.status==="ready"&&j.kind==="manifest";process.stdout.write(usable?(j.manifestDigest??""):"")}catch{process.stdout.write("")}})' || true)"
 
           if [[ "${existing}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
             echo 'skip=true' >> "$GITHUB_OUTPUT"
@@ -475,8 +475,8 @@ jobs:
         run: node scripts/vercel/smoke-sandbox.mjs
 
       # Only a digest that passed both gates becomes the channel a checkout
-      # follows.  imagetools retags the existing manifest, so no layer is
-      # rebuilt or re-pushed and the digest is unchanged.
+      # follows.  The tag is written as an OCI manifest PUT, so no layer moves
+      # and the digest is byte-identical to the one that was smoked.
       # Only a digest that passed both gates gets the content key, so a later
       # run can reuse it instead of rebuilding identical image inputs. Recorded
       # on any ref: identical image content is the same image wherever built.
@@ -485,12 +485,15 @@ jobs:
         env:
           PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
           CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
           CONTENT_TAG: ${{ steps.drift.outputs.content_tag }}
         run: |
           set -euo pipefail
           repository="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}"
-          docker buildx imagetools create --tag "${repository}:${CONTENT_TAG}" "${repository}@${CANDIDATE_DIGEST}"
+          node scripts/vercel/retag-image.mjs \
+            --repository "${repository}" --digest "${CANDIDATE_DIGEST}" --tag "${CONTENT_TAG}"
 
       # Resolve the one digest this run stands behind, however it was obtained.
       - name: Resolve the image for this run
@@ -518,16 +521,9 @@ jobs:
           CANDIDATE_DIGEST: ${{ steps.resolved.outputs.digest }}
         run: |
           set -euo pipefail
-          # A reuse run never authenticated Buildx, so log in unconditionally.
-          printf '%s' "${VERCEL_PUBLISHER_TOKEN}" | docker login vcr.vercel.com \
-            --username "${VERCEL_PUBLISHER_TEAM_ID}" --password-stdin
           repository="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}"
-          docker buildx imagetools create --tag "${repository}:nightly" "${repository}@${CANDIDATE_DIGEST}"
-          resolved="$(docker buildx imagetools inspect "${repository}:nightly" --format '{{.Manifest.Digest}}')"
-          [[ "${resolved}" == "${CANDIDATE_DIGEST}" ]] || {
-            echo "nightly channel resolved to ${resolved}, expected ${CANDIDATE_DIGEST}" >&2
-            exit 1
-          }
+          node scripts/vercel/retag-image.mjs \
+            --repository "${repository}" --digest "${CANDIDATE_DIGEST}" --tag nightly
 
       - name: Redact all evidence
         id: redact_final

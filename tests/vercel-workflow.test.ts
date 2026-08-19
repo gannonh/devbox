@@ -75,10 +75,37 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain('git rev-parse "HEAD:images/vercel"');
     expect(workflow).toContain('content_tag="img-${tree}"');
     expect(workflow).toContain('reuse_digest=');
+    // An index-wrapped or unready tag must never be reused: VCR reports
+    // readiness on the child manifest, so an index sits at status null.
+    expect(workflow).toContain('j.status==="ready"&&j.kind==="manifest"');
 
     // Both paths must converge on exactly one digest for the run.
     expect(workflow).toContain('no image digest was resolved for this run');
     expect(workflow).toContain('candidate_digest: ${{ steps.resolved.outputs.digest }}');
+  });
+
+  it('retags channels without changing the manifest digest', async () => {
+    const [nightly, release, retag] = await Promise.all([
+      workflowText(),
+      readFile('.github/workflows/release.yml', 'utf8'),
+      readFile('scripts/vercel/retag-image.mjs', 'utf8'),
+    ]);
+
+    // `imagetools create` wraps the source in an OCI index, so the tag resolves
+    // to the index digest, not the manifest that was built and smoked -- and
+    // VCR reports readiness on the child manifest (ADR 0001). Channel tags must
+    // be written as an OCI manifest PUT instead.
+    for (const workflow of [nightly, release]) {
+      expect(workflow).not.toMatch(/imagetools create/);
+      expect(workflow).toContain('retag-image.mjs');
+    }
+    expect(retag).toContain("method: 'PUT'");
+    // The bytes must be forwarded verbatim; re-serializing changes the digest.
+    expect(retag).toContain('arrayBuffer()');
+    expect(retag).not.toContain('JSON.stringify');
+    // And the result must be proven, not assumed.
+    expect(retag).toContain('docker-content-digest');
+    expect(retag).toContain('resolved to ${resolved}, expected ${digest}');
   });
 
   it('never invents smoke evidence for a reused image', async () => {
@@ -343,6 +370,7 @@ describe('Vercel image and release workflows', () => {
       exists('scripts/vercel/assert-candidate-tag.mjs'),
       exists('scripts/vercel/assert-zstd-manifest.mjs'),
       exists('scripts/vercel/emit-image-pin.mjs'),
+      exists('scripts/vercel/retag-image.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),
     ]);
   });
