@@ -1,7 +1,12 @@
 name: Vercel provider benchmark
 
-# The benchmark is intentionally secret-gated. It is reproducible from an
-# owner-authorized PR, the default branch by dispatch, or the release workflow.
+# Five clean provider launches, timed. Fails on any failed run, any residual
+# resource, or a median command-to-ready over 10s -- the regression guard on
+# launch latency.
+#
+# Secret-gated and reusable: the release workflow calls it against the digest it
+# is promoting. Pull requests never reach it. Dispatch it directly only to
+# re-run this gate on its own, passing the image reference to benchmark.
 on:
   workflow_call:
     inputs:

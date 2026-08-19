@@ -1,9 +1,14 @@
 name: Vercel provider terminal smoke
 
-# This workflow has no pull_request trigger. Direct runs are limited
-# to a manual default-branch dispatch; reusable PR calls perform their own
-# exact-head authorization. The protected vercel-provider-smoke GitHub
-# environment supplies optional reviewer approval without relying on actor equality.
+# Proves the provider against a private fixture repository: both clone paths,
+# the interactive terminal, Ctrl-C, Ctrl-] detach, the expected image digest,
+# and full cleanup.
+#
+# This workflow has no pull_request trigger, and pull requests cannot reach it
+# through a caller either. It runs from a release workflow call or a manual
+# default-branch dispatch; the guard rejects anything else. The protected
+# vercel-provider-smoke GitHub environment supplies optional reviewer approval
+# without relying on actor equality.
 on:
   workflow_call:
     inputs:
