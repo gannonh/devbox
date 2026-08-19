@@ -15,6 +15,7 @@ import {
   resolveProvider,
   type ProviderRegistry,
 } from './providers/registry.js';
+import { describeProviderChoice, resolveProviderChoice } from './providers/preference.js';
 import type {
   DevboxProvider,
   DisplayCredentialsResult,
@@ -40,7 +41,8 @@ USAGE
   devbox --help|-h                                             show this help
 
 OPTIONS
-  --provider local|vercel   select a provider (local is the default)
+  --provider local|vercel   select a provider; the choice sticks to this
+                            repository until you pass --provider again
 
 EXAMPLES
   devbox init                        # set up .devbox/ in the current repo
@@ -89,7 +91,8 @@ ACTIONS
   --password     print the display access code when supported
 
 FLAGS
-  --provider local|vercel   select a provider (local is the default)
+  --provider local|vercel   select a provider; the choice sticks to this
+                            repository until you pass --provider again
 
 EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box
@@ -116,7 +119,8 @@ USAGE
   devbox [--provider local|vercel] --list|-l
 
 FLAGS
-  --provider local|vercel   filter the list by provider (local is the default)
+  --provider local|vercel   filter the list by provider; the choice sticks to
+                            this repository until you pass --provider again
 
 EXAMPLES
   devbox --list                       # list local boxes
@@ -441,6 +445,8 @@ export interface DispatchIO {
 
 export interface DispatchOptions {
   providerRegistry?: ProviderRegistry;
+  /** Overridable for tests; defaults to the XDG state home. */
+  stateHome?: string;
   /** Alias useful for callers embedding the parser/dispatcher. */
   registry?: ProviderRegistry;
   repoRoot?: string | null;
@@ -534,14 +540,23 @@ export async function dispatch(
   }
 
   const registry = options.providerRegistry ?? options.registry ?? defaultProviderRegistry;
+  // The provider sticks to the repository until it is changed, so a cloud repo
+  // does not need --provider on every command.
+  const choice = resolveProviderChoice(
+    parsed.provider,
+    root,
+    options.stateHome === undefined ? {} : { stateHome: options.stateHome },
+  );
   let provider: DevboxProvider;
   try {
-    provider = resolveProvider(parsed.provider, registry);
+    provider = resolveProvider(choice.provider, registry);
   } catch (error) {
     const exitCode = errorExitCode(error, 2);
     io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
     return exitCode;
   }
+  const notice = describeProviderChoice(choice);
+  if (notice) io.stderr.write(`${notice}\n`);
 
   const context = {
     repoRoot: root,

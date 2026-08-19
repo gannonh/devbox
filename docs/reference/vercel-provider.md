@@ -20,9 +20,15 @@ devbox --provider vercel <branch> --rm
 devbox --provider vercel --list
 ```
 
-`--provider` is explicit; omitting it keeps the local provider. In a Vercel
-terminal, `Ctrl-C` reaches the remote foreground process and `Ctrl-]` detaches
-without stopping the Sandbox.
+`--provider` sticks to the repository: pass it once and later commands reuse it
+until you pass `--provider` again, so `--provider local` is how you switch back.
+The choice is stored per repository under the XDG state home, and a remembered
+non-local provider prints a one-line notice before it runs, because the Vercel
+provider creates billable resources and a default you cannot see is the kind
+that surprises you.
+
+In a Vercel terminal, `Ctrl-C` reaches the remote foreground process and
+`Ctrl-]` detaches without stopping the Sandbox.
 
 ## Configuration and precedence
 

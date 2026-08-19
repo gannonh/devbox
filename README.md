@@ -104,12 +104,17 @@ own network namespace, so concurrent worktrees never collide on ports.
 ### Vercel Sandboxes
 
 Runs the box in Vercel's cloud rather than on your machine — no local Docker
-runtime needed, and the display is reachable over HTTPS from anywhere. It is
-always explicit:
+runtime needed, and the display is reachable over HTTPS from anywhere.
 
 ```bash
-npx @gannonh/devbox --provider vercel my-branch
+npx @gannonh/devbox --provider vercel my-branch   # later commands reuse it
+npx @gannonh/devbox my-branch --attach            # still Vercel
+npx @gannonh/devbox --provider local my-branch    # switch back
 ```
+
+The choice sticks to the repository until you pass `--provider` again. A
+remembered Vercel provider prints a one-line notice before it runs, so a cloud
+default is never silent.
 
 Differences from a local box worth knowing before you start:
 
