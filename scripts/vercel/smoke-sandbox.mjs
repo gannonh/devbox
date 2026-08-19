@@ -462,12 +462,16 @@ try {
   await timed('http', async (signal) => {
     const unpaired = await fetchWithTimeout(`${domain}/vnc.html`, {}, httpTimeoutMs, signal);
     check('noVNC rejects unauthenticated HTTP', unpaired.status === 401 && unpaired.headers.get('www-authenticate')?.startsWith('Basic '), `status=${unpaired.status}`);
+    await unpaired.body?.cancel();
     const wrong = await fetchWithTimeout(`${domain}/vnc.html`, { headers: { authorization: `Basic ${Buffer.from('devbox:wrong-password').toString('base64')}` } }, httpTimeoutMs, signal);
     check('noVNC rejects wrong HTTP password', wrong.status === 401, `status=${wrong.status}`);
+    await wrong.body?.cancel();
     const query = await fetchWithTimeout(`${domain}/vnc.html?token=not-a-password`, {}, httpTimeoutMs, signal);
     check('noVNC rejects query credential bypass', query.status === 401, `status=${query.status}`);
+    await query.body?.cancel();
     const paired = await fetchWithTimeout(`${domain}/vnc.html?autoconnect=1`, { headers: { authorization } }, httpTimeoutMs, signal);
     check('authenticated noVNC HTTP', paired.status === 200, `status=${paired.status}`);
+    await paired.body?.cancel();
   }, { timeoutMs: httpTimeoutMs * 2 });
   const missingWebSocket = await timed('websocket-missing-auth', (signal) => probeWebSocket(domain, undefined, { signal, timeoutMs: httpTimeoutMs }), { timeoutMs: httpTimeoutMs });
   check('noVNC rejects unauthenticated WebSocket', missingWebSocket.includes('401'), missingWebSocket);

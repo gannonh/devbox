@@ -241,8 +241,12 @@ explicit startup path. Probe both HTTP and WebSocket requests with Basic Auth;
 the noVNC upstream and VNC port must remain private:
 
 ```sh
-docker run --rm -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \
+docker run --detach --rm --name devbox-vercel-local \
+  -p 127.0.0.1:6080:6080 \
+  -e DEVBOX_NOVNC_PASSWORD='local-only' devbox-vercel:local \
   sh -c '/usr/local/bin/devbox-start && exec sleep infinity'
+# Probe HTTP and WebSocket on http://127.0.0.1:6080 with Basic Auth, then remove the probe container.
+docker rm -f devbox-vercel-local
 ```
 
 To update Universal, fetch the proposed upstream commit, hash its

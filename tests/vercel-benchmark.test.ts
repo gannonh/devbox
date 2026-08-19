@@ -74,6 +74,25 @@ describe('Vercel benchmark public boundary', () => {
     expect(evaluateReport(residual).reasons).toContain('residual resources remain');
   });
 
+  it('rejects a report with the wrong run count, missing stage, or malformed residuals', () => {
+    const short = report();
+    short.runs = short.runs.slice(0, DEFAULT_RUN_COUNT - 1);
+    expect(() => parseReport(JSON.stringify(short))).toThrow(/exactly 5 run records/);
+
+    const missingStage = report();
+    delete missingStage.runs[0].timings['port ready'];
+    expect(() => parseReport(JSON.stringify(missingStage))).toThrow(/missing required stage timings/);
+
+    const malformed = report();
+    malformed.runs[0].residualResources.sandboxes = 'not-an-array';
+    expect(() => parseReport(JSON.stringify(malformed))).toThrow(/malformed residual-resource/);
+
+    const noTiming = report();
+    noTiming.runs[0].commandToReadyMs = null;
+    noTiming.runs[0].failed = false;
+    expect(() => parseReport(JSON.stringify(noTiming))).toThrow(/no command-to-ready timing/);
+  });
+
   it('renders a secret-free Markdown artifact and exposes help without credentials', () => {
     const parsed = report();
     const markdown = renderMarkdown(parsed, evaluateReport(parsed));

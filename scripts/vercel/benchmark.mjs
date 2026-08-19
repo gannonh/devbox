@@ -38,6 +38,7 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
+const PORT_READY_RETRY_MS = 15_000;
 const NOVNC_PORT = 6080;
 const NOVNC_INTERNAL_PORT = 6081;
 const VCR_REFERENCE = /^vcr\.vercel\.com\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?@(sha256:[a-f0-9]{64})$/;
@@ -259,6 +260,7 @@ async function runOne(index, config, adapter) {
     sandbox = await timedStage(run, 'Vercel create/resume', (signal) => adapter.createOrResume({
       ...config.credentials,
       name,
+      resources: { vcpus: config.vcpus },
       image: config.image.reference,
       source: {
         type: 'git',
@@ -292,11 +294,16 @@ async function runOne(index, config, adapter) {
       }
     }, config.stageTimeoutMs);
 
-    const parallelStages = await Promise.allSettled([
-      timedStage(run, 'runtime secret sync', (signal) => syncRuntimeSecrets(adapter, sandbox, config, workspace, signal), config.stageTimeoutMs),
-      timedStage(run, 'display/auth ready', (signal) => startDisplayAndProbe(adapter, sandbox, config, signal), config.stageTimeoutMs),
-    ]);
-    const failedStage = parallelStages.find((result) => result.status === 'rejected');
+    const parallelController = new AbortController();
+    const parallelStages = [
+      timedStage(run, 'runtime secret sync', (signal) => syncRuntimeSecrets(adapter, sandbox, config, workspace, signal), config.stageTimeoutMs, parallelController.signal),
+      timedStage(run, 'display/auth ready', (signal) => startDisplayAndProbe(adapter, sandbox, config, signal), config.stageTimeoutMs, parallelController.signal),
+    ];
+    for (const stage of parallelStages) {
+      stage.catch((error) => parallelController.abort(error));
+    }
+    const settledStages = await Promise.allSettled(parallelStages);
+    const failedStage = settledStages.find((result) => result.status === 'rejected');
     if (failedStage?.status === 'rejected') throw failedStage.reason;
     await timedStage(run, 'port ready', async (signal) => {
       run.ports = config.ports.map((port) => ({ port, domain: assertSafeDomain(adapter.domain(sandbox, port)) }));
@@ -466,11 +473,19 @@ async function startDisplayAndProbe(adapter, sandbox, config, signal) {
 
 async function checkPorts(routes, signal) {
   await Promise.all(routes.map(async (route) => {
-    const response = await fetch(new URL('/', route.domain), {
-      redirect: 'manual',
-      signal,
-    });
-    await response.body?.cancel();
+    const deadline = Date.now() + PORT_READY_RETRY_MS;
+    let status = 0;
+    while (Date.now() < deadline) {
+      const response = await fetch(new URL('/', route.domain), {
+        redirect: 'manual',
+        signal,
+      });
+      status = response.status;
+      await response.body?.cancel();
+      if (status !== 502 && status !== 503) return;
+      await sleep(250, undefined);
+    }
+    throw new Error(`port ${route.port} returned gateway status ${status}`);
   }));
 }
 
@@ -517,7 +532,7 @@ async function runInteractiveTerminal(adapter, sandbox, cwd, marker, signal, tim
     onError: () => true,
   });
   const ready = waitForOutput(stdout, marker, timeoutMs, signal, () => output.join(''));
-  stdin.write(`printf '%s\\n' '${marker}'\\n`);
+  stdin.write(`printf '%s\\n' '${marker}'\n`);
   await ready;
   stdin.write(Buffer.from([0x1d]));
   const result = await boundedCall(() => attached, 'interactive terminal', { signal, timeoutMs });
@@ -565,14 +580,12 @@ async function cleanupResources(adapter, sandbox, name, config, run, signal) {
     const snapshots = await adapter.listSnapshots({ ...config.credentials, name, signal });
     for (const snapshot of snapshots.filter((item) => item.status !== 'deleted')) {
       try {
-        const instance = await adapter.getSnapshot({ ...config.credentials, snapshotId: snapshot.id, signal });
         await deleteListedSnapshot({
           snapshot,
           signal,
           timeoutMs: config.stageTimeoutMs,
           getSnapshot: async (snapshotId, requestSignal) => adapter.getSnapshot({ ...config.credentials, snapshotId, signal: requestSignal }),
         });
-        void instance;
       } catch (error) {
         run.cleanup.errors.push(redactError(error, config.secrets));
       }
@@ -640,10 +653,14 @@ async function cleanupResources(adapter, sandbox, name, config, run, signal) {
   if (run.cleanup.errors.length > 0) throw new Error('cleanup did not converge');
 }
 
-async function timedStage(run, stage, operation, timeoutMs) {
+async function timedStage(run, stage, operation, timeoutMs, externalSignal) {
   const startedEpochMs = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`${stage} timed out`)), timeoutMs);
+  const onExternalAbort = () => {
+    if (!controller.signal.aborted) controller.abort(externalSignal.reason ?? new Error(`${stage} cancelled`));
+  };
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
   const timing = run.timings[stage];
   timing.startedEpochMs = startedEpochMs;
   timing.startedAt = new Date(startedEpochMs).toISOString();
@@ -660,6 +677,7 @@ async function timedStage(run, stage, operation, timeoutMs) {
     throw error;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
 

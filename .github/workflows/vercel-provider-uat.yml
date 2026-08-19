@@ -63,9 +63,11 @@ jobs:
       contents: read
     env:
       SOURCE_SHA: ${{ inputs.source_sha || github.event.inputs.source_sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event.repository.default_branch }}
       SMOKE_PATH: ${{ inputs.path || github.event.inputs.path || 'both' }}
       SMOKE_TIMEOUT_MS: '720000'
-      SMOKE_TOTAL_TIMEOUT_MS: '2400000'
+      SMOKE_UAT_TIMEOUT_MS: '720000'
+      SMOKE_TOTAL_TIMEOUT_MS: '3300000'
       SMOKE_OPERATION_TIMEOUT_MS: '30000'
       SMOKE_COMMAND_TIMEOUT_MS: '60000'
       SMOKE_TERMINAL_TIMEOUT_MS: '90000'
@@ -81,7 +83,7 @@ jobs:
             exit 1
           }
           if [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
-            test "${GITHUB_REF_NAME}" = "${{ github.event.repository.default_branch }}" || {
+            test "${GITHUB_REF_NAME}" = "${SOURCE_BRANCH}" || {
               echo 'manual UAT runs must use the repository default branch' >&2
               exit 1
             }
@@ -93,6 +95,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ env.SOURCE_SHA }}
+
+      # Manual dispatch may pin any SOURCE_SHA, so after checkout verify it is
+      # the current default-branch head before any secret-bearing step runs.
+      # The full-history checkout leaves refs/remotes/origin/<default> present.
+      - name: Verify manual UAT source is the default-branch head
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          default_head="$(git rev-parse "refs/remotes/origin/${SOURCE_BRANCH}")"
+          test "${default_head}" = "${SOURCE_SHA}" || {
+            echo 'manual UAT source SHA must match the current default-branch head' >&2
+            exit 1
+          }
 
       - name: Setup Node 22
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0

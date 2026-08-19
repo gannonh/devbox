@@ -27,7 +27,12 @@ async function command(file, args, options = {}) {
     });
   } catch (error) {
     const code = error?.code ?? 'unknown';
-    throw new Error(`${file} failed with exit code ${code}`);
+    const stderr = (typeof error?.stderr === 'string'
+      ? error.stderr
+      : Buffer.isBuffer(error?.stderr) ? error.stderr.toString('utf8') : '')
+      .trim()
+      .slice(0, 300);
+    throw new Error(`${file} failed with exit code ${code}${stderr ? `; ${stderr}` : ''}`);
   }
 }
 
@@ -138,7 +143,7 @@ async function runInitial(refresh) {
     }));
     await command('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false'], {
       cwd: workspace,
-      timeout: 120_000,
+      timeout: 300_000,
     });
 
     callback = await startCallbackServer(workspace, { chromium: refresh, electron: refresh });
@@ -245,6 +250,7 @@ async function runResume(refresh) {
   if (branch !== proof) throw new Error('UAT resumed on a different branch');
   await command('git', ['ls-remote', '--exit-code', 'origin', `refs/heads/${branch}`]);
   if (!refresh) throw new Error('UAT runtime secret refresh is empty');
+  return refresh;
 }
 
 async function main() {
@@ -255,8 +261,8 @@ async function main() {
     await runInitial(refresh);
     process.stdout.write('DEVBOX_UAT:agents\nDEVBOX_UAT:chromium-oauth\nDEVBOX_UAT:electron-vite\nDEVBOX_UAT:push\n');
   } else {
-    await runResume(refresh);
-    process.stdout.write('DEVBOX_UAT:resume-secret-refresh\n');
+    const observedRefresh = await runResume(refresh);
+    process.stdout.write(`DEVBOX_UAT:resume-secret-refresh\nDEVBOX_UAT_REFRESH=${observedRefresh}\n`);
   }
 }
 

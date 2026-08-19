@@ -75,9 +75,9 @@ describe('Vercel image assets', () => {
   it('uses fixed-user HTTP Basic Auth for HTTP and WebSocket traffic', async () => {
     const proxy = await text(proxyPath);
     expect(proxy).toContain("const username = 'devbox'");
-    expect(proxy).toContain('authorization');
+    expect(proxy).toContain('request.headers.authorization');
     expect(proxy).toContain('www-authenticate');
-    expect(proxy).toContain('upgrade');
+    expect(proxy).toContain("server.on('upgrade',");
     expect(proxy).toContain('101 Switching Protocols');
     expect(proxy).toContain('timingSafeEqual');
     expect(proxy).toContain("delete forwarded['proxy-authorization']");

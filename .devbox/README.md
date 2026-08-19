@@ -124,7 +124,7 @@ before choosing ports, timeouts, or snapshot retention.
 - `DEVBOX_ELECTRON_NO_SANDBOX=1` is set in `devcontainer.json` so Electron
   launches with `--no-sandbox` in the container. Your repo's Electron dev
   script should read this env var and pass `--no-sandbox` when it's set.
-- For a native VNC client instead of the browser, point it at
+- With the local provider, for a native VNC client instead of the browser, point it at
   `<container-name>.orb.local:5900`.
 - New boxes start from `origin/<default>` after fetch, not your local
   default branch. Set `DEVBOX_START_POINT=local` to use the local branch

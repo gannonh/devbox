@@ -178,7 +178,7 @@ terminal.
 
 ## Design spec
 
-The package design is documented in [`docs/specs/2026-06-28-devbox-npm-package-design.md`](docs/specs/2026-06-28-devbox-npm-package-design.md).
+The package design is tracked in the [Vercel provider convergence issue](https://github.com/gannonh/devbox/issues/7) and the [OKF docs bundle](docs/index.md).
 
 ## Status
 

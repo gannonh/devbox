@@ -147,11 +147,28 @@ describe('Vercel provider smoke configuration', () => {
       fixtureTimeoutMs: 5,
       pathProbeTimeoutMs: 10,
       preflightTimeoutMs: 20,
+      uatTimeoutMs: 0,
       outerTimeoutMs: 365,
     });
     expect(calculateVercelProviderSmokeBudget('existing', 100, 20, 5, 10).outerTimeoutMs).toBe(195);
     expect(calculateVercelProviderSmokeBudget('both', 720_000, 120_000, 30_000, 10_000).outerTimeoutMs)
       .toBe(2_330_000);
+  });
+
+  it('reserves an explicit UAT budget inside the outer smoke deadline', () => {
+    expect(calculateVercelProviderSmokeBudget('both', 720_000, 120_000, 30_000, 10_000, undefined, 720_000).outerTimeoutMs)
+      .toBe(3_050_000);
+    expect(calculateVercelProviderSmokeBudget('both', 100, 20, 5, 10, undefined, 50)).toEqual({
+      pathCount: 2,
+      pathTimeoutMs: 100,
+      cleanupTimeoutMs: 20,
+      fixtureTimeoutMs: 5,
+      pathProbeTimeoutMs: 10,
+      preflightTimeoutMs: 20,
+      uatTimeoutMs: 50,
+      outerTimeoutMs: 415,
+    });
+    expect(() => calculateVercelProviderSmokeBudget('both', 100, 20, 5, 10, undefined, -1)).toThrow(/non-negative/i);
   });
 
   it('rejects a non-positive smoke budget', () => {
@@ -536,5 +553,22 @@ describe('Vercel provider smoke configuration', () => {
     expect(fixture).toContain("'--no-sandbox'");
     expect(fixture).toContain("'--disable-gpu'");
     expect(fixture).toContain("git', ['push'");
+  });
+
+  it('pins manual UAT dispatch to the default-branch head without shell interpolation', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-uat.yml', 'utf8');
+    const source = await readFile('scripts/vercel/provider-smoke.mjs', 'utf8');
+
+    expect(workflow).toContain('SOURCE_BRANCH: ${{ github.event.repository.default_branch }}');
+    expect(workflow).toContain('test "${GITHUB_REF_NAME}" = "${SOURCE_BRANCH}"');
+    expect(workflow).toContain('Verify manual UAT source is the default-branch head');
+    expect(workflow).toContain('if: github.event_name == \'workflow_dispatch\'');
+    expect(workflow).toContain('git rev-parse "refs/remotes/origin/${SOURCE_BRANCH}"');
+    expect(workflow).toContain("SMOKE_UAT_TIMEOUT_MS: '720000'");
+    expect(workflow).toContain("SMOKE_TOTAL_TIMEOUT_MS: '3300000'");
+    expect(source).toContain("SMOKE_UAT_TIMEOUT_MS");
+    expect(source).toContain('resume runtime secret refresh observed');
+    expect(source).toContain('DEVBOX_UAT_REFRESH=');
+    expect(source).not.toContain('resume runtime secret changed');
   });
 });

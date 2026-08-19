@@ -17,6 +17,8 @@ describe('Vercel image supply-chain workflow', () => {
 
     expect(workflow).toContain('ref: ${{ env.SOURCE_SHA }}');
     expect(workflow).toContain('SOURCE_BRANCH: ${{ github.event.repository.default_branch }}');
+    expect(workflow).toContain('test "${GITHUB_REF_NAME}" = "${SOURCE_BRANCH}"');
+    expect(workflow).not.toContain('GITHUB_REF_NAME} = "${{ github.event.repository.default_branch }}');
   });
 
   it('serializes the secret-gated provider workflows at the project level', async () => {

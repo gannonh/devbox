@@ -80,6 +80,7 @@ const report = {
 };
 
 const smokeTimeoutMs = positiveTimeout('SMOKE_TIMEOUT_MS', 12 * 60 * 1000);
+const uatTimeoutMs = positiveTimeout('SMOKE_UAT_TIMEOUT_MS', smokeTimeoutMs);
 const operationTimeoutMs = positiveTimeout('SMOKE_OPERATION_TIMEOUT_MS', 30_000);
 const commandTimeoutMs = positiveTimeout('SMOKE_COMMAND_TIMEOUT_MS', 60_000);
 const cleanupTimeoutMs = positiveTimeout('SMOKE_CLEANUP_TIMEOUT_MS', 120_000);
@@ -93,7 +94,11 @@ const UAT_REFRESH_PATH = '/vercel/.devbox/runtime/uat-refresh';
 function initializeSecretValues() {
   const sensitiveNames = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)|^DEVBOX_GITHUB_FIXTURE_/i;
   addSensitiveValues(Object.entries(process.env)
-    .filter(([name, value]) => sensitiveNames.test(name) && typeof value === 'string' && value.length > 0)
+    .filter(([name, value]) => sensitiveNames.test(name)
+      && typeof value === 'string'
+      && value.length > 0
+      && value !== 'true'
+      && value !== 'false')
     .map(([, value]) => value));
 }
 
@@ -292,7 +297,7 @@ async function runUatContract(client, sandbox, config, pathReport, cwd, signal, 
       cwd,
       signal,
     );
-    recordCheck(pathReport, `${label} runtime secret refresh`, auth.exitCode === 0, `exitCode=${auth.exitCode}`);
+    recordCheck(pathReport, `${label} runtime GitHub authentication`, auth.exitCode === 0, `exitCode=${auth.exitCode}`);
     const link = await runCommand(
       client,
       sandbox,
@@ -326,7 +331,14 @@ async function runUatContract(client, sandbox, config, pathReport, cwd, signal, 
     }
     if (failed.length > 0) throw new Error(`${label} UAT checks failed: ${failed.join(', ')}`);
     if (label === 'resume') {
-      recordCheck(pathReport, 'resume runtime secret changed', previousRefresh.stdout.trim() !== refreshValue, 'runtime marker changed after resume');
+      const observedRefresh = /^DEVBOX_UAT_REFRESH=([A-Za-z0-9]+)$/m.exec(result.stdout)?.[1];
+      const previousValue = previousRefresh.stdout.trim();
+      recordCheck(
+        pathReport,
+        'resume runtime secret refresh observed',
+        observedRefresh === refreshValue && previousValue.length > 0 && previousValue !== refreshValue,
+        observedRefresh === refreshValue ? 'refreshed secret observed after resume' : 'refreshed secret was not observed after resume',
+      );
     }
     await client.writeFiles(sandbox, [{ path: UAT_REFRESH_PATH, content: Buffer.from(refreshValue), mode: 0o600 }], { signal });
     pathReport.uat = { ...(pathReport.uat ?? {}), [`${label}Complete`]: true };
@@ -589,7 +601,7 @@ async function recoverOwned(client, credentials, identity, pathReport, signal) {
   return recovery;
 }
 
-async function runPath(config, fixture, label, runSignal, client, terminalAdapter) {
+async function runPath(config, fixture, label, runSignal, client, terminalAdapter, pathTimeoutMs) {
   const remote = normalizeGitHubSourceRemote(`https://github.com/${config.fixture.repository}.git`);
   const requestedBranch = label === 'existing' ? config.fixture.branch : createMissingBranch(config);
   const requestedBranchResponse = await githubJson(
@@ -637,7 +649,7 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
   report.paths.push(pathReport);
 
   const smokeController = new AbortController();
-  const smokeTimer = setTimeout(() => smokeController.abort(new Error(`provider smoke path ${label} exceeded its deadline`)), smokeTimeoutMs);
+  const smokeTimer = setTimeout(() => smokeController.abort(new Error(`provider smoke path ${label} exceeded its deadline`)), pathTimeoutMs);
   const signal = combineSignals(runSignal, smokeController.signal);
   let sandbox;
   const credentials = config.credentials;
@@ -847,12 +859,16 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       clearTimeout(cleanupTimer);
     }
     if (uatRequired && label === 'missing') {
+      const branchController = new AbortController();
+      const branchTimer = setTimeout(() => branchController.abort(new Error('UAT branch cleanup exceeded its deadline')), githubTimeoutMs * 3);
       try {
-        await deleteUatBranch(config, requestedBranch, cleanupSignal);
+        await deleteUatBranch(config, requestedBranch, branchController.signal);
         pathReport.uat = { ...(pathReport.uat ?? {}), pushedBranchDeleted: true };
       } catch (error) {
         pathReport.cleanup.errors.push(`UAT branch cleanup: ${errorMessage(error)}`);
         pathReport.cleanupFailed = true;
+      } finally {
+        clearTimeout(branchTimer);
       }
     }
   }
@@ -932,6 +948,8 @@ async function main() {
       cleanupTimeoutMs,
       fixtureValidationTimeoutMs,
       githubTimeoutMs,
+      undefined,
+      uatRequired ? uatTimeoutMs : 0,
     );
     const outerTimeoutMs = positiveTimeout('SMOKE_TOTAL_TIMEOUT_MS', smokeBudget.outerTimeoutMs);
     if (outerTimeoutMs < smokeBudget.outerTimeoutMs) {
@@ -956,8 +974,9 @@ async function main() {
       if (!preflight.success) throw new Error('provider smoke preflight cleanup did not converge');
       const labels = config.path === 'both' ? ['existing', 'missing'] : [config.path];
       for (const label of labels) {
+        const pathTimeoutMs = smokeTimeoutMs + (uatRequired && label === 'missing' ? uatTimeoutMs : 0);
         try {
-          await runPath(config, fixture, label, controller.signal, client, terminalAdapter);
+          await runPath(config, fixture, label, controller.signal, client, terminalAdapter, pathTimeoutMs);
         } catch (error) {
           report.failed = true;
           report.errors ??= [];
