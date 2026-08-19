@@ -84,6 +84,16 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain('candidate_digest: ${{ steps.resolved.outputs.digest }}');
   });
 
+  it('validates a release without rebuilding away the pin', async () => {
+    const scripts = JSON.parse(await readFile('package.json', 'utf8')).scripts as Record<string, string>;
+
+    // build starts with `rm -rf dist`, so chaining it into validate:release
+    // deleted the very pin being validated -- the check could never pass.
+    expect(scripts.build).toContain('clean');
+    expect(scripts['validate:release']).not.toMatch(/npm run build\s*&&/);
+    expect(scripts['validate:release']).toContain('release-validation.js');
+  });
+
   it('ships the emitted pin inside the published tarball', async () => {
     const [nightly, release] = await Promise.all([
       workflowText(),
