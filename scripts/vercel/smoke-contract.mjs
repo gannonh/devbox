@@ -45,9 +45,13 @@ export const REQUIRED_SMOKE_CHECKS = Object.freeze([
   'binary websockify',
   'explicit startup',
   'display and proxy processes',
-  'noVNC rejects unauthenticated HTTP',
-  'authenticated noVNC HTTP',
-  'authenticated noVNC WebSocket',
+  'noVNC serves the pairing form unpaired',
+  'noVNC rejects a wrong access code',
+  'noVNC pairs the access code into a cookie',
+  'paired noVNC HTTP',
+  'noVNC rejects unpaired WebSocket',
+  'noVNC rejects a wrong WebSocket cookie',
+  'paired noVNC WebSocket',
   'terminal session',
 ]);
 

@@ -252,6 +252,25 @@ it is refused against a published release.
 
 ### What a nightly run does
 
+The image is rebuilt **only when its own inputs change.** The git tree SHA of
+`images/vercel` is the content key — it covers the Dockerfile, the startup and
+proxy scripts, and `provenance.json` with the upstream and Ubuntu base pins. A
+successful build tags its digest `img-<tree-sha>`, so a later run whose image
+inputs are identical reuses that digest and skips the build and both smoke
+gates entirely. A code-only commit therefore publishes a prerelease against the
+existing image at near-zero cost.
+
+A reuse run has no evidence of its own and does not invent any: it takes the
+pin the previous nightly published for that same digest and refuses to proceed
+if the digests disagree.
+
+On a scheduled run the upstream Universal commit is checked first and fails
+closed on drift. That check is a guard against building unreviewed upstream
+state, not a build trigger — whether a build is needed is decided by the
+content key alone.
+
+When a build is required:
+
 1. Validates `provenance.json` against the exact upstream commit, recomputing
    both recorded Dockerfile hashes, before building anything.
 2. Builds one `linux/amd64` zstd manifest to a never-reused immutable tag

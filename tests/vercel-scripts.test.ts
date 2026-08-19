@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -196,6 +196,31 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(lookups).toBeGreaterThanOrEqual(3);
     expect(stops).toBeGreaterThanOrEqual(3);
     expect(deletes).toBeGreaterThanOrEqual(3);
+  });
+
+  // The publisher smoke gate fails closed on `requiredChecksComplete` when a
+  // recorded name drifts from the contract, and every named check passes on the
+  // way there -- so the failure names nothing. Bind the two lists together.
+  it('records every check the smoke contract requires', async () => {
+    const { REQUIRED_SMOKE_CHECKS } = await import('../scripts/vercel/smoke-contract.mjs');
+    const sources = (await readdir('scripts/vercel'))
+      .filter((file) => file.endsWith('.mjs'));
+    const text = (await Promise.all(
+      sources.map((file) => readFile(join('scripts/vercel', file), 'utf8')),
+    )).join('\n');
+
+    const literal = new Set(
+      [...text.matchAll(/(?:record)?[Cc]heck\(\s*'([^']+)'/g)].map((match) => match[1]),
+    );
+    // `binary <name>` checks are generated from the probe list rather than written out.
+    const probeBlock = text.match(/const binaryProbes = \[([\s\S]*?)\]\.map/)?.[1] ?? '';
+    for (const probe of probeBlock.matchAll(/'([^ ']+)[^']*'/g)) {
+      literal.add(`binary ${probe[1]}`);
+    }
+
+    const missing = REQUIRED_SMOKE_CHECKS.filter((name: string) => !literal.has(name));
+    expect(missing, `contract requires checks the smoke never records: ${missing.join(', ')}`)
+      .toEqual([]);
   });
 
   it('does not ship obsolete runtime resolvers or the source-rewriting promoter', async () => {

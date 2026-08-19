@@ -60,6 +60,40 @@ describe('Vercel image and release workflows', () => {
     }
   });
 
+  it('decides a build from image content, not from the event or upstream drift', async () => {
+    const workflow = await workflowText();
+
+    // The upstream check is a guard against building unreviewed upstream state.
+    // It must not double as the build trigger: treating "upstream unchanged" as
+    // "nothing to do" made every scheduled run green while building and
+    // publishing nothing at all.
+    expect(workflow).not.toContain("echo 'skip=true' >> \"$GITHUB_OUTPUT\"\n          echo 'upstream Universal provenance unchanged");
+    expect(workflow).toContain('reviewed provenance update required');
+
+    // images/vercel is the complete content key: Dockerfile, startup and proxy
+    // scripts, and provenance.json with the upstream and Ubuntu base pins.
+    expect(workflow).toContain('git rev-parse "HEAD:images/vercel"');
+    expect(workflow).toContain('content_tag="img-${tree}"');
+    expect(workflow).toContain('reuse_digest=');
+
+    // Both paths must converge on exactly one digest for the run.
+    expect(workflow).toContain('no image digest was resolved for this run');
+    expect(workflow).toContain('candidate_digest: ${{ steps.resolved.outputs.digest }}');
+  });
+
+  it('never invents smoke evidence for a reused image', async () => {
+    const workflow = await workflowText();
+
+    // A reuse run runs no smoke gates, so it must carry the pin the last
+    // nightly published for that same digest rather than emitting a new claim.
+    expect(workflow).toContain("if: ${{ needs.candidate.outputs.image_reused == 'true' }}");
+    expect(workflow).toContain("if: ${{ needs.candidate.outputs.image_reused != 'true' }}");
+    expect(workflow).toContain('prior nightly pin is');
+    expect(workflow).toContain('image reuse needs a prior nightly to carry the pin');
+    // The content key is only recorded for a digest that passed both gates.
+    expect(workflow).toMatch(/Record the image content key[\s\S]*?steps\.drift\.outputs\.skip != 'true'/);
+  });
+
   it('keeps pull requests on a credential-free gate', async () => {
     const ci = await readFile('.github/workflows/ci.yml', 'utf8');
 

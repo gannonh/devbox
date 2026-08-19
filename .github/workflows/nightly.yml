@@ -51,8 +51,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      source_commit: ${{ steps.candidate.outputs.source_commit }}
-      candidate_digest: ${{ steps.manifest.outputs.digest }}
+      source_commit: ${{ github.sha }}
+      candidate_digest: ${{ steps.resolved.outputs.digest }}
+      image_reused: ${{ steps.drift.outputs.skip }}
       upstream_commit: ${{ steps.provenance.outputs.upstream_commit }}
     steps:
       - name: Checkout
@@ -186,12 +187,13 @@ jobs:
           echo "ubuntu_base_reference=${ubuntu_base_reference}" >> "$GITHUB_OUTPUT"
           echo "bun_base_reference=${bun_base_reference}" >> "$GITHUB_OUTPUT"
 
+      # A scheduled run must not build against upstream state nobody reviewed.
+      # This is a guard, not a build trigger: whether a build is needed is
+      # decided by the image content key below.
       - name: Check scheduled upstream provenance
-        id: drift
         run: |
           set -euo pipefail
           if [[ "${{ github.event_name }}" != 'schedule' ]]; then
-            echo 'skip=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           expected="${{ steps.provenance.outputs.upstream_commit }}"
@@ -205,8 +207,40 @@ jobs:
             echo "upstream Universal provenance drift: ${actual} != ${expected}; reviewed provenance update required" >&2
             exit 1
           fi
-          echo 'skip=true' >> "$GITHUB_OUTPUT"
-          echo 'upstream Universal provenance unchanged; no candidate is required.'
+          echo 'upstream Universal provenance unchanged.'
+
+      # The image is rebuilt only when its own inputs change. The git tree SHA
+      # of images/vercel is a complete content key: it covers the Dockerfile,
+      # the startup and proxy scripts, and provenance.json, which carries the
+      # upstream and Ubuntu base pins. A code-only commit reuses the digest that
+      # was already built and smoked for this exact image content.
+      - name: Resolve the image content key
+        id: drift
+        env:
+          PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse "HEAD:images/vercel")"
+          content_tag="img-${tree}"
+          echo "content_tag=${content_tag}" >> "$GITHUB_OUTPUT"
+          repository="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}"
+
+          existing="$(vercel vcr tag inspect "${VERCEL_IMAGE_REPOSITORY}" "${content_tag}" \
+            --project "${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}" \
+            --scope "${PUBLISHER_TEAM_SLUG}" --format json 2>/dev/null \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s.slice(s.indexOf("{")));process.stdout.write(j.status==="ready"?(j.manifestDigest??""):"")}catch{process.stdout.write("")}})' || true)"
+
+          if [[ "${existing}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            echo "reuse_digest=${existing}" >> "$GITHUB_OUTPUT"
+            echo "reuse_reference=${repository}@${existing}" >> "$GITHUB_OUTPUT"
+            echo "images/vercel unchanged (${content_tag}); reusing ${existing} without rebuilding."
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+            echo "images/vercel changed or has no built image (${content_tag}); building a candidate."
+          fi
 
       - name: Prepare immutable candidate reference
         id: candidate
@@ -443,14 +477,50 @@ jobs:
       # Only a digest that passed both gates becomes the channel a checkout
       # follows.  imagetools retags the existing manifest, so no layer is
       # rebuilt or re-pushed and the digest is unchanged.
-      - name: Promote the proven digest to the nightly channel
-        if: ${{ success() && steps.drift.outputs.skip != 'true' && github.ref_name == github.event.repository.default_branch }}
+      # Only a digest that passed both gates gets the content key, so a later
+      # run can reuse it instead of rebuilding identical image inputs. Recorded
+      # on any ref: identical image content is the same image wherever built.
+      - name: Record the image content key
+        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
         env:
           PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          CONTENT_TAG: ${{ steps.drift.outputs.content_tag }}
         run: |
           set -euo pipefail
+          repository="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}"
+          docker buildx imagetools create --tag "${repository}:${CONTENT_TAG}" "${repository}@${CANDIDATE_DIGEST}"
+
+      # Resolve the one digest this run stands behind, however it was obtained.
+      - name: Resolve the image for this run
+        id: resolved
+        run: |
+          set -euo pipefail
+          if [[ '${{ steps.drift.outputs.skip }}' == 'true' ]]; then
+            digest='${{ steps.drift.outputs.reuse_digest }}'
+          else
+            digest='${{ steps.manifest.outputs.digest }}'
+          fi
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo 'no image digest was resolved for this run' >&2
+            exit 1
+          }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote the proven digest to the nightly channel
+        if: ${{ success() && github.ref_name == github.event.repository.default_branch }}
+        env:
+          PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          CANDIDATE_DIGEST: ${{ steps.resolved.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # A reuse run never authenticated Buildx, so log in unconditionally.
+          printf '%s' "${VERCEL_PUBLISHER_TOKEN}" | docker login vcr.vercel.com \
+            --username "${VERCEL_PUBLISHER_TEAM_ID}" --password-stdin
           repository="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}"
           docker buildx imagetools create --tag "${repository}:nightly" "${repository}@${CANDIDATE_DIGEST}"
           resolved="$(docker buildx imagetools inspect "${repository}:nightly" --format '{{.Manifest.Digest}}')"
@@ -513,6 +583,7 @@ jobs:
         run: npm ci
 
       - name: Download redacted candidate evidence
+        if: ${{ needs.candidate.outputs.image_reused != 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: vercel-image-evidence-${{ github.run_id }}
@@ -523,7 +594,36 @@ jobs:
 
       # The pin is emitted into dist/, never written back to the source tree,
       # so this build carries the digest its own evidence proves.
+      # A reuse run produced no evidence of its own, and must not invent any.
+      # The pin belongs to the image: take the one the last nightly published
+      # for this exact digest, and refuse it if the digests disagree.
+      - name: Reuse the pin already published for this digest
+        if: ${{ needs.candidate.outputs.image_reused == 'true' }}
+        env:
+          CANDIDATE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
+        run: |
+          set -euo pipefail
+          version="$(npm view @gannonh/devbox dist-tags.nightly 2>/dev/null || true)"
+          [[ -n "${version}" ]] || {
+            echo 'image reuse needs a prior nightly to carry the pin; none is published' >&2
+            exit 1
+          }
+          work="${RUNNER_TEMP}/prior-nightly"
+          mkdir -p "${work}"
+          ( cd "${work}" && npm pack "@gannonh/devbox@${version}" >/dev/null && tar -xzf ./*.tgz )
+          pin="${work}/package/dist/vercel-image-pin.json"
+          [[ -f "${pin}" ]] || { echo "nightly ${version} carries no image pin" >&2; exit 1; }
+          reference="$(node -p "require('${pin}').reference")"
+          [[ "${reference##*@}" == "${CANDIDATE_DIGEST}" ]] || {
+            echo "prior nightly pin is ${reference##*@}, expected ${CANDIDATE_DIGEST}" >&2
+            exit 1
+          }
+          cp "${pin}" dist/vercel-image-pin.json
+          npm run validate:release
+          echo "Reused the pin published with ${version} for ${CANDIDATE_DIGEST}"
+
       - name: Emit image pin from validated evidence
+        if: ${{ needs.candidate.outputs.image_reused != 'true' }}
         env:
           PROVENANCE_FILE: ${{ runner.temp }}/vercel-image-evidence/provenance.json
           ARTIFACT_DIR: ${{ runner.temp }}/vercel-image-evidence
