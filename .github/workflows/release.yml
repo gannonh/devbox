@@ -240,6 +240,23 @@ jobs:
       - name: Validate Vercel image pin
         run: npm run validate:release
 
+      - name: Pack and prove the pin shipped
+        id: pack
+        run: |
+          set -euo pipefail
+          # prepack rebuilds, and build starts with `rm -rf dist` -- which would
+          # delete the pin emitted above. Pack the already-built tree instead,
+          # then prove the pin actually shipped.
+          npm pack --ignore-scripts
+          tarball="$(ls -1 *.tgz | head -1)"
+          tar -tzf "${tarball}" | grep -qx 'package/dist/vercel-image-pin.json' || {
+            echo "packed tarball ${tarball} carries no image pin" >&2
+            exit 1
+          }
+          packed="$(tar -xzOf "${tarball}" package/dist/vercel-image-pin.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).reference')"
+          echo "packed ${tarball} pinned to ${packed}"
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+
       # --- Publish ------------------------------------------------------------
       # PUBLISH BEFORE TAG/RELEASE. If this step fails, the tag and GitHub
       # Release are never created, so there is no release pointing at an
@@ -256,7 +273,7 @@ jobs:
             exit 1
           }
           echo "Publishing @gannonh/devbox@$TARGET_VERSION to latest"
-          npm publish --access public --tag latest
+          npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag latest
 
       # --- Commit, tag, and GitHub Release ------------------------------------
       # Only after publish succeeds (or dry_run). Each step gates on the

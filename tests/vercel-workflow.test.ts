@@ -84,6 +84,24 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain('candidate_digest: ${{ steps.resolved.outputs.digest }}');
   });
 
+  it('ships the emitted pin inside the published tarball', async () => {
+    const [nightly, release] = await Promise.all([
+      workflowText(),
+      readFile('.github/workflows/release.yml', 'utf8'),
+    ]);
+
+    for (const workflow of [nightly, release]) {
+      // prepack reruns build, and build starts with `rm -rf dist`, so a plain
+      // `npm pack` would delete the pin it is supposed to ship. validate:release
+      // runs earlier and would not notice.
+      expect(workflow).toContain('npm pack --ignore-scripts');
+      expect(workflow).toContain("grep -qx 'package/dist/vercel-image-pin.json'");
+      expect(workflow).toContain('carries no image pin');
+      // Publish exactly the artifact that was proven, not a fresh build.
+      expect(workflow).toContain("npm publish '${{ steps.pack.outputs.tarball }}'");
+    }
+  });
+
   it('retags channels without changing the manifest digest', async () => {
     const [nightly, release, retag] = await Promise.all([
       workflowText(),
