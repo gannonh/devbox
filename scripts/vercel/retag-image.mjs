@@ -12,6 +12,8 @@
  * the digest from the content, so the tag necessarily resolves to the identical
  * manifest.
  */
+import { createHash } from 'node:crypto';
+
 const MANIFEST_TYPES = [
   'application/vnd.oci.image.manifest.v1+json',
   'application/vnd.oci.image.index.v1+json',
@@ -82,7 +84,11 @@ async function main() {
     headers: { accept: MANIFEST_TYPES, authorization },
   });
   if (!verify.ok) throw new Error(`could not verify tag ${tag}: HTTP ${verify.status}`);
-  const resolved = verify.headers.get('docker-content-digest');
+  // Docker-Content-Digest is only RECOMMENDED by the distribution spec, so fall
+  // back to hashing the returned bytes -- which is what the digest means anyway.
+  const verified = Buffer.from(await verify.arrayBuffer());
+  const resolved = verify.headers.get('docker-content-digest')
+    ?? `sha256:${createHash('sha256').update(verified).digest('hex')}`;
   if (resolved !== digest) {
     throw new Error(`tag ${tag} resolved to ${resolved}, expected ${digest}`);
   }

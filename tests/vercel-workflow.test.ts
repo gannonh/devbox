@@ -103,8 +103,10 @@ describe('Vercel image and release workflows', () => {
     // The bytes must be forwarded verbatim; re-serializing changes the digest.
     expect(retag).toContain('arrayBuffer()');
     expect(retag).not.toContain('JSON.stringify');
-    // And the result must be proven, not assumed.
+    // And the result must be proven, not assumed -- without depending on a
+    // header the distribution spec only recommends.
     expect(retag).toContain('docker-content-digest');
+    expect(retag).toContain("createHash('sha256').update(verified)");
     expect(retag).toContain('resolved to ${resolved}, expected ${digest}');
   });
 
