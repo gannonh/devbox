@@ -7,6 +7,11 @@ issue: https://github.com/gannonh/devbox/issues/4
 
 # Digest-pinned Vercel image promotion
 
+> **Superseded in part by [ADR 0004](0004-image-pin-as-build-output.md).** The
+> build, provenance, and dual-project smoke requirements below still hold. The
+> reviewed *promotion pull request* that wrote the pin into source does not:
+> the pin is now emitted into the build at publish time.
+
 ## Decision
 
 Devbox's Vercel Sandbox image mirrors the audited open-source Universal recipe

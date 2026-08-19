@@ -17,6 +17,7 @@ import {
 } from './providers/registry.js';
 import type {
   DevboxProvider,
+  DisplayCredentialsResult,
   ProviderActionResult,
   ProviderBranchRequest,
   ProviderListRequest,
@@ -34,6 +35,7 @@ USAGE
   devbox [--provider local|vercel] <branch> --url [--open|-o]  print or open provider routes
   devbox [--provider local|vercel] <branch> --stop             stop (keeps worktree + container)
   devbox [--provider local|vercel] <branch> --rm               remove container, worktree, and branch
+  devbox [--provider local|vercel] <branch> --password         print the display access code (when supported)
   devbox [--provider local|vercel] --list|-l                  list provider devboxes
   devbox --help|-h                                             show this help
 
@@ -52,8 +54,14 @@ NOTE
   local dirty files and unpushed commits are not copied to the sandbox.
   First use displays the Vercel team/project and requires TTY confirmation.
   In the remote terminal, Ctrl-C reaches the remote process and Ctrl-]
-  detaches without stopping the sandbox. Core URL output labels noVNC pairing
-  links and public app routes.`;
+  detaches without stopping the sandbox. App routes are plain HTTPS; the noVNC
+  link carries a one-use access code that pairs the browser on click and is then
+  dropped from the URL. --password prints that code for the pairing form.
+  Vercel exposes only configured app ports and paired noVNC 6080; VNC 5900 and
+  internal 6081 stay private. Setup
+  status/retry lives under /vercel/.devbox/runtime/. Cleanup retains retry
+  metadata until Sandbox sessions and snapshots are verified absent. Review
+  Vercel pricing and limits before choosing ports or timeouts.`;
 
 const INIT_HELP = `devbox init — scaffold .devbox/ + .devcontainer/ in this repo
 
@@ -78,6 +86,7 @@ ACTIONS
   --stop         stop the box (keeps local resources)
   --rm           remove the box and local resources
   --url [--open|-o]  print or open provider routes
+  --password     print the display access code when supported
 
 FLAGS
   --provider local|vercel   select a provider (local is the default)
@@ -86,6 +95,7 @@ EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box
   devbox ${branch} --attach              # re-enter the running box
   devbox ${branch} --stop                # stop it
+  devbox ${branch} --password            # print the display access code
   devbox --provider vercel ${branch}     # remote Vercel sandbox; confirm scope on first use
 
 VERCEL CORE
@@ -94,7 +104,11 @@ VERCEL CORE
   Without a complete credential triad, OIDC token, or cached Vercel auth, device
   auth prints the verification URL and user code. Ctrl-C is sent to the remote process.
   Ctrl-] detaches without stopping it.
-  --url prints labeled noVNC pairing links and public app routes; --open opens noVNC.`;
+  --url prints labeled routes; the noVNC link pairs the browser on click and
+  --open opens it. --password prints the Vercel display access code for the
+  pairing form; the local provider reports this action as unsupported. Setup status/retry is under
+  /vercel/.devbox/runtime/; cleanup keeps mode-0600 retry metadata until
+  sessions and snapshots converge. See Vercel pricing and limits before use.`;
 
 const LIST_HELP = `devbox --list — list provider devboxes and routes
 
@@ -159,11 +173,26 @@ USAGE
   devbox [--provider local|vercel] <branch> --url [--open|-o]
 
 FLAGS
-  --open|-o    open the noVNC pairing URL in a browser after printing routes
+  --open|-o    open the noVNC HTTPS route in a browser after printing routes
 
 EXAMPLES
   devbox ${branch} --url
   devbox --provider local ${branch} --url --open`;
+
+const PASSWORD_HELP = (branch: string) => `devbox ${branch} --password — print the display access code
+
+USAGE
+  devbox [--provider local|vercel] <branch> --password
+
+DESCRIPTION
+  Prints the access code for the Vercel display as labeled username/password
+  fields. Opening the printed noVNC link pairs the browser without this code;
+  use it when you land on the pairing form instead. The local provider reports
+  this action as unsupported.
+
+EXAMPLES
+  devbox ${branch} --password
+  devbox --provider local ${branch} --password`;
 
 const BRANCH_FLAGS = new Set([
   '--attach',
@@ -173,6 +202,7 @@ const BRANCH_FLAGS = new Set([
   '--url',
   '--open',
   '-o',
+  '--password',
 ]);
 
 export type BranchAction =
@@ -180,7 +210,8 @@ export type BranchAction =
   | { action: 'attach' }
   | { action: 'stop' }
   | { action: 'rm' }
-  | { action: 'url'; open: boolean };
+  | { action: 'url'; open: boolean }
+  | { action: 'password' };
 
 export class CliUsageError extends Error {
   readonly exitCode = 2;
@@ -230,6 +261,8 @@ function formatBranchUsage(branch: string, action: BranchAction): string {
       return RM_HELP(branch);
     case 'url':
       return URL_HELP(branch);
+    case 'password':
+      return PASSWORD_HELP(branch);
     case 'up':
       return UP_HELP(branch);
   }
@@ -245,7 +278,8 @@ export function resolveBranchAction(rest: string[]): BranchAction {
     if (flag === '--attach' || flag === '-a') return 'attach';
     if (flag === '--url' || flag === '--open' || flag === '-o') return 'url';
     if (flag === '--stop') return 'stop';
-    return 'rm';
+    if (flag === '--rm') return 'rm';
+    return 'password';
   });
   const unique = new Set(canonical);
   if (unique.size > 1) {
@@ -259,7 +293,8 @@ export function resolveBranchAction(rest: string[]): BranchAction {
   }
   if (action === 'attach') return { action: 'attach' };
   if (action === 'stop') return { action: 'stop' };
-  return { action: 'rm' };
+  if (action === 'rm') return { action: 'rm' };
+  return { action: 'password' };
 }
 
 function parseList(rest: string[], initialProvider?: ProviderName): ParsedCommand {
@@ -447,6 +482,26 @@ async function runProviderOperation(
   }
 }
 
+async function displayCredentials(
+  provider: DevboxProvider,
+  request: ProviderBranchRequest,
+  io: DispatchIO,
+): Promise<number> {
+  try {
+    const result: DisplayCredentialsResult = await provider.getDisplayCredentials(request);
+    if (!result.supported) {
+      io.stderr.write(`[devbox] ${result.message}\n`);
+      return 2;
+    }
+    io.stdout.write(`username: ${result.username}\npassword: ${result.password}\n`);
+    return 0;
+  } catch (error) {
+    const exitCode = errorExitCode(error, 1);
+    if (!errorWasReported(error)) io.stderr.write(`[devbox] ${errorMessage(error)}\n`);
+    return exitCode;
+  }
+}
+
 function helpText(command: Extract<ParsedCommand, { kind: 'help' }>): string {
   if (command.scope === 'global') return USAGE;
   if (command.scope === 'init') return INIT_HELP;
@@ -517,6 +572,8 @@ export async function dispatch(
       const urlRequest: ProviderUrlRequest = { ...request, open: parsed.action.open };
       return runProviderOperation(() => provider.url(urlRequest), io);
     }
+    case 'password':
+      return displayCredentials(provider, request, io);
   }
 }
 

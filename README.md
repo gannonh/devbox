@@ -4,6 +4,8 @@ One command spins up an isolated Ubuntu dev container per git worktree, with a h
 
 Each box is a full developer environment: Node/Bun, git, gh, ripgrep, fd, fzf, tmux, a coding agent (Pi by default; Claude Code and Codex as one-line alternatives), and a headed display (Electron apps via noVNC in your browser).
 
+Boxes run locally by default, or in a Vercel Sandbox in the cloud — see [Providers](#providers-where-the-box-runs).
+
 ## Quickstart
 
 From this repo:
@@ -20,7 +22,7 @@ npx @gannonh/devbox init      # scaffold .devbox/ + .devcontainer/ config
 npx @gannonh/devbox my-branch # boot a box for that branch, drop into a shell
 ```
 
-Open the headed display in your browser (the `init` output and the ready banner show the URL, of the form `http://<container>.orb.local:6080/vnc.html`).
+Open the headed display in your browser (the `init` output and the ready banner show the URL, of the form `http://<container>.orb.local:6080/vnc.html`). (Vercel boxes print an HTTPS display link instead; see [Providers](#providers-where-the-box-runs).)
 
 ## What it does
 
@@ -52,15 +54,9 @@ npx @gannonh/devbox <branch> --open                  # open the first route in a
 npx @gannonh/devbox --list                           # list local devbox containers
 npx @gannonh/devbox --provider local --list          # filter list by provider
 
-# Vercel is core support and uses only the authenticated GitHub origin.
-# Dirty files and unpushed commits are not copied. First use displays the
-# Vercel team/project and requires explicit confirmation in a TTY. Without a
-# complete VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID triad, device auth
-# prints the verification URL and user code (and opens it when requested).
-npx @gannonh/devbox --provider vercel <branch>
-
-# In a Vercel terminal, Ctrl-C reaches the remote process and Ctrl-] detaches
-# without stopping the sandbox. `--url` prints the noVNC pairing link.
+# Cloud boxes — see Providers below
+npx @gannonh/devbox --provider vercel <branch>            # boot a Vercel Sandbox
+npx @gannonh/devbox --provider vercel <branch> --password # print its display access code
 ```
 
 ## What `init` creates
@@ -78,7 +74,7 @@ npx @gannonh/devbox --provider vercel <branch>
 
 See [`.devbox/README.md`](.devbox/README.md) after `init` for the per-file rundown and the agent-switching instructions.
 
-## Agents
+## Coding agents
 
 `provision.sh` ships with three agent blocks — Pi active by default, Claude Code and Codex commented out:
 
@@ -90,87 +86,151 @@ See [`.devbox/README.md`](.devbox/README.md) after `init` for the per-file rundo
 
 To switch, edit `.devbox/provision.sh` (comment-toggle the blocks) and remove the `~/.pi` mount from `.devcontainer/devcontainer.json`.
 
-## Vercel Sandbox image
+## Providers: where the box runs
 
-The digest-pinned Vercel Sandbox image, publisher/consumer smoke workflow,
-reviewed promotion process, rollback, and orphan cleanup are documented in the
-[`Vercel image supply chain runbook`](docs/runbooks/vercel-image-supply-chain.md).
-The live image workflow is secret-gated and never auto-promotes upstream drift.
+A provider decides where `devbox <branch>` actually runs the box. `--provider`
+picks one; omitting it keeps the local provider.
 
-## Real Vercel provider smoke
+| Provider | Runs on | Reachable at | Source of your code |
+| --- | --- | --- | --- |
+| `local` (default) | your machine, via OrbStack/Docker | `<container>.orb.local:<port>` | the worktree on disk, uncommitted work included |
+| `vercel` | a Vercel Sandbox in the cloud | HTTPS routes issued by Vercel | the authenticated GitHub origin — pushed commits only |
 
-The secret-gated provider terminal smoke runs only from a trusted source:
-manually via **Actions → Vercel provider terminal smoke → Run workflow** on
-the default branch (choose `both`, `existing`, or `missing`), or on a pull
-request through the caller's exact-SHA `psmoke:` label gate, which requires
-the repository owner to apply the label. The workflow itself has no
-pull-request trigger, rejects non-default-branch or fork dispatches, and
-requires approval from the protected `vercel-provider-smoke` GitHub
-environment; the caller's actor==owner condition means a user-owned
-repository can only self-authorize, and a single-owner environment review is
-effectively self-review (the event guard remains the boundary).
+### Local containers (default)
 
-Configure these repository secrets exactly:
+The devcontainer path described above: one container per worktree, each with its
+own network namespace, so concurrent worktrees never collide on ports.
 
-- `VERCEL_CONSUMER_TOKEN`, `VERCEL_CONSUMER_TEAM_ID`, `VERCEL_CONSUMER_PROJECT_ID`
-  — the verified Issue #4 consumer credential triad for the `devbox-uat`
-  Sandbox project (the same secrets the image supply chain consumes). The
-  smoke workflow maps these values into the script environment under the exact
-  generic `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` names the smoke
-  script requires; nothing is inherited or re-exported. Generic
-  `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID` secrets are not used.
-- `DEVBOX_GITHUB_FIXTURE_TOKEN` — a read-only token that can clone the private fixture.
-- `DEVBOX_GITHUB_FIXTURE_REPOSITORY` — exact `owner/repository`.
-- `DEVBOX_GITHUB_FIXTURE_BRANCH` — the branch expected to exist for the `existing` path.
-- `DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH` — the GitHub API default branch expectation.
-- `DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE` and `DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT` — the
-  file/content assertion shared by the clone paths.
+### Vercel Sandboxes
 
-The smoke validates the private repository and default/branch expectations,
-then uses the pinned `@vercel/sandbox@3.0.0` client and terminal adapter (not a
-CLI shell-out). Its Git-source examples prove the repository is seeded under a
-repository-name subdirectory, and the SDK session declaration documents
-`/vercel/sandbox` as the default cwd. The production client uses the object
-command overload with an explicit cwd, so the existing path clones the
-requested branch and the missing path clones the default, creates a run-unique
-branch locally, and runs every Git assertion and terminal session in
-`/vercel/sandbox/<normalized-repository>`, including resume/attach. It asserts
-the remote and exact `HEAD`, requires the created branch for the missing path,
-allows detached `HEAD` for the existing revision, and checks clean worktree and
-fixture content. It exercises `openInteractive` once per adapter session, Ctrl-C,
-a post-interrupt marker, and production Ctrl-] escape detachment before
-stop/snapshot completion and every created VM session. Returned Sandbox images are accepted only when
-their manifest digest exactly matches the promoted pin; absent, tag-only, and
-different-digest values fail closed. Before paths, preflight cleanup lists with
-a short smoke prefix, filters the complete five-tag identity locally, and
-removes only run-unique smoke resources from this fixture repository. Each
-path's `finally` block directly reconciles its known Sandbox before independent
-collection recovery, paginates snapshot cleanup, re-lists until every item is
-absent or `deleted`, and fails on any residual or unproven running-session
-state. Evidence stores path labels and non-reversible fingerprints rather than
-fixture repository/branch/file/content or Vercel team/project IDs; the
-workflow redactor marks the final artifact redacted.
+Runs the box in Vercel's cloud rather than on your machine — no local Docker
+runtime needed, and the display is reachable over HTTPS from anywhere. It is
+always explicit:
 
-Artifacts are uploaded after a final redaction step, even for a normal failed
-smoke. A redaction failure withholds the directory rather than risk a secret
-leak. Tokens are passed through environment/headers and in-memory SDK source
-credentials only; they are never command arguments, report fields, or files.
-If recovery finds an ambiguous duplicate, do not blindly run `--rm`: resolve it
-in the Vercel console or manually identify the exact owned resource first.
+```bash
+npx @gannonh/devbox --provider vercel my-branch
+```
 
-The checked-in `VERCEL_IMAGE_PIN` now references the reviewed public image and
-its independent Issue #4 publisher/consumer evidence. A local provider-smoke
-invocation therefore reaches credential validation and fails only when the
-required configuration is absent; that is not evidence of a provider
-execution. Real provider smoke still awaits a trusted default-branch
-credentialed workflow dispatch. First-use device auth remains under the
-repository scope lock, so concurrent first-use commands serialize confirmation
-and credential persistence; later branch operations release the lock before the
-terminal.
+Differences from a local box worth knowing before you start:
+
+- **Remote-first source.** The Sandbox clones the authenticated GitHub origin,
+  so dirty files and unpushed commits stay on your machine. Push first.
+- **Confirmed scope on first use.** devbox prints the Vercel team and project
+  and requires confirmation in a TTY. Credentials resolve in order: a complete
+  `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` triad, then
+  `VERCEL_OIDC_TOKEN`, then device auth scoped by `.vercel/project.json`.
+  Confirmed scope is reused from mode-`0600` XDG state.
+- **Display link pairs on click.** The printed `6080` link carries a one-use
+  access code. Opening it exchanges the code for a session cookie and drops it
+  from the address bar, so nothing else is needed to view the display. If you
+  land on the pairing form instead — a stale or truncated link — `--password`
+  prints the code to paste in.
+- **Terminal keys.** `Ctrl-C` reaches the remote foreground process, and
+  `Ctrl-]` detaches without stopping the Sandbox.
+
+Commands, configuration precedence, and recovery behavior are in the
+[provider reference](docs/reference/vercel-provider.md); the lifecycle and trust
+boundary are in the [provider architecture](docs/architecture/vercel-provider.md).
+
+#### What is exposed publicly
+
+Only the app ports listed in your `devcontainer.json` `forwardPorts`, plus the
+authenticated noVNC port `6080`. VNC `5900` and the internal noVNC listener are
+never exposed. Dependency install and the post-create hook run in the
+background; their status and retry script live in `/vercel/.devbox/runtime/`.
+
+#### Why the runtime image is digest-pinned
+
+A Sandbox boots from an OCI image, so devbox ships one carrying the display
+stack and toolchain. The rule is **tags for development, digests for releases**:
+a published package carries a digest frozen at publish time, so every Sandbox
+runs the exact artifact its smoke evidence proves, while a git checkout follows
+the `nightly` channel. Nothing in the source tree contains a digest, which is why
+an image change is one pull request rather than two.
+
+Set `DEVBOX_VERCEL_IMAGE` to a fully-qualified digest reference to run a locally
+built image; it is refused against a published release. Channels, releases,
+rollback, and orphan cleanup are in the
+[image supply chain runbook](docs/runbooks/vercel-image-supply-chain.md).
+
+## Testing providers against real infrastructure
+
+*Maintainer-facing. These workflows run in this repository, not in projects that
+install the package.*
+
+Unit tests cover provider logic in isolation. Proving the Vercel provider end to
+end needs live infrastructure and production credentials, so that work lives in
+three workflows rather than on every push:
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| **CI** | every push and pull request | lint, typecheck, build, tests — no credentials |
+| **Nightly** | scheduled on `main`, or dispatched at any ref | builds the image, runs publisher and consumer smoke gates, publishes a prerelease |
+| **Release** | manual, default branch | promotes a proven nightly digest to `stable` and `latest`, gated by terminal smoke, UAT, and the five-run benchmark |
+
+Pull requests never receive cloud credentials, and no label authorizes anything.
+To prove a branch against real infrastructure, dispatch **Nightly** against that
+ref; add `publish` to install it with `npx @gannonh/devbox@dev-<branch>`.
+
+Credentialed runs still require the repository owner and the protected
+`vercel-provider-smoke` environment. On a user-owned repository the owner is the
+only possible authorizer, so environment review is effectively self-review — the
+event guard is the real boundary.
+
+### Required repository secrets
+
+| Secret | Purpose |
+| --- | --- |
+| `VERCEL_CONSUMER_TOKEN`, `VERCEL_CONSUMER_TEAM_ID`, `VERCEL_CONSUMER_PROJECT_ID` | Verified Issue #4 consumer triad for the `devbox-uat` Sandbox project, shared with the image supply chain. The workflow maps them into the script environment as `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID`; generic secrets under those names are never used. |
+| `DEVBOX_GITHUB_FIXTURE_TOKEN` | Read-only token that can clone the private fixture. |
+| `DEVBOX_GITHUB_FIXTURE_REPOSITORY` | Exact `owner/repository`. |
+| `DEVBOX_GITHUB_FIXTURE_BRANCH` | Branch the `existing` path expects. |
+| `DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH` | Expected GitHub API default branch. |
+| `DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE`, `DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT` | File and content assertion shared by both clone paths. |
+
+### What a run verifies
+
+The smoke uses the pinned `@vercel/sandbox@3.0.0` client and terminal adapter —
+never a CLI shell-out — and runs every assertion and terminal session, including
+resume/attach, in `/vercel/sandbox/<normalized-repository>`.
+
+- **Clone** — `existing` clones the requested branch and allows a detached
+  `HEAD`; `missing` clones the default branch and must create a run-unique local
+  branch. Both assert the remote, exact `HEAD`, a clean worktree, and fixture
+  content.
+- **Terminal** — `openInteractive` once per adapter session, Ctrl-C, a
+  post-interrupt marker, and production Ctrl-] escape detachment, through
+  stop/snapshot completion of every created VM session.
+- **Image** — a returned Sandbox image is accepted only when its manifest digest
+  exactly matches the promoted pin; absent, tag-only, and different-digest values
+  fail closed.
+- **Cleanup** — preflight lists by a short smoke prefix and filters the complete
+  five-tag identity locally. Each path's `finally` block reconciles its known
+  Sandbox before independent collection recovery, paginates snapshot cleanup, and
+  re-lists until every item is absent or `deleted`. Residual or unproven
+  running-session state fails the run.
+
+### Evidence artifacts and secret handling
+
+Evidence records path labels and non-reversible fingerprints — never fixture
+repository, branch, file, or content values, and never Vercel team or project
+IDs. Artifacts upload after a final redaction step, including on a normal failed
+smoke; a redaction failure withholds the directory rather than risk a leak.
+Tokens travel only through the environment, headers, and in-memory SDK source
+credentials — never command arguments, report fields, or files. For ambiguous
+duplicates found during recovery, follow the manual recovery path in the
+[image supply chain runbook](docs/runbooks/vercel-image-supply-chain.md) instead
+of running `--rm`.
+
+### Current state
+
+A local provider-smoke invocation reaches credential validation and then fails on
+absent configuration. That is not evidence of a provider execution: real provider
+smoke runs only from a Release workflow call or an owner dispatch.
 
 ## Design spec
 
-The package design is documented in [`docs/specs/2026-06-28-devbox-npm-package-design.md`](docs/specs/2026-06-28-devbox-npm-package-design.md).
+The package design is tracked in the [Vercel provider convergence issue](https://github.com/gannonh/devbox/issues/7) and the [OKF docs bundle](docs/index.md).
 
 ## Status
 

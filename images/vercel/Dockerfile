@@ -167,6 +167,8 @@ RUN set -eux; \
       libatk-bridge2.0-0t64 \
       libatk1.0-0t64 \
       libatspi2.0-0t64 \
+      libgbm1 \
+      libgtk-3-0t64 \
       libnspr4 \
       libnss3 \
       libxkbcommon0 \
@@ -194,10 +196,10 @@ RUN set -eux; \
     chromium --version | grep -F "${CHROMIUM_VERSION}"
 
 COPY provenance.json /usr/local/share/devbox/universal-provenance.json
-COPY basic-auth-proxy.mjs /usr/local/lib/devbox/basic-auth-proxy.mjs
+COPY novnc-proxy.mjs /usr/local/lib/devbox/novnc-proxy.mjs
 COPY start-devbox.sh /usr/local/bin/devbox-start
 COPY status-devbox.sh /usr/local/bin/devbox-status
-RUN chmod 0755 /usr/local/lib/devbox/basic-auth-proxy.mjs \
+RUN chmod 0755 /usr/local/lib/devbox/novnc-proxy.mjs \
       /usr/local/bin/devbox-start /usr/local/bin/devbox-status \
     && install -d -o ubuntu -g ubuntu /var/log/devbox \
     && chown ubuntu:ubuntu /usr/local/share/devbox/universal-provenance.json
@@ -207,9 +209,8 @@ ENV DISPLAY=:99 \
     SCREEN_HEIGHT=1000 \
     SCREEN_DEPTH=24 \
     VNC_PORT=5900 \
-    DEVBOX_NOVNC_INTERNAL_PORT=6080 \
-    DEVBOX_NOVNC_PORT=6081 \
-    DEVBOX_NOVNC_USER=devbox \
+    DEVBOX_NOVNC_INTERNAL_PORT=6081 \
+    DEVBOX_NOVNC_PORT=6080 \
     BROWSER=chromium
 
 # Clear Ubuntu's inherited shell command. Vercel Sandbox still starts all

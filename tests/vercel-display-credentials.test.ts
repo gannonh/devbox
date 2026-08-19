@@ -4,10 +4,10 @@ import { access, readFile, stat, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { dispatch } from '../src/cli.js';
+import { defaultProviderRegistry } from '../src/providers/registry.js';
 import { createVercelProvider } from '../src/providers/vercel/provider.js';
 import { createVercelBranchMetadataStore, createVercelScopeMetadataStore } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelLifecycle } from '../src/providers/vercel/lifecycle.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 import { createVercelLifecycle } from '../src/providers/vercel/lifecycle.js';
@@ -15,11 +15,14 @@ import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import {
+  DISPLAY_PASSWORD_BYTES,
+  DISPLAY_PASSWORD_ENCODING,
   DISPLAY_USERNAME,
   generateDisplayPassword,
   getDisplayCredentials,
 } from '../src/providers/vercel/display-credentials.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
+import { resolveTestImage, TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 describe('Vercel display credentials', () => {
   it('stores the dedicated credential field with restrictive metadata permissions', async () => {
@@ -160,6 +163,45 @@ describe('Vercel display credentials', () => {
     expect([first.generated, second.generated].sort()).toEqual([true, true]);
   });
 
+  it('prints exactly the two labeled credential lines through the CLI', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-cli-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/display',
+    });
+    await store.write({});
+    const runner: ShellRunner = {
+      exec: vi.fn(async () => 'git@github.com:Acme/Repo.git'),
+      execQuiet: vi.fn(),
+      spawnInherit: vi.fn(),
+    };
+    const provider = createVercelProvider({ stateHome, runner });
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let stdoutText = '';
+    let stderrText = '';
+    stdout.on('data', (chunk) => { stdoutText += chunk.toString(); });
+    stderr.on('data', (chunk) => { stderrText += chunk.toString(); });
+
+    const code = await dispatch(['--provider', 'vercel', 'feature/display', '--password'], {
+      stdin,
+      stdout,
+      stderr,
+    }, {
+      repoRoot: '/repo',
+      env: {},
+      tty: false,
+      registry: { ...defaultProviderRegistry, vercel: provider },
+    });
+
+    expect(code).toBe(0);
+    const stored = await store.read();
+    expect(stdoutText).toBe(`username: ${DISPLAY_USERNAME}\npassword: ${stored!.displayCredentials!.password}\n`);
+    expect(stderrText).toBe('');
+  });
+
   it('redacts the display password from a provider error', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-redaction-'));
     const remote = 'github.com/acme/repo';
@@ -179,7 +221,7 @@ describe('Vercel display credentials', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: branch,
@@ -243,7 +285,7 @@ describe('Vercel display credentials', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: branch,
@@ -340,7 +382,7 @@ describe('Vercel display credentials', () => {
     const handle = {
       name: identity.name,
       status: 'stopped',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       persistent: true,
       tags: { ...identity.tags },
       domain: (port: number) => `https://sandbox.example/${port}`,
@@ -370,7 +412,7 @@ describe('Vercel display credentials', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password: displayPassword },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: remote.url,
         sourceRevision: branch,
         requestedBranch: branch,
@@ -381,6 +423,7 @@ describe('Vercel display credentials', () => {
       },
     });
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch,
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
@@ -434,7 +477,7 @@ describe('Vercel display credentials', () => {
     const handle = {
       name: identity.name,
       status: 'stopped',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       persistent: true,
       tags: { ...identity.tags },
       domain: (port: number) => `https://sandbox.example/${port}`,
@@ -450,7 +493,7 @@ describe('Vercel display credentials', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password: displayPassword },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: remote.url,
         sourceRevision: branch,
         requestedBranch: branch,
@@ -472,6 +515,7 @@ describe('Vercel display credentials', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch,
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
@@ -527,7 +571,7 @@ describe('Vercel display credentials', () => {
     const handle = {
       name: identity.name,
       status: 'running',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       persistent: true,
       tags: { ...identity.tags },
       domain: (port: number) => `https://sandbox.example/${port}`,
@@ -540,6 +584,7 @@ describe('Vercel display credentials', () => {
     } as unknown as VercelSandboxClient;
     const store = createVercelBranchMetadataStore({ stateHome, repoKey: remote.canonical, branch });
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch,
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
@@ -592,7 +637,7 @@ describe('Vercel display credentials', () => {
     const handle = {
       name: identity.name,
       status: 'stopped',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       persistent: true,
       tags: { ...identity.tags },
       domain: (port: number) => `https://sandbox.example/${port}`,
@@ -608,7 +653,7 @@ describe('Vercel display credentials', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password: displayPassword },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: remote.url,
         sourceRevision: branch,
         requestedBranch: branch,
@@ -645,6 +690,7 @@ describe('Vercel display credentials', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch,
       credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
@@ -661,7 +707,7 @@ describe('Vercel display credentials', () => {
     });
   });
 
-  it('prints the pairing token on noVNC URL surfaces and omits it from list and stop', async () => {
+  it('confines the access code to the display link and keeps it out of list and stop output', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-output-'));
     const remote = 'github.com/acme/repo';
     const branch = 'feature/display';
@@ -685,7 +731,7 @@ describe('Vercel display credentials', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: branch,
@@ -760,14 +806,19 @@ describe('Vercel display credentials', () => {
     await provider.up(request({ tty: true }));
 
     expect(outputs).toHaveLength(5);
-    expect(outputs[0]()).not.toContain(password);
-    expect(outputs[1]()).toContain(`token=${password}`);
-    expect(outputs[2]()).toContain(`token=${password}`);
-    expect(outputs[3]()).not.toContain(password);
-    expect(outputs[4]()).toContain(`token=${password}`);
+    const [list, url, attach, stop, up] = outputs.map((readOutput) => readOutput());
+
+    // The code pairs the browser, so the display link is the one place it is
+    // allowed to appear; surfaces that do not offer the display never carry it.
+    for (const output of [list, stop]) expect(output).not.toContain(password);
+    for (const output of [url, attach, up]) {
+      const carrying = output.split('\n').filter((line) => line.includes(password));
+      expect(carrying).toHaveLength(1);
+      expect(carrying[0]).toContain(`/vnc.html?token=${password}&autoconnect=1`);
+    }
   });
 
-  it('does not advertise Vercel password retrieval as unsupported', async () => {
+  it('advertises Vercel password retrieval and local unsupported behavior', async () => {
     const outputFor = async (args: string[]): Promise<string> => {
       const stdin = new PassThrough();
       const stdout = new PassThrough();
@@ -782,18 +833,22 @@ describe('Vercel display credentials', () => {
     const outputs = await Promise.all([
       outputFor(['--help']),
       outputFor(['feature/display', '--help']),
+      outputFor(['feature/display', '--password', '--help']),
     ]);
 
-    expect(outputs.join('')).not.toContain('--password');
+    expect(outputs.join('')).toContain('--password');
+    expect(outputs.join('')).toContain('local provider reports this action as unsupported');
   });
 
-  it('generates distinct short pairing codes like GEK4-HD6H', () => {
+  it('generates distinct URL-safe passwords with at least 128 bits of entropy', () => {
     const first = generateDisplayPassword();
     const second = generateDisplayPassword();
-    const pairingCode = /^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
 
-    expect(first).toMatch(pairingCode);
-    expect(second).toMatch(pairingCode);
+    expect(DISPLAY_PASSWORD_BYTES * 8).toBeGreaterThanOrEqual(128);
+    expect(DISPLAY_PASSWORD_ENCODING).toBe('base64url');
+    expect(Buffer.from(first, DISPLAY_PASSWORD_ENCODING)).toHaveLength(DISPLAY_PASSWORD_BYTES);
+    expect(first).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(second).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(second).not.toBe(first);
   });
 });

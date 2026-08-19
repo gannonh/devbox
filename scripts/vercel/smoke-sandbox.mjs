@@ -73,7 +73,6 @@ const password = randomBytes(24).toString('base64url');
 const ownedId = randomBytes(12).toString('hex');
 const ownedName = `devbox-smoke-${role}-${ownedId}`;
 const ownedTag = `smoke-${role}-${ownedId}`;
-const username = 'devbox-smoke';
 const report = {
   redacted: false,
   role,
@@ -224,7 +223,7 @@ function probeWebSocket(url, cookie, { signal = smokeSignal, timeoutMs = httpTim
         `Host: ${target.host}`,
         'Connection: Upgrade',
         'Upgrade: websocket',
-        `Cookie: ${cookie}`,
+        ...(cookie === undefined ? [] : [`Cookie: ${cookie}`]),
         'Sec-WebSocket-Key: ' + key,
         'Sec-WebSocket-Version: 13',
         '\r\n',
@@ -329,6 +328,23 @@ async function recoverOwned(signal) {
   return recovery;
 }
 
+async function probePrivatePort(port, signal) {
+  let domain;
+  try {
+    domain = sandbox.domain(port);
+  } catch {
+    return { unavailable: true, observed: 'no-domain' };
+  }
+  try {
+    const response = await fetchWithTimeout(`${domain}/`, { redirect: 'manual' }, httpTimeoutMs, signal);
+    await response.body?.cancel();
+    return { unavailable: [404, 410].includes(response.status), observed: `HTTP ${response.status}` };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return { unavailable: true, observed: 'unreachable' };
+  }
+}
+
 function finalSessionStatesAreTerminal() {
   const finalObservation = report.sessionStates.at(-1);
   if (!finalObservation) return false;
@@ -358,15 +374,22 @@ try {
     ...credentials,
     image,
     name: ownedName,
-    ports: [6081],
+    ports: [6080],
     persistent: false,
     timeout: 10 * 60 * 1000,
     tags: { 'devbox-image': `smoke-${role}`, 'devbox-run': ownedTag },
     signal,
   }), { timeoutMs: smokeTimeoutMs });
   report.sandboxName = sandbox.name;
+  report.publicPorts = [6080];
   await timed('session-create', (signal) => listSessions('created', sandbox, signal));
   check('image digest', sandbox.image?.endsWith(`@${expectedDigest}`), 'Sandbox resolved the candidate digest');
+  const privatePorts = await timed('private-port-policy', async (signal) => ({
+    vnc: await probePrivatePort(5900, signal),
+    internalNoVnc: await probePrivatePort(6081, signal),
+  }), { timeoutMs: httpTimeoutMs * 2 });
+  check('VNC 5900 is not public', privatePorts.vnc.unavailable, privatePorts.vnc.observed);
+  check('internal noVNC 6081 is not public', privatePorts.internalNoVnc.unavailable, privatePorts.internalNoVnc.observed);
 
   const identity = await command('id', ['-u']);
   check('non-root user', identity.exitCode === 0 && identity.stdout.trim() !== '0', identity.stdout.trim());
@@ -412,7 +435,11 @@ try {
   const startResult = await timed('startup', async (signal) => {
     const start = await sandbox.runCommand({
       cmd: '/usr/local/bin/devbox-start',
-      env: { DEVBOX_NOVNC_USER: username, DEVBOX_NOVNC_PASSWORD: password },
+      env: {
+        DEVBOX_NOVNC_PASSWORD: password,
+        DEVBOX_NOVNC_PORT: '6080',
+        DEVBOX_NOVNC_INTERNAL_PORT: '6081',
+      },
       detached: true,
       signal,
       timeoutMs: commandTimeoutMs,
@@ -429,17 +456,39 @@ try {
     `${status.stdout}\n${status.stderr}`,
   );
 
-  const domain = sandbox.domain(6081);
+  const domain = sandbox.domain(6080);
   report.noVncUrl = domain;
-  const cookie = `devbox_novnc=${encodeURIComponent(password)}`;
+  const pairedCookie = `devbox_novnc=${encodeURIComponent(password)}`;
+  const wrongCookie = 'devbox_novnc=wrong-access-code';
   await timed('http', async (signal) => {
+    // An unpaired browser gets the pairing form and never reaches websockify.
     const unpaired = await fetchWithTimeout(`${domain}/vnc.html`, {}, httpTimeoutMs, signal);
-    check('noVNC rejects unauthenticated HTTP', unpaired.status === 200 && (await unpaired.text()).includes('name="token"'), `status=${unpaired.status}`);
-    const paired = await fetchWithTimeout(`${domain}/vnc.html?token=${encodeURIComponent(password)}`, {}, httpTimeoutMs, signal);
-    check('authenticated noVNC HTTP', paired.status === 200, `status=${paired.status}`);
+    const unpairedBody = await unpaired.text();
+    check('noVNC serves the pairing form unpaired', unpaired.status === 200 && unpairedBody.includes('Access code'), `status=${unpaired.status}`);
+    const wrong = await fetchWithTimeout(`${domain}/vnc.html?token=wrong-access-code`, {}, httpTimeoutMs, signal);
+    check('noVNC rejects a wrong access code', wrong.status === 401 && !wrong.headers.get('set-cookie'), `status=${wrong.status}`);
+    await wrong.body?.cancel();
+    // The printed link pairs and redirects the code out of the URL.
+    const pairing = await fetchWithTimeout(`${domain}/vnc.html?token=${encodeURIComponent(password)}&autoconnect=1`, { redirect: 'manual' }, httpTimeoutMs, signal);
+    const setCookie = pairing.headers.get('set-cookie') ?? '';
+    check(
+      'noVNC pairs the access code into a cookie',
+      pairing.status === 303
+        && pairing.headers.get('location') === '/vnc.html?autoconnect=1'
+        && setCookie.includes('HttpOnly') && setCookie.includes('Secure'),
+      `status=${pairing.status}`,
+    );
+    await pairing.body?.cancel();
+    const paired = await fetchWithTimeout(`${domain}/vnc.html?autoconnect=1`, { headers: { cookie: pairedCookie } }, httpTimeoutMs, signal);
+    check('paired noVNC HTTP', paired.status === 200, `status=${paired.status}`);
+    await paired.body?.cancel();
   }, { timeoutMs: httpTimeoutMs * 2 });
-  const websocketStatus = await timed('websocket', (signal) => probeWebSocket(domain, cookie, { signal, timeoutMs: httpTimeoutMs }), { timeoutMs: httpTimeoutMs });
-  check('authenticated noVNC WebSocket', websocketStatus.includes('101'), websocketStatus);
+  const missingWebSocket = await timed('websocket-missing-auth', (signal) => probeWebSocket(domain, undefined, { signal, timeoutMs: httpTimeoutMs }), { timeoutMs: httpTimeoutMs });
+  check('noVNC rejects unpaired WebSocket', missingWebSocket.includes('401'), missingWebSocket);
+  const wrongWebSocket = await timed('websocket-wrong-auth', (signal) => probeWebSocket(domain, wrongCookie, { signal, timeoutMs: httpTimeoutMs }), { timeoutMs: httpTimeoutMs });
+  check('noVNC rejects a wrong WebSocket cookie', wrongWebSocket.includes('401'), wrongWebSocket);
+  const websocketStatus = await timed('websocket', (signal) => probeWebSocket(domain, pairedCookie, { signal, timeoutMs: httpTimeoutMs }), { timeoutMs: httpTimeoutMs });
+  check('paired noVNC WebSocket', websocketStatus.includes('101'), websocketStatus);
 
   const terminalRun = await timed('terminal', async (signal) => {
     const terminal = await sandbox.runCommand({

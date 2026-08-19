@@ -1,11 +1,13 @@
 name: CI
 
+# Fast, credential-free gate on every push and pull request.  Cloud
+# verification lives in the nightly workflow, which can be dispatched against
+# any ref when a change needs proving before it merges.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled]
 
 jobs:
   quality:
@@ -35,59 +37,3 @@ jobs:
 
       - name: Full test suite
         run: npm run test
-
-  vercel-image-candidate:
-    name: credentialed Vercel image candidate
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.actor == github.repository_owner &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.label.name == format('vcr:{0}', github.event.pull_request.head.sha)
-    # Reusable-workflow permission ceilings must cover every called job. The
-    # called candidate job explicitly downgrades itself to contents: read, and
-    # its write-capable promotion job is structurally excluded on PR events.
-    permissions:
-      contents: write
-      pull-requests: write
-    uses: ./.github/workflows/vercel-image.yml
-    secrets:
-      VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
-      VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
-      VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
-      VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
-      VERCEL_PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
-      VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
-      VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
-      VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
-      VERCEL_CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
-      VERCEL_CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
-
-  vercel-provider-smoke:
-    name: credentialed Vercel provider terminal smoke
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.actor == github.repository_owner &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)
-    permissions:
-      contents: read
-    uses: ./.github/workflows/vercel-provider-smoke.yml
-    with:
-      source_sha: ${{ github.event.pull_request.head.sha }}
-      path: both
-    secrets:
-      # The provider smoke consumes the verified Issue #4 consumer triad;
-      # the reusable workflow maps these values into its script environment
-      # under the exact generic VERCEL_TOKEN/VERCEL_TEAM_ID/VERCEL_PROJECT_ID
-      # names. No secrets are inherited or exposed by the caller.
-      VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
-      VERCEL_CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
-      VERCEL_CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
-      DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
-      DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
-      DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
-      DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
-      DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
-      DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}

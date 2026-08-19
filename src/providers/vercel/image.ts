@@ -321,8 +321,6 @@ export function assertValidVercelImagePin(pin: VercelImagePin): VercelImageRefer
   return result.reference!;
 }
 
-export const VERCEL_IMAGE_REFERENCE =
-  'vcr.vercel.com/astro-labs/devbox/devbox@sha256:a4aa03890d74f5251f3861c4f6e96afeab3d0b7881b8206fa0de4223bdf051f7';
 
 /** The exact audited mirror inputs copied from images/vercel/provenance.json. */
 export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = {
@@ -380,28 +378,4 @@ export const VERCEL_IMAGE_PROVENANCE: VercelImageProvenance = {
     codex: '0.147.0',
     opencode: '1.18.15',
   },
-};
-
-/**
- * Derived deterministically from the accepted run evidence with the promotion
- * generator (scripts/vercel/promote-image.mjs): the reviewed public digest,
- * the canonical provenance artifact, and the independent publisher/consumer
- * smoke evidence recorded by the accepted credentialed run. The promotion job
- * was skipped for that run, so this exact pin was not emitted by a workflow
- * job. The workflow replaces these values atomically when a later candidate is
- * approved.
- */
-export const VERCEL_IMAGE_PIN: VercelImagePin = {
-  reference: VERCEL_IMAGE_REFERENCE,
-  provenance: VERCEL_IMAGE_PROVENANCE,
-  provenanceDigest: 'sha256:56b660cafb8fef028df83c6ecec45ddeaee03496e70da02386d526c556b3092b',
-  sourceCommit: 'ebf9cb7e3072c7414952eaca034157cbbdb55449',
-  publisherSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/31905089142#publisher-smoke',
-  consumerSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/31905089142#consumer-smoke',
-  publisher: { team: 'astro-labs', project: 'devbox' },
-  consumer: { team: 'astro-labs', project: 'devbox-uat' },
-  testedReference: VERCEL_IMAGE_REFERENCE,
-  publisherSmokeStatus: 'passed',
-  consumerSmokeStatus: 'passed',
-  crossProjectVerified: true,
 };

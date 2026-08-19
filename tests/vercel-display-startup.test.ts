@@ -18,7 +18,6 @@ import {
 } from '../src/providers/vercel/metadata.js';
 import { createVercelProvider } from '../src/providers/vercel/provider.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import { prepareSandboxRuntime } from '../src/providers/vercel/runtime.js';
 import type {
   VercelRunCommandRequest,
@@ -30,6 +29,7 @@ import type { ProviderBranchRequest } from '../src/providers/types.js';
 import type { VercelLifecycle } from '../src/providers/vercel/lifecycle.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import { DISPLAY_STATUS_OUTPUT as STATUS_OUTPUT } from './vercel-display-status.fixture.js';
+import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 function sandbox(): VercelSandboxHandle {
   return {
@@ -72,15 +72,14 @@ describe('Vercel display startup', () => {
     const start = commands.find((request) => request.cmd === '/usr/local/bin/devbox-start');
     const overlay = (uploads[0] as Array<{ path: string; content: Buffer }>)[0];
     expect(overlay.path).toBe('/vercel/.devbox/runtime/novnc-proxy.mjs');
-    expect(overlay.content.equals(await readFile('images/vercel/basic-auth-proxy.mjs'))).toBe(true);
+    expect(overlay.content.equals(await readFile('images/vercel/novnc-proxy.mjs'))).toBe(true);
     expect(commands[0]).toMatchObject({
       cmd: 'sudo',
-      args: ['-n', 'sh', '-c', expect.stringContaining("cp '/vercel/.devbox/runtime/novnc-proxy.mjs' '/usr/local/lib/devbox/basic-auth-proxy.mjs'")],
+      args: ['-n', 'sh', '-c', expect.stringContaining("cp '/vercel/.devbox/runtime/novnc-proxy.mjs' '/usr/local/lib/devbox/novnc-proxy.mjs'")],
     });
     expect(start).toMatchObject({
       cmd: '/usr/local/bin/devbox-start',
       env: {
-        DEVBOX_NOVNC_USER: DISPLAY_USERNAME,
         DEVBOX_NOVNC_PASSWORD: expect.any(String),
         DEVBOX_NOVNC_PORT: String(DEVBOX_NOVNC_PROXY_PORT),
         DEVBOX_NOVNC_INTERNAL_PORT: String(DEVBOX_NOVNC_INTERNAL_PORT),
@@ -90,7 +89,6 @@ describe('Vercel display startup', () => {
       'DEVBOX_NOVNC_INTERNAL_PORT',
       'DEVBOX_NOVNC_PASSWORD',
       'DEVBOX_NOVNC_PORT',
-      'DEVBOX_NOVNC_USER',
     ]);
     expect(start?.env?.DEVBOX_NOVNC_PASSWORD).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(start?.args).toBeUndefined();
@@ -419,7 +417,7 @@ describe('Vercel display startup', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: branch,

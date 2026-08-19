@@ -3,7 +3,7 @@
  * Centralized redaction for Vercel image workflow artifacts.
  *
  * It redacts every credential-shaped environment variable and common bearer /
- * Basic Auth forms before an artifact is uploaded.  It is intentionally
+ * credential forms before an artifact is uploaded.  It is intentionally
  * idempotent so failed steps can run it repeatedly in cleanup.
  */
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -12,8 +12,8 @@ import { basename, join } from 'node:path';
 // Field-name redaction targets exact raw sensitive fields only: a generic parent
 // key like `fixture` must be recursed (its fingerprint subtree is safe evidence),
 // and any *Fingerprint field is a non-reversible hash that must survive.
-const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)/i;
-const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^DEVBOX_GITHUB_FIXTURE_/i;
+const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)/i;
+const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)|^DEVBOX_GITHUB_FIXTURE_/i;
 const isSensitiveField = (name) => !/Fingerprint/i.test(name) && sensitiveFieldName.test(name);
 const secrets = [...new Set(Object.entries(process.env)
   .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === 'string' && value.length > 0)
@@ -29,6 +29,10 @@ function redactText(input) {
     .replace(/(authorization\s*:\s*Basic\s+)[^\s"']+/gi, '$1[REDACTED]')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]')
     .replace(/\b(?:ghp_|github_pat_|vcp_|vercel_)[A-Za-z0-9_~-]+/gi, '[REDACTED]')
+    // The display access code travels as a pairing query parameter and as the
+    // cookie it is exchanged for; neither may reach an evidence artifact.
+    .replace(/([?&]token=)[^&\s"']+/gi, '$1[REDACTED]')
+    .replace(/(devbox_novnc=)[^;\s"']+/gi, '$1[REDACTED]')
     .replace(/(VERCEL_(?:TOKEN|OIDC_TOKEN|PASSWORD)\s*[=:]\s*)[^\s,}]+/gi, '$1[REDACTED]');
 }
 

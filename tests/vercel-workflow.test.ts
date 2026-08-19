@@ -4,64 +4,47 @@ import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
 
 async function workflowText(): Promise<string> {
-  return readFile('.github/workflows/vercel-image.yml', 'utf8');
+  return readFile('.github/workflows/nightly.yml', 'utf8');
 }
 
 async function exists(path: string): Promise<void> {
   await access(path, constants.F_OK);
 }
 
-describe('Vercel image supply-chain workflow', () => {
-  it('runs manually and on a schedule without an auto-merge path', async () => {
-    const workflow = await workflowText();
-    expect(workflow).toContain('workflow_call:');
-    expect(workflow).toContain('workflow_dispatch:');
-    expect(workflow).toContain('schedule:');
-    expect(workflow).toContain("cron:");
-    expect(workflow).toContain('gh pr create');
-    expect(workflow).not.toContain('gh pr merge');
-    expect(workflow).not.toContain('enable-auto-merge');
+describe('Vercel image and release workflows', () => {
+  it('provides a branch when the exact-SHA benchmark checkout is detached', async () => {
+    const workflow = await readFile('.github/workflows/vercel-benchmark.yml', 'utf8');
+
+    expect(workflow).toContain('ref: ${{ env.SOURCE_SHA }}');
+    expect(workflow).toContain('SOURCE_BRANCH: ${{ github.event.repository.default_branch }}');
+    expect(workflow).toContain('test "${GITHUB_REF_NAME}" = "${SOURCE_BRANCH}"');
+    expect(workflow).not.toContain('GITHUB_REF_NAME} = "${{ github.event.repository.default_branch }}');
   });
 
-  it('binds credentialed PR verification to a maintainer-applied exact-SHA label', async () => {
-    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
-    const workflow = await workflowText();
-    expect(ci).toContain("github.event.action == 'labeled'");
-    expect(ci).toContain('github.actor == github.repository_owner');
-    expect(ci).toContain("github.event.pull_request.head.repo.full_name == github.repository");
-    expect(ci).toContain("github.event.label.name == format('vcr:{0}', github.event.pull_request.head.sha)");
-    expect(ci).toContain('uses: ./.github/workflows/vercel-image.yml');
-    expect(ci).not.toContain('secrets: inherit');
-    expect(ci).toMatch(/vercel-image-candidate:[\s\S]*?permissions:\n\s+contents: write\n\s+pull-requests: write/);
-    expect(workflow).toMatch(/candidate:[\s\S]*?permissions:\n\s+contents: read/);
-    expect(workflow).toMatch(/promotion:[\s\S]*?github\.event_name != 'pull_request'/);
-    for (const secret of [
-      'VERCEL_PUBLISHER_TOKEN', 'VERCEL_PUBLISHER_TEAM_ID', 'VERCEL_PUBLISHER_PROJECT_ID',
-      'VERCEL_PUBLISHER_TEAM_SLUG', 'VERCEL_PUBLISHER_PROJECT_SLUG', 'VERCEL_CONSUMER_TOKEN',
-      'VERCEL_CONSUMER_TEAM_ID', 'VERCEL_CONSUMER_PROJECT_ID', 'VERCEL_CONSUMER_TEAM_SLUG',
-      'VERCEL_CONSUMER_PROJECT_SLUG',
-    ]) {
-      expect(ci).toContain(`${secret}: \${{ secrets.${secret} }}`);
-      expect(workflow).toMatch(new RegExp(`${secret}:[\\s\\S]*?required: true`));
-    }
-    expect(workflow).not.toContain('propose_promotion:');
-    expect(workflow).not.toContain('inputs.propose_promotion');
-    expect(workflow).toContain("github.event_name != 'pull_request'");
+  it('serializes the secret-gated provider workflows at the project level', async () => {
+    const [benchmark, uat] = await Promise.all([
+      readFile('.github/workflows/vercel-benchmark.yml', 'utf8'),
+      readFile('.github/workflows/vercel-provider-uat.yml', 'utf8'),
+    ]);
+
+    expect(benchmark).toContain('group: vercel-provider-gates');
+    expect(uat).toContain('group: vercel-provider-gates');
+    expect(benchmark).toContain('cancel-in-progress: false');
+    expect(uat).toContain('cancel-in-progress: false');
   });
 
-  it('authorizes provider smoke only from an owner exact-head label with explicit read-only secrets', async () => {
-    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
-    expect(ci).toContain('vercel-provider-smoke:');
-    expect(ci).toContain("github.event.action == 'labeled'");
-    expect(ci).toContain('github.actor == github.repository_owner');
-    expect(ci).toContain("github.event.pull_request.head.repo.full_name == github.repository");
-    expect(ci).toContain("github.event.label.name == format('psmoke:{0}', github.event.pull_request.head.sha)");
-    expect(ci).toContain('uses: ./.github/workflows/vercel-provider-smoke.yml');
-    expect(ci).toContain('source_sha: ${{ github.event.pull_request.head.sha }}');
-    expect(ci).toContain('path: both');
-    expect(ci).not.toContain('secrets: inherit');
-    expect(ci).not.toContain('pull_request_target');
-    expect(ci).toMatch(/vercel-provider-smoke:[\s\S]*?permissions:\n\s+contents: read[\s\S]*?uses: \.\/\.github\/workflows\/vercel-provider-smoke\.yml/);
+  it('chains the release gates behind a promoted digest', async () => {
+    const release = await readFile('.github/workflows/release.yml', 'utf8');
+
+    // Every gate exercises the same digest the promote job resolved, so the
+    // artifact users install is the one that was proven.
+    expect(release).toContain('promote-image:');
+    expect(release).toContain('vercel-provider-smoke:');
+    expect(release).toContain('vercel-provider-uat:');
+    expect(release).toContain('vercel-benchmark:');
+    expect(release).toContain('needs: [promote-image, vercel-provider-smoke]');
+    expect(release).toContain('needs: [promote-image, vercel-provider-uat]');
+    expect(release).toContain('image_reference: ${{ needs.promote-image.outputs.image_reference }}');
     for (const secret of [
       'VERCEL_CONSUMER_TOKEN',
       'VERCEL_CONSUMER_TEAM_ID',
@@ -73,25 +56,46 @@ describe('Vercel image supply-chain workflow', () => {
       'DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE',
       'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
     ]) {
-      expect(ci).toContain(`${secret}: \${{ secrets.${secret} }}`);
+      expect(release).toContain(`${secret}: \${{ secrets.${secret} }}`);
     }
-    // The generic Vercel triad secret names are absent from the repository and
-    // must never be referenced by the caller; the smoke script still receives
-    // the exact generic names in its environment from the consumer secrets.
-    expect(ci).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
-    expect(ci).not.toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}');
-    expect(ci).not.toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}');
   });
 
-  it('documents exact provider-smoke authorization and stale-label behavior', async () => {
+  it('keeps pull requests on a credential-free gate', async () => {
+    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
+
+    // No label ritual and no cloud credentials reach a pull request; a branch
+    // is proven by dispatching the nightly against it instead.
+    expect(ci).not.toContain('labeled');
+    expect(ci).not.toContain('psmoke:');
+    expect(ci).not.toContain('vcr:');
+    expect(ci).not.toMatch(/secrets\./);
+    expect(ci).toContain('npm run test');
+  });
+
+  it('runs on a schedule or dispatch and never opens a pull request', async () => {
+    const workflow = await workflowText();
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).toContain('schedule:');
+    expect(workflow).toContain('cron:');
+    // The pin is a build output, so no run writes to the source tree. This is
+    // what removed the second pull request from every image change.
+    expect(workflow).not.toContain('gh pr create');
+    expect(workflow).not.toContain('gh pr merge');
+    expect(workflow).not.toContain('enable-auto-merge');
+    expect(workflow).not.toContain('contents: write');
+  });
+
+  it('documents the channel model instead of a label ritual', async () => {
     const runbook = await readFile('docs/runbooks/vercel-image-supply-chain.md', 'utf8');
-    expect(runbook).toContain('psmoke:<40-character-head-SHA>');
-    expect(runbook).toContain('psmoke:${head_sha}');
-    expect(runbook).toContain('gh pr edit <number> --add-label');
-    expect(runbook).toContain('synchronize');
-    expect(runbook).toContain('new exact-SHA label');
-    expect(runbook).toContain('authorization only');
-    expect(runbook).toContain('not a pass');
+
+    // The runbook should describe a pipeline, not a procedure a human performs.
+    expect(runbook).not.toContain('psmoke:');
+    expect(runbook).not.toContain('vcr:<');
+    expect(runbook).toContain('There is no label ritual');
+    expect(runbook).toContain('The three channels');
+    expect(runbook).toContain('does not rebuild the image');
+    expect(runbook).toContain('build output, never source');
+    expect(runbook).toContain('npm dist-tag add');
   });
 
   it('builds an amd64 zstd immutable candidate and waits for readiness', async () => {
@@ -106,8 +110,10 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('compression=zstd');
     expect(workflow).toContain('sha-${SOURCE_COMMIT}');
     expect(workflow).toContain('${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}');
-    expect(workflow).toContain("SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}");
-    expect(workflow).toContain("github.event_name != 'pull_request'");
+    expect(workflow).toContain('SOURCE_COMMIT: ${{ github.sha }}');
+    // Pull requests cannot reach the image build at all now, so there is no
+    // event to exclude.
+    expect(workflow).not.toContain('pull_request');
     expect(workflow).toContain('UPSTREAM_COMMIT');
     expect(workflow).toContain('provenance.json');
     expect(workflow).not.toContain('UNIVERSAL_BASE_DIGEST');
@@ -144,7 +150,7 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).toContain('managedVersions[name] === runtimePackages[name]');
   });
 
-  it('builds every run to a unique immutable tag and makes promotion idempotent', async () => {
+  it('builds every run to a unique immutable tag without a promotion branch', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('concurrency:');
     expect(workflow).toContain('cancel-in-progress: false');
@@ -152,14 +158,13 @@ describe('Vercel image supply-chain workflow', () => {
     expect(workflow).not.toContain("steps.tag.outputs.exists != 'true'");
     expect(workflow).toContain('vcr tag inspect');
     expect(workflow).toContain('assert-candidate-tag.mjs');
-    expect(workflow).toContain('git fetch origin');
-    expect(workflow).toContain('gh pr list --state open --head');
-    expect(workflow).not.toContain('gh pr view --head');
-    expect(workflow).toContain('git diff --quiet -- src/providers/vercel/image.ts');
-    expect(workflow).toContain('promotion source already matches the reviewed pin');
-    expect(workflow).toContain('existing promotion branch is not rooted at the verified source commit');
-    expect(workflow).toContain('existing promotion branch changes files outside the generated pin');
-    expect(workflow).toContain('exit 0');
+    // Re-running a build cannot race a promotion branch, because there is no
+    // branch: the pin is emitted into dist/ for this run only.
+    expect(workflow).not.toContain('git fetch origin');
+    expect(workflow).not.toContain('gh pr list');
+    expect(workflow).not.toContain('src/providers/vercel/image.ts');
+    expect(workflow).toContain('--out dist/vercel-image-pin.json');
+    expect(workflow).toContain('publish checkout does not match verified source commit');
   });
 
   it('uses separate publisher and consumer credentials and both exact-digest smoke gates', async () => {
@@ -198,12 +203,12 @@ describe('Vercel image supply-chain workflow', () => {
     expect(zstdAssertion).toContain('application/vnd.oci.image.layer.v1.tar+zstd');
   });
 
-  it('redacts workflow evidence and promotes only after both smoke gates', async () => {
+  it('redacts workflow evidence and emits a pin only after both smoke gates', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('redact-artifacts.mjs');
     expect(workflow).toContain('id: redact_final');
     expect(workflow).toContain("if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}");
-    expect(workflow).toContain('promote-image.mjs');
+    expect(workflow).toContain('emit-image-pin.mjs');
     expect(workflow).toContain('PROVENANCE_FILE: ${{ runner.temp }}/vercel-image-evidence/provenance.json');
     expect(workflow).toContain('cross-project');
     expect(workflow).toContain('redacted');
@@ -228,7 +233,10 @@ describe('Vercel image supply-chain workflow', () => {
     }
     expect(workflow).toMatch(/if: >-\n\s+needs\.candidate\.result == 'success'/);
     expect(workflow).toMatch(/candidate:[\s\S]*?permissions:\n\s+contents: read/);
-    expect(workflow).toMatch(/promotion:[\s\S]*?permissions:\n\s+contents: write\n\s+pull-requests: write/);
+    // No job in this workflow can write to the repository any more: emitting a
+    // pin replaced opening a promotion pull request.
+    expect(workflow).toMatch(/publish:[\s\S]*?permissions:\n\s+contents: read/);
+    expect(workflow).not.toContain('pull-requests: write');
   });
 
   it('documents scoped all-resource orphan cleanup and a long-lived local runtime', async () => {
@@ -300,7 +308,7 @@ describe('Vercel image supply-chain workflow', () => {
       exists('scripts/vercel/assert-project-identity.mjs'),
       exists('scripts/vercel/assert-candidate-tag.mjs'),
       exists('scripts/vercel/assert-zstd-manifest.mjs'),
-      exists('scripts/vercel/promote-image.mjs'),
+      exists('scripts/vercel/emit-image-pin.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),
     ]);
   });

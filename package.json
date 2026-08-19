@@ -22,6 +22,7 @@
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "benchmark:vercel": "npm run build --silent && node scripts/vercel/benchmark.mjs",
     "validate:release": "npm run build --silent && node dist/providers/vercel/release-validation.js"
   },
   "license": "MIT",

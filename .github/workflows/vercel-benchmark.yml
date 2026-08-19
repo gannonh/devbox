@@ -1,0 +1,122 @@
+name: Vercel provider benchmark
+
+# The benchmark is intentionally secret-gated. It is reproducible from an
+# owner-authorized PR, the default branch by dispatch, or the release workflow.
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      image_reference:
+        description: 'Fully-qualified digest reference to benchmark'
+        required: true
+        type: string
+    secrets:
+      VERCEL_CONSUMER_TOKEN:
+        required: true
+      VERCEL_CONSUMER_TEAM_ID:
+        required: true
+      VERCEL_CONSUMER_PROJECT_ID:
+        required: true
+  workflow_dispatch:
+    inputs:
+      image_reference:
+        description: 'Fully-qualified digest reference to benchmark (e.g. vcr.vercel.com/<team>/<project>/devbox@sha256:...)'
+        required: true
+        type: string
+      source_sha:
+        description: 'Exact 40-character source SHA; empty uses the checked-out commit'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-provider-gates
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: vercel-provider-benchmark
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.event.inputs.source_sha || github.sha }}
+      SOURCE_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Guard default-branch benchmark
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_SHA}" =~ ^[a-f0-9]{40}$ ]] || {
+            echo 'SOURCE_SHA must be a full lowercase commit SHA' >&2
+            exit 1
+          }
+          if [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ]; then
+            test "${GITHUB_REF_NAME}" = "${SOURCE_BRANCH}" || {
+              echo 'manual benchmark runs must use the repository default branch' >&2
+              exit 1
+            }
+          fi
+
+      - name: Checkout exact source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production adapters
+        run: npm run build
+
+      - name: Prepare evidence directory
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/vercel-provider-benchmark"
+          mkdir -p "${artifact_dir}"
+          checked_out_sha="$(git rev-parse HEAD)"
+          test "${checked_out_sha}" = "${SOURCE_SHA}"
+          echo "ARTIFACT_DIR=${artifact_dir}" >> "${GITHUB_ENV}"
+          printf '{"schemaVersion":1,"workflow":"vercel-provider-benchmark","sourceSha":"%s","redacted":false}\n' \
+            "${checked_out_sha}" > "${artifact_dir}/invocation.json"
+
+      - name: Run five clean provider launches
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
+        run: node scripts/vercel/benchmark.mjs --report "${ARTIFACT_DIR}"
+
+      - name: Redact benchmark evidence
+        id: redact
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      - name: Upload redacted benchmark evidence
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vercel-provider-benchmark-${{ env.SOURCE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.ARTIFACT_DIR }}
+          if-no-files-found: warn
+          retention-days: 14

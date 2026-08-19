@@ -78,6 +78,45 @@ Code** or **Codex**:
 - Auth: set `OPENAI_API_KEY` in your `.env`, or run `codex --login` inside
   the box (opens Chromium via the display stack)
 
+## Vercel provider
+
+Select Vercel explicitly; the local provider remains the default:
+
+```bash
+npx @gannonh/devbox --provider vercel my-feature
+npx @gannonh/devbox --provider vercel my-feature --attach
+npx @gannonh/devbox --provider vercel my-feature --url
+npx @gannonh/devbox --provider vercel my-feature --password
+npx @gannonh/devbox --provider vercel my-feature --stop
+npx @gannonh/devbox --provider vercel my-feature --rm
+npx @gannonh/devbox --provider vercel --list
+```
+
+Vercel uses the authenticated GitHub origin. Local dirty files and unpushed
+commits are intentionally excluded. The complete Vercel credential triad
+(`VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`) wins, then
+`VERCEL_OIDC_TOKEN`, then device auth scoped by `.vercel/project.json`.
+Confirmed scope is reused from mode-`0600` XDG state.
+
+Vercel reads this repo's existing `forwardPorts` and `portsAttributes`. Only
+the configured app ports and authenticated noVNC `6080` are public; VNC
+`5900` is private. Public URLs never contain credentials. Retrieve display
+credentials explicitly; output is exactly:
+
+```text
+username: devbox
+password: <generated-secret>
+```
+
+Runtime `.env`, GitHub auth, and Pi configuration are synchronized after
+creation. Dependency installation and `post-create.sh` run in the background;
+inspect `/vercel/.devbox/runtime/setup.status` and `setup.log`, then retry with
+`bash /vercel/.devbox/runtime/setup.sh` if setup fails. Stop waits for the
+final snapshot. Remove verifies terminal sessions and deletes matching
+snapshots; partial cleanup retains mode-`0600` residual metadata for retry.
+Check [Vercel pricing and limits](https://vercel.com/docs/sandbox/pricing)
+before choosing ports, timeouts, or snapshot retention.
+
 ## Notes
 
 - Electron renders against software Xvfb (no GPU). Fine for dev work; not
@@ -85,7 +124,7 @@ Code** or **Codex**:
 - `DEVBOX_ELECTRON_NO_SANDBOX=1` is set in `devcontainer.json` so Electron
   launches with `--no-sandbox` in the container. Your repo's Electron dev
   script should read this env var and pass `--no-sandbox` when it's set.
-- For a native VNC client instead of the browser, point it at
+- With the local provider, for a native VNC client instead of the browser, point it at
   `<container-name>.orb.local:5900`.
 - New boxes start from `origin/<default>` after fetch, not your local
   default branch. Set `DEVBOX_START_POINT=local` to use the local branch

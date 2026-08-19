@@ -4,5 +4,6 @@ dist/
 .DS_Store
 coverage/
 .vercel-image-evidence/
+uat-evidence/
 *.tsbuildinfo
 .env

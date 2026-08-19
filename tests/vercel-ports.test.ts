@@ -19,8 +19,8 @@ import {
   type VercelSandboxCreateRequest,
   type VercelSandboxHandle,
 } from '../src/providers/vercel/client.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
+import { resolveTestImage, TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 describe('Vercel devcontainer ports', () => {
   it('normalizes an integer forward port and adds the noVNC proxy', () => {
@@ -228,7 +228,7 @@ describe('Vercel devcontainer ports', () => {
     const handle: VercelSandboxHandle = {
       name: identity.name,
       status: 'running',
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       persistent: true,
       tags: { ...identity.tags },
       openInteractive: async () => ({ url: 'wss://example.test', token: 'token' }),
@@ -249,6 +249,7 @@ describe('Vercel devcontainer ports', () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-vercel-ports-'));
     const branchMetadataStore = createVercelBranchMetadataStore({ stateHome, repoKey: remote.canonical, branch: 'main' });
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: 'main',
       credentials: { token: 'token', teamId: 'team', projectId: 'project' },
@@ -262,6 +263,7 @@ describe('Vercel devcontainer ports', () => {
     expect(request?.ports).toEqual([5173, 6080]);
 
     const invalidLifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: 'main',
       credentials: { token: 'token', teamId: 'team', projectId: 'project' },
@@ -273,6 +275,7 @@ describe('Vercel devcontainer ports', () => {
     await expect(invalidLifecycle.up()).rejects.toThrow(/5900.*(?:forbidden|private)/);
 
     const invalidInternalLifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: 'main',
       credentials: { token: 'token', teamId: 'team', projectId: 'project' },

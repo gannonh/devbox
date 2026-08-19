@@ -15,13 +15,13 @@ import type { ShellRunner } from '../src/lib/shell.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import { createVercelBranchMetadataStore, createVercelScopeMetadataStore } from '../src/providers/vercel/metadata.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
+import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 const remote = 'github.com/acme/repo';
 const branch = 'feature/ui';
 const DISPLAY_TOKEN = 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa';
-const NOVNC_URL = `https://sandbox.example/vnc.html?token=${DISPLAY_TOKEN}&autoconnect=1`;
+const NOVNC_URL = `https://sandbox.example/6080/vnc.html?token=${DISPLAY_TOKEN}&autoconnect=1`;
 const NOVNC_LINE = `6080: ${NOVNC_URL}  (noVNC display)`;
 function runner(): ShellRunner {
   return {
@@ -81,7 +81,7 @@ async function fixture(
       tags: { ...identity.tags },
     },
     configuration: {
-      imageReference: VERCEL_IMAGE_PIN.reference,
+      imageReference: TEST_IMAGE_REFERENCE,
       sourceUrl: 'https://github.com/acme/repo.git',
       sourceRevision: 'main',
       requestedBranch: branch,
@@ -248,6 +248,17 @@ describe('Vercel URL output', () => {
         message: expect.stringContaining('https'),
       });
     }
+  });
+
+  it('rejects query-bearing routes before rendering or opening them', async () => {
+    const test = await fixture([{ port: 6080, subdomain: 'sandbox', url: 'https://host.example/6080?token=hunter2' }]);
+
+    await expect(test.provider.url(test.request)).rejects.toMatchObject({
+      code: 'route',
+      exitCode: 2,
+      message: expect.not.stringContaining('hunter2'),
+    });
+    expect(test.output()).not.toContain('hunter2');
   });
 
   it('rejects credential-bearing route URLs in the ready block without revealing them', async () => {

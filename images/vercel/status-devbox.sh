@@ -78,7 +78,7 @@ for process in Xvfb fluxbox x11vnc websockify; do
     failed=1
   fi
 done
-if pgrep -f '[b]asic-auth-proxy.mjs' >/dev/null 2>&1; then
+if pgrep -f '[n]ovnc-proxy.mjs' >/dev/null 2>&1; then
   printf '[devbox-status] auth-proxy=running\n'
 else
   printf '[devbox-status] auth-proxy=stopped\n'

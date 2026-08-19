@@ -12,7 +12,7 @@ import {
   DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
   VercelLifecycleError,
 } from '../src/providers/vercel/lifecycle.js';
-import { parseVercelImageReference, VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
+import { parseVercelImageReference } from '../src/providers/vercel/image.js';
 import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
 import {
   createVercelSandboxClient,
@@ -20,6 +20,7 @@ import {
   type VercelSandboxClient,
   type VercelSandboxHandle,
 } from '../src/providers/vercel/client.js';
+import { resolveTestImage, TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 const credentials = { token: 'vercel-token', teamId: 'team', projectId: 'project' };
 const source: GitHubSourcePlan = {
@@ -56,7 +57,7 @@ function sandbox(branch = source.requestedBranch): VercelSandboxHandle {
     status: 'running',
     cwd: '/vercel/sandbox',
     persistent: true,
-    image: VERCEL_IMAGE_PIN.reference,
+    image: TEST_IMAGE_REFERENCE,
     tags: { ...identity.tags },
     openInteractive: async () => ({ url: 'wss://sandbox.example/session', token: 'token' }),
     extendTimeout: async () => {},
@@ -92,7 +93,7 @@ describe('Vercel lifecycle', () => {
       },
       sandboxId: handle.name,
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: source.source.url,
         sourceRevision: source.source.revision,
         requestedBranch: source.requestedBranch,
@@ -113,7 +114,7 @@ describe('Vercel lifecycle', () => {
         name: handle.name,
         persistent: true,
         status: 'running' as const,
-        image: VERCEL_IMAGE_PIN.reference,
+        image: TEST_IMAGE_REFERENCE,
         tags: { ...identity.tags },
       }]),
       listSessions: vi.fn(async () => []),
@@ -123,6 +124,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot,
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -150,6 +152,7 @@ describe('Vercel lifecycle', () => {
       getOrCreate: vi.fn(async () => handle),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -168,12 +171,13 @@ describe('Vercel lifecycle', () => {
   it('accepts an alternate Sandbox image serialization when the digest matches', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-image-digest-'));
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
-    const digest = parseVercelImageReference(VERCEL_IMAGE_PIN.reference).digest;
+    const digest = parseVercelImageReference(TEST_IMAGE_REFERENCE).digest;
     const handle = { ...sandbox(), image: `alternate.registry/devbox@${digest}` } as VercelSandboxHandle;
     const client = {
       getOrCreate: vi.fn(async () => handle),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -211,6 +215,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -246,6 +251,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { throw new Error('sandbox delete unavailable'); }),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -297,6 +303,7 @@ describe('Vercel lifecycle', () => {
       source: { ...source.source, revision: source.requestedBranch },
     };
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -340,6 +347,7 @@ describe('Vercel lifecycle', () => {
       source: { ...source.source, revision: source.requestedBranch },
     };
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -386,6 +394,7 @@ describe('Vercel lifecycle', () => {
       source: { ...source.source, revision: source.requestedBranch },
     };
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -428,7 +437,7 @@ describe('Vercel lifecycle', () => {
         tags: { ...oldIdentity.tags },
       },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: source.source.url,
         sourceRevision: source.source.revision,
         requestedBranch: source.requestedBranch,
@@ -455,6 +464,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -506,7 +516,7 @@ describe('Vercel lifecycle', () => {
         tags: { ...oldIdentity.tags },
       },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: source.source.url,
         sourceRevision: source.source.revision,
         requestedBranch: source.requestedBranch,
@@ -526,6 +536,7 @@ describe('Vercel lifecycle', () => {
       runCommand: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -584,6 +595,7 @@ describe('Vercel lifecycle', () => {
       listSnapshots: vi.fn(async () => []),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -637,6 +649,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       credentials,
@@ -694,6 +707,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: deleted,
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       credentials,
@@ -753,6 +767,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
     const lifecycleOptions = {
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       credentials,
@@ -813,6 +828,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { throw new Error(`sandbox delete failed with ${token}`); }),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       credentials: { ...credentials, token },
@@ -868,6 +884,7 @@ describe('Vercel lifecycle', () => {
       runCommand: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -902,6 +919,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -935,6 +953,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -989,6 +1008,7 @@ describe('Vercel lifecycle', () => {
     };
     const client = createVercelSandboxClient({ sandbox: sandboxApi, snapshot: snapshotApi });
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1028,6 +1048,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1058,6 +1079,7 @@ describe('Vercel lifecycle', () => {
       stopSandbox: vi.fn(async () => ({ id: 'stuck-session', status })),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1099,6 +1121,7 @@ describe('Vercel lifecycle', () => {
       stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
     } as unknown as VercelSandboxClient;
     await createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1109,6 +1132,7 @@ describe('Vercel lifecycle', () => {
     }).up();
 
     const laterLifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: laterSource.requestedBranch,
       packageVersion: '0.1.2',
@@ -1150,6 +1174,7 @@ describe('Vercel lifecycle', () => {
       runCommand: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1178,6 +1203,7 @@ describe('Vercel lifecycle', () => {
       getOrCreate: vi.fn(async () => handle),
     } as unknown as VercelSandboxClient;
     const common = {
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1203,6 +1229,7 @@ describe('Vercel lifecycle', () => {
       get: vi.fn(async () => handle),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1244,6 +1271,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1280,6 +1308,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1321,6 +1350,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1367,6 +1397,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1414,6 +1445,7 @@ describe('Vercel lifecycle', () => {
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1474,6 +1506,7 @@ describe('Vercel lifecycle', () => {
       listSandboxes: vi.fn(async () => records),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1501,6 +1534,7 @@ describe('Vercel lifecycle', () => {
       get: vi.fn(async () => handle),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1552,6 +1586,7 @@ describe('Vercel lifecycle', () => {
       })),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1591,6 +1626,7 @@ describe('Vercel lifecycle', () => {
       runCommand: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1623,6 +1659,7 @@ describe('Vercel lifecycle', () => {
     const notices: string[] = [];
 
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: source.requestedBranch,
       packageVersion: '0.1.2',
@@ -1642,7 +1679,7 @@ describe('Vercel lifecycle', () => {
     });
     expect(requests[0]).toMatchObject({
       name: handle.name,
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       source: { revision: 'main' },
       persistent: true,
       keepLastSnapshots: { count: 1 },
@@ -1681,6 +1718,7 @@ describe('Vercel lifecycle', () => {
       runCommand: vi.fn(async () => ({ exitCode: 0 })),
     } as unknown as VercelSandboxClient;
     const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
       repoRoot: '/repo',
       branch: existingSource.requestedBranch,
       packageVersion: '0.1.2',

@@ -7,10 +7,10 @@
  * credential in argv, and writes only redaction-safe evidence.
  */
 import { Sandbox, Snapshot } from '@vercel/sandbox';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
-  assertPromotedVercelImagePin,
   calculateVercelProviderSmokeBudget,
   parseVercelProviderSmokeConfig,
 } from '../../dist/providers/vercel/smoke-config.js';
@@ -26,7 +26,7 @@ import {
 } from '../../dist/providers/vercel/identity.js';
 import {
   matchesVercelSandboxImageDigest,
-  VERCEL_IMAGE_PIN,
+  parseVercelImageReference,
 } from '../../dist/providers/vercel/image.js';
 import {
   normalizeGitHubSourceRemote,
@@ -65,13 +65,20 @@ import {
 const startedAt = Date.now();
 const reportPath = process.env.SMOKE_REPORT;
 let secretValues = [];
+// The image under test is supplied by the caller: the pin is a build output,
+// so CI passes the exact candidate digest it just built and smoked.
+const expectedImageReference = process.env.DEVBOX_VERCEL_IMAGE;
+if (!expectedImageReference) {
+  throw new Error('DEVBOX_VERCEL_IMAGE must be the fully-qualified digest reference under test');
+}
+
 const runIdentity = createRunIdentity();
 const report = {
   schemaVersion: 1,
   redacted: false,
   failed: false,
   runIdentity,
-  imageDigest: VERCEL_IMAGE_PIN.reference.split('@').at(-1),
+  imageDigest: expectedImageReference.split('@').at(-1),
   paths: [],
   cleanup: createEmptyCleanupEvidence(),
   preflight: createEmptyPreflightEvidence(),
@@ -79,17 +86,25 @@ const report = {
 };
 
 const smokeTimeoutMs = positiveTimeout('SMOKE_TIMEOUT_MS', 12 * 60 * 1000);
+const uatTimeoutMs = positiveTimeout('SMOKE_UAT_TIMEOUT_MS', smokeTimeoutMs);
 const operationTimeoutMs = positiveTimeout('SMOKE_OPERATION_TIMEOUT_MS', 30_000);
 const commandTimeoutMs = positiveTimeout('SMOKE_COMMAND_TIMEOUT_MS', 60_000);
 const cleanupTimeoutMs = positiveTimeout('SMOKE_CLEANUP_TIMEOUT_MS', 120_000);
 const terminalTimeoutMs = positiveTimeout('SMOKE_TERMINAL_TIMEOUT_MS', 90_000);
 const githubTimeoutMs = positiveTimeout('SMOKE_GITHUB_TIMEOUT_MS', 10_000);
 const fixtureValidationTimeoutMs = githubTimeoutMs * 3;
+const uatRequired = process.env.DEVBOX_UAT_REQUIRED === 'true';
+const UAT_FIXTURE_PATH = '/vercel/.devbox/runtime/uat-fixture.mjs';
+const UAT_REFRESH_PATH = '/vercel/.devbox/runtime/uat-refresh';
 
 function initializeSecretValues() {
-  const sensitiveNames = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID)|^DEVBOX_GITHUB_FIXTURE_/i;
+  const sensitiveNames = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)|^DEVBOX_GITHUB_FIXTURE_/i;
   addSensitiveValues(Object.entries(process.env)
-    .filter(([name, value]) => sensitiveNames.test(name) && typeof value === 'string' && value.length > 0)
+    .filter(([name, value]) => sensitiveNames.test(name)
+      && typeof value === 'string'
+      && value.length > 0
+      && value !== 'true'
+      && value !== 'false')
     .map(([, value]) => value));
 }
 
@@ -115,6 +130,10 @@ function redactText(value) {
   return output
     .replace(/(authorization\s*:\s*Basic\s+)[^\s"']+/gi, '$1[REDACTED]')
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]')
+    // The display access code travels as a pairing query parameter and as the
+    // cookie it is exchanged for; neither may reach an evidence artifact.
+    .replace(/([?&]token=)[^&\s"']+/gi, '$1[REDACTED]')
+    .replace(/(devbox_novnc=)[^;\s"']+/gi, '$1[REDACTED]')
     .replace(/\b(?:ghp_|github_pat_|vcp_|vercel_)[A-Za-z0-9_~-]+/gi, '[REDACTED]');
 }
 
@@ -238,19 +257,142 @@ function buildSource(config, remote, requestedBranch, revision, requestedBranchE
   };
 }
 
-async function runCommand(client, sandbox, command, args, cwd, signal) {
+async function runCommand(client, sandbox, command, args, cwd, signal, timeoutMs = commandTimeoutMs) {
   const result = await client.runCommand(sandbox, {
     cmd: command,
     args,
     cwd,
     signal,
-    timeoutMs: commandTimeoutMs,
+    timeoutMs,
   });
   const [stdout, stderr] = await Promise.all([
     result.stdout ? result.stdout({ signal }) : Promise.resolve(''),
     result.stderr ? result.stderr({ signal }) : Promise.resolve(''),
   ]);
   return { exitCode: result.exitCode, stdout, stderr };
+}
+
+async function runUatContract(client, sandbox, config, pathReport, cwd, signal, label) {
+  const pushToken = config.fixture.token;
+  const refreshValue = randomBytes(24).toString('hex');
+  const envContent = `DEVBOX_UAT_PHASE=${label}\nDEVBOX_UAT_REFRESH=${refreshValue}\n`;
+  const fixtureSource = await readFile(new URL('./uat-fixture.mjs', import.meta.url), 'utf8');
+  addSensitiveValues([pushToken, envContent, refreshValue]);
+  const previousRefresh = label === 'resume'
+    ? await runCommand(client, sandbox, 'cat', [UAT_REFRESH_PATH], cwd, signal)
+    : undefined;
+  if (label === 'resume') {
+    recordCheck(pathReport, 'resume runtime secret baseline', previousRefresh.exitCode === 0 && previousRefresh.stdout.trim().length > 0, `exitCode=${previousRefresh.exitCode}`);
+  }
+  const directories = await runCommand(
+    client,
+    sandbox,
+    'mkdir',
+    ['-p', '/vercel/.devbox/runtime'],
+    cwd,
+    signal,
+  );
+  recordCheck(pathReport, `${label} runtime directory`, directories.exitCode === 0, `exitCode=${directories.exitCode}`);
+  await client.writeFiles(sandbox, [
+    { path: '/vercel/.env', content: Buffer.from(envContent), mode: 0o600 },
+    { path: '/vercel/.devbox/runtime/github-token', content: Buffer.from(pushToken), mode: 0o600 },
+    { path: UAT_FIXTURE_PATH, content: Buffer.from(fixtureSource), mode: 0o700 },
+  ], { signal });
+  try {
+    const auth = await runCommand(
+      client,
+      sandbox,
+      'sh',
+      ['-c', 'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token && gh auth setup-git --hostname github.com && rm -f /vercel/.devbox/runtime/github-token'],
+      cwd,
+      signal,
+    );
+    recordCheck(pathReport, `${label} runtime GitHub authentication`, auth.exitCode === 0, `exitCode=${auth.exitCode}`);
+    const link = await runCommand(
+      client,
+      sandbox,
+      'sh',
+      ['-c', 'if [ -e .env ] && [ ! -L .env ]; then rm -f .env; fi; ln -sfn /vercel/.env .env'],
+      cwd,
+      signal,
+    );
+    recordCheck(pathReport, `${label} runtime configuration`, link.exitCode === 0, `exitCode=${link.exitCode}`);
+    const result = await runCommand(client, sandbox, 'node', [UAT_FIXTURE_PATH, label], cwd, signal, smokeTimeoutMs);
+    const markers = label === 'initial'
+      ? [
+        ['agents', 'DEVBOX_UAT:agents'],
+        ['Chromium localhost OAuth', 'DEVBOX_UAT:chromium-oauth'],
+        ['Electron/Vite', 'DEVBOX_UAT:electron-vite'],
+        ['authenticated git push', 'DEVBOX_UAT:push'],
+      ]
+      : [['resume secret refresh', 'DEVBOX_UAT:resume-secret-refresh']];
+    const outputLines = new Set(result.stdout.split(/\r?\n/).map((line) => line.trim()));
+    const failed = [];
+    for (const [name, marker] of markers) {
+      const ok = result.exitCode === 0 && outputLines.has(marker);
+      pathReport.checks.push({
+        name: `${label} UAT ${name}`,
+        ok,
+        detail: result.exitCode === 0
+          ? `exitCode=${result.exitCode}`
+          : `exitCode=${result.exitCode}; ${redactText(result.stderr).trim().slice(0, 240)}`,
+      });
+      if (!ok) failed.push(name);
+    }
+    if (failed.length > 0) throw new Error(`${label} UAT checks failed: ${failed.join(', ')}`);
+    if (label === 'resume') {
+      const observedRefresh = /^DEVBOX_UAT_REFRESH=([A-Za-z0-9]+)$/m.exec(result.stdout)?.[1];
+      const previousValue = previousRefresh.stdout.trim();
+      recordCheck(
+        pathReport,
+        'resume runtime secret refresh observed',
+        observedRefresh === refreshValue && previousValue.length > 0 && previousValue !== refreshValue,
+        observedRefresh === refreshValue ? 'refreshed secret observed after resume' : 'refreshed secret was not observed after resume',
+      );
+    }
+    await client.writeFiles(sandbox, [{ path: UAT_REFRESH_PATH, content: Buffer.from(refreshValue), mode: 0o600 }], { signal });
+    pathReport.uat = { ...(pathReport.uat ?? {}), [`${label}Complete`]: true };
+  } finally {
+    try {
+      await runCommand(
+        client,
+        sandbox,
+        'sh',
+        ['-c', `rm -f -- .env /vercel/.env ${UAT_FIXTURE_PATH} /vercel/.devbox/runtime/github-token`],
+        cwd,
+        signal,
+      );
+    } catch {
+      // Sandbox deletion remains the authoritative cleanup path.
+    }
+  }
+}
+
+async function deleteUatBranch(config, branch, signal) {
+  const token = config.fixture.token;
+  const response = await fetchWithTimeout(
+    `https://api.github.com/repos/${config.fixture.repository}/git/refs/heads/${encodeURIComponent(branch)}`,
+    {
+      method: 'DELETE',
+      headers: {
+        accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        Authorization: `Bearer ${token}`,
+      },
+    },
+    githubTimeoutMs,
+    signal,
+  );
+  if (response.status !== 204 && response.status !== 404) {
+    throw new Error(`GitHub fixture UAT branch cleanup returned HTTP ${response.status}`);
+  }
+  const verification = await githubJson(
+    config,
+    `/branches/${encodeURIComponent(branch)}`,
+    signal,
+    true,
+  );
+  if (verification.exists) throw new Error('GitHub fixture UAT branch cleanup was not verified');
 }
 
 async function assertRepository(client, sandbox, config, pathReport, expected, cwd, signal) {
@@ -469,7 +611,7 @@ async function recoverOwned(client, credentials, identity, pathReport, signal) {
   return recovery;
 }
 
-async function runPath(config, fixture, label, runSignal, client, terminalAdapter) {
+async function runPath(config, fixture, label, runSignal, client, terminalAdapter, pathTimeoutMs) {
   const remote = normalizeGitHubSourceRemote(`https://github.com/${config.fixture.repository}.git`);
   const requestedBranch = label === 'existing' ? config.fixture.branch : createMissingBranch(config);
   const requestedBranchResponse = await githubJson(
@@ -517,7 +659,7 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
   report.paths.push(pathReport);
 
   const smokeController = new AbortController();
-  const smokeTimer = setTimeout(() => smokeController.abort(new Error(`provider smoke path ${label} exceeded its deadline`)), smokeTimeoutMs);
+  const smokeTimer = setTimeout(() => smokeController.abort(new Error(`provider smoke path ${label} exceeded its deadline`)), pathTimeoutMs);
   const signal = combineSignals(runSignal, smokeController.signal);
   let sandbox;
   const credentials = config.credentials;
@@ -549,7 +691,7 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       signal,
       smokeTimeoutMs,
     );
-    const expectedImageDigest = VERCEL_IMAGE_PIN.reference.split('@').at(-1);
+    const expectedImageDigest = expectedImageReference.split('@').at(-1);
     recordCheck(pathReport, 'Sandbox image pin', matchesVercelSandboxImageDigest(sandbox.image, expectedImageDigest), 'created Sandbox reports the expected promoted image digest');
     recordCheck(pathReport, 'Sandbox scope identity', sandbox.tags?.identity === identity.tags.identity, 'created Sandbox returned the run-unique identity tags');
 
@@ -581,6 +723,23 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       signal,
       terminalTimeoutMs,
     );
+    if (uatRequired && label === 'missing') {
+      await timed(
+        pathReport,
+        'uat-contract',
+        (requestSignal) => runUatContract(
+          client,
+          sandbox,
+          config,
+          pathReport,
+          cloneCwd,
+          requestSignal,
+          'initial',
+        ),
+        signal,
+        smokeTimeoutMs,
+      );
+    }
 
     const initialStop = await timed(pathReport, 'stop-initial', (requestSignal) => client.stopSandbox(sandbox, { signal: requestSignal }), signal, operationTimeoutMs);
     recordCheck(pathReport, 'initial stop snapshot', Boolean(initialStop.snapshot?.id) && ['created', 'deleted'].includes(initialStop.snapshot.status), `snapshot status=${initialStop.snapshot?.status ?? 'missing'}`);
@@ -605,6 +764,23 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       signal,
       terminalTimeoutMs,
     );
+    if (uatRequired && label === 'missing') {
+      await timed(
+        pathReport,
+        'uat-resume-refresh',
+        (requestSignal) => runUatContract(
+          client,
+          resumed,
+          config,
+          pathReport,
+          resumedCloneCwd,
+          requestSignal,
+          'resume',
+        ),
+        signal,
+        smokeTimeoutMs,
+      );
+    }
 
     const finalStop = await timed(pathReport, 'stop-final', (requestSignal) => client.stopSandbox(resumed, { signal: requestSignal }), signal, operationTimeoutMs);
     recordCheck(pathReport, 'final stop snapshot', Boolean(finalStop.snapshot?.id) && ['created', 'deleted'].includes(finalStop.snapshot.status), `snapshot status=${finalStop.snapshot?.status ?? 'missing'}`);
@@ -692,6 +868,19 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
     } finally {
       clearTimeout(cleanupTimer);
     }
+    if (uatRequired && label === 'missing') {
+      const branchController = new AbortController();
+      const branchTimer = setTimeout(() => branchController.abort(new Error('UAT branch cleanup exceeded its deadline')), githubTimeoutMs * 3);
+      try {
+        await deleteUatBranch(config, requestedBranch, branchController.signal);
+        pathReport.uat = { ...(pathReport.uat ?? {}), pushedBranchDeleted: true };
+      } catch (error) {
+        pathReport.cleanup.errors.push(`UAT branch cleanup: ${errorMessage(error)}`);
+        pathReport.cleanupFailed = true;
+      } finally {
+        clearTimeout(branchTimer);
+      }
+    }
   }
   pathReport.failed = pathReport.functionalFailed === true || pathReport.cleanupFailed === true;
   if (pathReport.failed) report.failed = true;
@@ -754,18 +943,23 @@ async function writeReport() {
 async function main() {
   let config;
   try {
-    // This is intentionally the first provider-specific operation. An invalid
-    // pin must fail before credentials or a cloud API are touched.
-    const image = assertPromotedVercelImagePin(VERCEL_IMAGE_PIN);
+    // Intentionally the first provider-specific operation: a reference that is
+    // not digest-pinned must fail before credentials or a cloud API are touched.
+    const image = parseVercelImageReference(expectedImageReference);
     initializeSecretValues();
     report.image = { digest: image.digest };
     config = parseVercelProviderSmokeConfig(process.env);
+    if (uatRequired && config.path !== 'both') {
+      throw new Error('provider UAT requires both existing and missing private-repository paths');
+    }
     const smokeBudget = calculateVercelProviderSmokeBudget(
       config.path,
       smokeTimeoutMs,
       cleanupTimeoutMs,
       fixtureValidationTimeoutMs,
       githubTimeoutMs,
+      undefined,
+      uatRequired ? uatTimeoutMs : 0,
     );
     const outerTimeoutMs = positiveTimeout('SMOKE_TOTAL_TIMEOUT_MS', smokeBudget.outerTimeoutMs);
     if (outerTimeoutMs < smokeBudget.outerTimeoutMs) {
@@ -790,8 +984,9 @@ async function main() {
       if (!preflight.success) throw new Error('provider smoke preflight cleanup did not converge');
       const labels = config.path === 'both' ? ['existing', 'missing'] : [config.path];
       for (const label of labels) {
+        const pathTimeoutMs = smokeTimeoutMs + (uatRequired && label === 'missing' ? uatTimeoutMs : 0);
         try {
-          await runPath(config, fixture, label, controller.signal, client, terminalAdapter);
+          await runPath(config, fixture, label, controller.signal, client, terminalAdapter, pathTimeoutMs);
         } catch (error) {
           report.failed = true;
           report.errors ??= [];

@@ -74,3 +74,10 @@
 ## 2026-08-15 (7)
 
 * **Verified phase integration**: Merged the verified provider foundation and Vercel image supply chain, preserved both ADRs and their history during branch convergence, and unblocked the core Vercel workspace lifecycle phase.
+
+## 2026-08-18
+* **Vercel convergence**: Added the provider architecture/reference/runbook bundle and recorded the benchmark, UAT, release, cleanup, and public-port evidence contract for issue [#7](https://github.com/gannonh/devbox/issues/7).
+
+## 2026-08-19
+* **noVNC access-code pairing restored**: The printed `6080` display link carries a one-use access code again, so it opens the display on click. The proxy exchanges the code for an `HttpOnly; Secure; SameSite=Lax` cookie and redirects it out of the address bar, and both `token=` and `devbox_novnc=` are covered by the artifact redactors. Recorded as [ADR 0003](/adrs/0003-novnc-access-code-pairing.md), superseding the Basic Auth display clause of ADR 0002 — that clause had reverted a PR #11 review change that was never written down as a decision.
+* **Vercel image lifecycle simplified**: The image digest is no longer a constant in `src/providers/vercel/image.ts`; it is emitted into the package at publish time, and a checkout resolves the `nightly` channel instead. This removed the second "promotion" pull request and the window where main disagreed with its own image, along with the `vcr:`/`psmoke:` exact-SHA label rituals, the write-capable promotion job, and `scripts/vercel/promote-image.mjs`. Recorded as [ADR 0004](/adrs/0004-image-pin-as-build-output.md).

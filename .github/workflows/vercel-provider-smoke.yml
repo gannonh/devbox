@@ -1,6 +1,6 @@
 name: Vercel provider terminal smoke
 
-# This workflow has no pull_request trigger of its own. Direct runs are limited
+# This workflow has no pull_request trigger. Direct runs are limited
 # to a manual default-branch dispatch; reusable PR calls perform their own
 # exact-head authorization. The protected vercel-provider-smoke GitHub
 # environment supplies optional reviewer approval without relying on actor equality.
@@ -13,6 +13,10 @@ on:
         type: string
       path:
         description: 'Provider source path to exercise'
+        required: true
+        type: string
+      image_reference:
+        description: 'Fully-qualified digest reference to exercise'
         required: true
         type: string
     secrets:
@@ -41,6 +45,10 @@ on:
         required: true
   workflow_dispatch:
     inputs:
+      image_reference:
+        description: 'Fully-qualified digest reference to exercise (e.g. vcr.vercel.com/<team>/<project>/devbox@sha256:...)'
+        required: true
+        type: string
       path:
         description: 'Provider source path to exercise'
         required: true
@@ -83,12 +91,6 @@ jobs:
         env:
           EXPECTED_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_REPOSITORY: ${{ github.repository }}
-          EXPECTED_EVENT_ACTION: ${{ github.event.action }}
-          EXPECTED_EVENT_ACTOR: ${{ github.actor }}
-          EXPECTED_REPOSITORY_OWNER: ${{ github.repository_owner }}
-          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          EXPECTED_LABEL_NAME: ${{ github.event.label.name }}
           EXPECTED_REPOSITORY_FORK: ${{ github.event.repository.fork }}
         run: |
           set -euo pipefail
@@ -101,8 +103,9 @@ jobs:
             *) echo 'SMOKE_PATH must be existing, missing, or both' >&2; exit 1 ;;
           esac
 
-          # workflow_call retains the caller's github event. A PR call is
-          # trusted only for an owner-labeled, same-repository exact head.
+          # workflow_call retains the caller's github event. Pull requests no
+          # longer reach this workflow at all; cloud verification of a branch is
+          # a nightly dispatch instead.
           case "${GITHUB_EVENT_NAME}" in
             workflow_dispatch)
               test "${GITHUB_REF_NAME}" = "${EXPECTED_DEFAULT_BRANCH}" || {
@@ -118,30 +121,8 @@ jobs:
                 exit 1
               }
               ;;
-            pull_request)
-              test "${EXPECTED_EVENT_ACTION}" = 'labeled' || {
-                echo 'provider smoke PR calls require a labeled event' >&2
-                exit 1
-              }
-              test "${EXPECTED_EVENT_ACTOR}" = "${EXPECTED_REPOSITORY_OWNER}" || {
-                echo 'provider smoke PR calls require a repository-owner labeler' >&2
-                exit 1
-              }
-              test "${EXPECTED_HEAD_REPOSITORY}" = "${EXPECTED_REPOSITORY}" || {
-                echo 'provider smoke refuses fork pull requests' >&2
-                exit 1
-              }
-              test "${EXPECTED_HEAD_SHA}" = "${SOURCE_SHA}" || {
-                echo 'provider smoke source SHA does not match the current PR head' >&2
-                exit 1
-              }
-              test "${EXPECTED_LABEL_NAME}" = "psmoke:${SOURCE_SHA}" || {
-                echo 'provider smoke requires the exact psmoke:<full-head-sha> label' >&2
-                exit 1
-              }
-              ;;
             *)
-              echo 'provider smoke accepts workflow_dispatch or trusted pull_request calls only' >&2
+              echo 'provider smoke accepts workflow_dispatch or a release workflow_call only' >&2
               exit 1
               ;;
           esac
@@ -179,16 +160,17 @@ jobs:
       - name: Build production provider adapters
         run: npm run build
 
-      # dist/providers/vercel/image.js is compiled directly from the reviewed
-      # src/providers/vercel/image.ts pin; no workflow image override is allowed.
-      - name: Validate promoted image pin before credentials
+      # A reference that is not fully qualified and digest-pinned must fail
+      # before any credential is read.
+      - name: Validate the image reference before credentials
         id: pin
+        env:
+          DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE'
-          import { assertPromotedVercelImagePin } from './dist/providers/vercel/smoke-config.js';
-          import { VERCEL_IMAGE_PIN } from './dist/providers/vercel/image.js';
-          assertPromotedVercelImagePin(VERCEL_IMAGE_PIN);
+          import { parseVercelImageReference } from './dist/providers/vercel/image.js';
+          parseVercelImageReference(process.env.DEVBOX_VERCEL_IMAGE ?? '');
           NODE
 
       # The script repeats the pin check before reading the secret-backed

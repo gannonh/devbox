@@ -14,13 +14,17 @@ export interface VercelProviderSmokeBudget {
   fixtureTimeoutMs: number;
   pathProbeTimeoutMs: number;
   preflightTimeoutMs: number;
+  uatTimeoutMs: number;
   outerTimeoutMs: number;
 }
 
 /**
  * Return the minimum wall-clock budget for preflight plus sequential smoke
  * execution. The `both` path runs two complete path budgets, each followed by
- * independent cleanup, after stale smoke-owned resources are reconciled.
+ * independent cleanup, after stale smoke-owned resources are reconciled. When
+ * `uatTimeoutMs` is provided, the credentialed UAT-bearing path reserves that
+ * extra budget so both UAT stages plus the fixture command can finish inside
+ * the enclosing path and outer deadlines.
  */
 export function calculateVercelProviderSmokeBudget(
   path: VercelProviderSmokePath,
@@ -29,6 +33,7 @@ export function calculateVercelProviderSmokeBudget(
   fixtureTimeoutMs: number,
   pathProbeTimeoutMs: number,
   preflightTimeoutMs = cleanupTimeoutMs,
+  uatTimeoutMs = 0,
 ): VercelProviderSmokeBudget {
   if (path !== 'existing' && path !== 'missing' && path !== 'both') {
     throw new TypeError('Vercel provider smoke path is invalid');
@@ -44,6 +49,9 @@ export function calculateVercelProviderSmokeBudget(
       throw new TypeError(`${name} must be finite and positive`);
     }
   }
+  if (!Number.isFinite(uatTimeoutMs) || uatTimeoutMs < 0) {
+    throw new TypeError('uatTimeoutMs must be finite and non-negative');
+  }
   const pathCount = path === 'both' ? 2 : 1;
   const cleanupPhasesPerPath = 3; // normal remove, direct finally cleanup, and recovery
   return {
@@ -53,7 +61,8 @@ export function calculateVercelProviderSmokeBudget(
     fixtureTimeoutMs,
     pathProbeTimeoutMs,
     preflightTimeoutMs,
-    outerTimeoutMs: preflightTimeoutMs + pathCount * (pathTimeoutMs + cleanupTimeoutMs * cleanupPhasesPerPath + pathProbeTimeoutMs) + fixtureTimeoutMs,
+    uatTimeoutMs,
+    outerTimeoutMs: preflightTimeoutMs + pathCount * (pathTimeoutMs + cleanupTimeoutMs * cleanupPhasesPerPath + pathProbeTimeoutMs) + fixtureTimeoutMs + uatTimeoutMs,
   };
 }
 

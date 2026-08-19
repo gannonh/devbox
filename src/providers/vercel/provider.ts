@@ -78,6 +78,8 @@ export type VercelOpener = (url: string) => void | Promise<void>;
 
 export interface VercelProviderOptions {
   runner?: ShellRunner;
+  /** Resolve the Sandbox image reference; defaults to release pin or channel. */
+  resolveImage?: () => Promise<string>;
   lifecycle?: VercelLifecycleFactory | VercelLifecycle;
   lifecycleFactory?: VercelLifecycleFactory;
   terminal?: VercelTerminalAdapter;
@@ -115,7 +117,11 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
   const client = options.client ?? createVercelSandboxClient();
   const makeLifecycle = options.lifecycleFactory
     ?? (typeof options.lifecycle === 'function' ? options.lifecycle : undefined)
-    ?? ((lifecycleOptions: VercelLifecycleOptions) => createVercelLifecycle({ ...lifecycleOptions, client }));
+    ?? ((lifecycleOptions: VercelLifecycleOptions) => createVercelLifecycle({
+      ...lifecycleOptions,
+      client,
+      ...(options.resolveImage === undefined ? {} : { resolveImage: options.resolveImage }),
+    }));
   const injectedLifecycle = options.lifecycle && typeof options.lifecycle !== 'function'
     ? options.lifecycle
     : undefined;
@@ -269,6 +275,34 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       }
       return { exitCode: 0 };
     }),
+    getDisplayCredentials: async (request) => {
+      const secrets = secretsFor(request.env);
+      try {
+        const origin = await resolveGitHubSourceOrigin({
+          repoRoot: request.repoRoot,
+          env: request.env,
+          shellRunner: runner,
+        });
+        const branchStore = createBranchStore(
+          origin,
+          normalizeRequestedSourceBranch(request.branch),
+          options,
+        );
+        const resolution = await resolveDisplayCredentials(branchStore);
+        addSecrets(secrets, resolution.credentials.password);
+        return {
+          supported: true,
+          username: resolution.credentials.username,
+          password: resolution.credentials.password,
+        };
+      } catch (error) {
+        throw mapVercelError(error, {
+          action: 'password',
+          branch: request.branch,
+          secrets,
+        });
+      }
+    },
   };
 
   return provider;
@@ -746,7 +780,9 @@ function renderVercelRoutes(
     .sort((left, right) => left.port - right.port)
     .map((route) => {
       const safe = assertSafeRouteUrl(route.url);
-      const url = route.port === DEVBOX_NOVNC_PROXY_PORT ? novncPairingUrl(safe, token) : safe;
+      const url = route.port === DEVBOX_NOVNC_PROXY_PORT
+        ? novncPairingUrl(safe, token)
+        : safe;
       const description = route.port === DEVBOX_NOVNC_PROXY_PORT
         ? 'noVNC display'
         : labels[route.port] ? `${labels[route.port]} — public` : 'public';
@@ -758,11 +794,16 @@ function renderVercelRoutes(
     });
 }
 
+// The display link carries the branch access code so a click pairs the browser.
+// The proxy exchanges it for an HttpOnly cookie and redirects the code out of
+// the address bar; see images/vercel/novnc-proxy.mjs.
 function novncPairingUrl(routeUrl: string, token: string): string {
-  const parsed = new URL('/vnc.html', routeUrl);
+  // Resolve relatively: a Vercel route may carry a path prefix that an
+  // absolute '/vnc.html' would discard.
+  const parsed = new URL('vnc.html', routeUrl.endsWith('/') ? routeUrl : `${routeUrl}/`);
   parsed.searchParams.set('token', token);
   parsed.searchParams.set('autoconnect', '1');
-  return parsed.toString();
+  return parsed.href;
 }
 
 function assertSafeRouteUrl(url: string): string {
@@ -777,6 +818,9 @@ function assertSafeRouteUrl(url: string): string {
   }
   if (parsed.username || parsed.password) {
     throw new VercelProviderError('route', 'Vercel route URL contains embedded credentials', 2);
+  }
+  if (parsed.search || parsed.hash) {
+    throw new VercelProviderError('route', 'Vercel route URL contains query or fragment data', 2);
   }
   return url;
 }

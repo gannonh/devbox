@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
+import { TEST_IMAGE_PIN } from './vercel-image.fixture.js';
 import {
   hasPreflightSandboxProof,
   isExactSmokeSandboxRecord,
@@ -147,11 +147,28 @@ describe('Vercel provider smoke configuration', () => {
       fixtureTimeoutMs: 5,
       pathProbeTimeoutMs: 10,
       preflightTimeoutMs: 20,
+      uatTimeoutMs: 0,
       outerTimeoutMs: 365,
     });
     expect(calculateVercelProviderSmokeBudget('existing', 100, 20, 5, 10).outerTimeoutMs).toBe(195);
     expect(calculateVercelProviderSmokeBudget('both', 720_000, 120_000, 30_000, 10_000).outerTimeoutMs)
       .toBe(2_330_000);
+  });
+
+  it('reserves an explicit UAT budget inside the outer smoke deadline', () => {
+    expect(calculateVercelProviderSmokeBudget('both', 720_000, 120_000, 30_000, 10_000, undefined, 720_000).outerTimeoutMs)
+      .toBe(3_050_000);
+    expect(calculateVercelProviderSmokeBudget('both', 100, 20, 5, 10, undefined, 50)).toEqual({
+      pathCount: 2,
+      pathTimeoutMs: 100,
+      cleanupTimeoutMs: 20,
+      fixtureTimeoutMs: 5,
+      pathProbeTimeoutMs: 10,
+      preflightTimeoutMs: 20,
+      uatTimeoutMs: 50,
+      outerTimeoutMs: 415,
+    });
+    expect(() => calculateVercelProviderSmokeBudget('both', 100, 20, 5, 10, undefined, -1)).toThrow(/non-negative/i);
   });
 
   it('rejects a non-positive smoke budget', () => {
@@ -186,13 +203,13 @@ describe('Vercel provider smoke configuration', () => {
       .toThrow(/owner\/repository/i);
   });
 
-  it('accepts the checked-in promoted image pin before credential validation', () => {
-    expect(assertPromotedVercelImagePin(VERCEL_IMAGE_PIN)).toMatchObject({
+  it('accepts an emitted promoted image pin before credential validation', () => {
+    expect(assertPromotedVercelImagePin(TEST_IMAGE_PIN)).toMatchObject({
       registry: 'vcr.vercel.com',
       team: 'astro-labs',
       project: 'devbox',
       repository: 'devbox',
-      digest: 'sha256:a4aa03890d74f5251f3861c4f6e96afeab3d0b7881b8206fa0de4223bdf051f7',
+      digest: 'sha256:d7f2d914ce5905cac6bd0ede396039fe9abc7eb651f82289a917c6e173be6d07',
     });
   });
 
@@ -263,10 +280,12 @@ describe('Vercel provider smoke configuration', () => {
   });
 
   it('uses valid GitHub fixture secret names in both workflow interfaces', async () => {
-    const caller = await readFile('.github/workflows/ci.yml', 'utf8');
+    const caller = await readFile('.github/workflows/release.yml', 'utf8');
     const callee = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
     for (const workflow of [caller, callee]) {
-      expect(workflow).not.toMatch(/secrets\.GITHUB_/);
+      // Fixture secrets are DEVBOX_GITHUB_*; a bare secrets.GITHUB_<name>
+      // would be an invalid custom secret name (GITHUB_TOKEN excepted).
+      expect(workflow).not.toMatch(/secrets\.GITHUB_(?!TOKEN\b)/);
       for (const name of VALID_FIXTURE_SECRET_NAMES) expect(workflow).toContain(name);
     }
     for (const name of VALID_FIXTURE_SECRET_NAMES) {
@@ -297,50 +316,29 @@ describe('Vercel provider smoke configuration', () => {
     expect(workflow).toContain('SOURCE_SHA: ${{ inputs.source_sha || github.sha }}');
     expect(workflow).toContain('[[ "${SOURCE_SHA}" =~ ^[a-f0-9]{40}$ ]]');
     expect(workflow).toContain('GITHUB_EVENT_NAME');
-    expect(workflow).toContain('pull_request)');
-    expect(workflow).toContain("github.event.action");
-    expect(workflow).toContain("github.actor");
-    expect(workflow).toContain("github.event.pull_request.head.repo.full_name");
-    expect(workflow).toContain('psmoke:${SOURCE_SHA}');
-    expect(workflow).toContain('github.event.pull_request.head.sha');
+    // Pull requests can no longer reach this workflow at all, so no label
+    // ritual authorizes it; a branch is verified by dispatching the nightly.
+    expect(workflow).not.toContain('pull_request)');
+    expect(workflow).not.toContain('psmoke:');
+    expect(workflow).not.toContain('github.event.pull_request');
     expect(workflow).toContain('GITHUB_REF_NAME');
     expect(workflow).toContain('github.event.repository.default_branch');
     expect(workflow).not.toContain('pull_request_target');
   });
 
-  it('authorizes smoke with a GitHub-label-safe exact lowercase SHA label', async () => {
-    const sha = 'a'.repeat(40);
-    const label = `psmoke:${sha}`;
-    // GitHub label names are limited to 50 characters; psmoke: + 40 hex is 47.
-    expect(label.length).toBeLessThanOrEqual(50);
-    expect(label).toMatch(/^psmoke:[a-f0-9]{40}$/);
-    expect(sha).toMatch(/^[a-f0-9]{40}$/);
-    // The caller formats the label from the exact PR head SHA and the callee
-    // repeats the comparison against the guard-validated full lowercase SHA.
-    const ci = await loadWorkflow('.github/workflows/ci.yml');
-    const callerJob = (ci.jobs as Record<string, Record<string, unknown>>)['vercel-provider-smoke'];
-    expect(String(callerJob.if)).toContain("format('psmoke:{0}', github.event.pull_request.head.sha)");
-    const callee = await loadWorkflow('.github/workflows/vercel-provider-smoke.yml');
-    const job = (callee.jobs as Record<string, { steps: Array<Record<string, unknown>> }>)['provider-smoke'];
-    const guardRun = String(job.steps.find((s) => s.id === 'guard')?.run ?? '');
-    expect(guardRun).toContain('[[ "${SOURCE_SHA}" =~ ^[a-f0-9]{40}$ ]]');
-    expect(guardRun).toContain('test "${EXPECTED_HEAD_SHA}" = "${SOURCE_SHA}"');
-    expect(guardRun).toContain('test "${EXPECTED_LABEL_NAME}" = "psmoke:${SOURCE_SHA}"');
-  });
-
-  it('structurally maps the caller gate inputs to explicit read-only secrets', async () => {
-    const ci = await loadWorkflow('.github/workflows/ci.yml');
-    const on = ci.on as Record<string, { types?: string[] }>;
-    expect(on.pull_request?.types).toContain('labeled');
-    const jobs = ci.jobs as Record<string, Record<string, unknown>>;
+  it('structurally maps the caller gate inputs to explicit fixture secrets', async () => {
+    const release = await loadWorkflow('.github/workflows/release.yml');
+    const jobs = release.jobs as Record<string, Record<string, unknown>>;
     const caller = jobs['vercel-provider-smoke'];
     expect(caller).toBeDefined();
-    expect(String(caller.if)).toContain("format('psmoke:{0}', github.event.pull_request.head.sha)");
+    // The gate is the release dispatch itself; no label authorizes a run.
+    expect(caller.needs).toContain('promote-image');
     expect(caller.uses).toBe('./.github/workflows/vercel-provider-smoke.yml');
     expect((caller.permissions as Record<string, string>).contents).toBe('read');
     const withInputs = caller.with as Record<string, string>;
-    expect(withInputs.source_sha).toBe('${{ github.event.pull_request.head.sha }}');
+    expect(withInputs.source_sha).toBe('${{ github.sha }}');
     expect(withInputs.path).toBe('both');
+    expect(withInputs.image_reference).toContain('needs.promote-image.outputs.image_reference');
     const secrets = caller.secrets as Record<string, string>;
     for (const name of PROVIDER_SMOKE_SECRETS) {
       expect(secrets[name]).toBe('${{ secrets.' + name + ' }}');
@@ -349,10 +347,10 @@ describe('Vercel provider smoke configuration', () => {
     expect(caller.secrets).not.toBe('inherit');
     // The caller must source the Vercel triad from the consumer secrets; the
     // generic secret names are absent from the repository.
-    const ciText = await readFile('.github/workflows/ci.yml', 'utf8');
-    expect(ciText).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
-    expect(ciText).not.toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}');
-    expect(ciText).not.toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}');
+    const callerText = await readFile('.github/workflows/release.yml', 'utf8');
+    expect(callerText).not.toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}');
+    expect(callerText).not.toContain('VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}');
+    expect(callerText).not.toContain('VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}');
   });
 
   it('structurally parses the called workflow inputs, secrets, and evidence env contract', async () => {
@@ -362,6 +360,7 @@ describe('Vercel provider smoke configuration', () => {
     const inputs = call.inputs as Record<string, Record<string, unknown>>;
     expect(inputs.source_sha).toMatchObject({ required: true, type: 'string' });
     expect(inputs.path).toMatchObject({ required: true, type: 'string' });
+    expect(inputs.image_reference).toMatchObject({ required: true, type: 'string' });
     const secrets = call.secrets as Record<string, Record<string, unknown>>;
     for (const name of PROVIDER_SMOKE_SECRETS) {
       expect(secrets[name]).toMatchObject({ required: true });
@@ -407,7 +406,7 @@ describe('Vercel provider smoke configuration', () => {
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('type: choice');
     for (const path of ['both', 'existing', 'missing']) expect(workflow).toContain(`- ${path}`);
-    expect(workflow).toContain('src/providers/vercel/image.ts');
+    expect(workflow).toContain('parseVercelImageReference');
     expect(workflow).not.toContain('pull_request:');
     expect(workflow).not.toContain("github.actor == github.repository_owner");
     expect(workflow).toContain('test "${GITHUB_REF_NAME}" = "${EXPECTED_DEFAULT_BRANCH}"');
@@ -447,7 +446,7 @@ describe('Vercel provider smoke configuration', () => {
     const smokeStep = workflow.match(/- name: Run real provider smoke[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
     const redactStep = workflow.match(/- name: Redact all provider smoke evidence[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
     expect(workflow).toContain('id: pin');
-    expect(workflow).toContain('Validate promoted image pin before credentials');
+    expect(workflow).toContain('Validate the image reference before credentials');
     expect(workflow).toContain('configuration; it uses no Vercel CLI or GitHub CLI.');
     expect(smokeStep).toContain("if: success() && steps.guard.outcome == 'success'");
     expect(smokeStep).toContain('VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}');
@@ -459,23 +458,21 @@ describe('Vercel provider smoke configuration', () => {
     expect(smokeStep).not.toContain('steps.pin.outcome');
   });
 
-  it('runs quality on a single Node 22 LTS lane', async () => {
+  it('runs provider quality on the supported Node 22 LTS lane', async () => {
     const ci = await readFile('.github/workflows/ci.yml', 'utf8');
     const smoke = await readFile('.github/workflows/vercel-provider-smoke.yml', 'utf8');
     const release = await readFile('.github/workflows/release.yml', 'utf8');
     const pkg = JSON.parse(await readFile('package.json', 'utf8')) as { engines: { node: string } };
     expect(pkg.engines.node).toBe('>=22');
+    expect(ci).toContain("name: quality and provider contracts (Node 22)");
     expect(ci).toContain("node-version: '22'");
-    expect(ci).not.toContain('matrix:');
     expect(ci).not.toContain('matrix.node-version');
-    expect(ci).not.toContain('20.18.1');
-    expect(ci).not.toMatch(/node-version:\s*\[/);
     expect(ci).toContain('npm run lint');
     expect(ci).toContain('npm run typecheck');
     expect(ci).toContain('npm run build');
     expect(ci).toContain('npm run test');
     expect(smoke).toContain("node-version: '22'");
-    expect(smoke).not.toContain('20.18.1');
+    expect(smoke).not.toContain("node-version: '20.18.1'");
     expect(release).toContain("node-version: '22'");
     expect(release).not.toMatch(/node-version:\s*'20'/);
   });
@@ -500,5 +497,60 @@ describe('Vercel provider smoke configuration', () => {
       'DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT',
       'SMOKE_REPORT',
     ]);
+  });
+
+  it('requires explicit UAT contract markers for the private fixture path', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-uat.yml', 'utf8');
+    const source = await readFile('scripts/vercel/provider-smoke.mjs', 'utf8');
+    const fixture = await readFile('scripts/vercel/uat-fixture.mjs', 'utf8');
+
+    expect(workflow).toContain("DEVBOX_UAT_REQUIRED: 'true'");
+    expect(workflow).toContain('name: vercel-provider-smoke');
+    for (const secret of [
+      'DEVBOX_UAT_PUSH_TOKEN',
+      'DEVBOX_UAT_ENV_CONTENT',
+      'DEVBOX_UAT_FIXTURE_COMMAND',
+      'DEVBOX_UAT_RESUME_COMMAND',
+    ]) {
+      expect(workflow).not.toContain(secret);
+      expect(source).not.toContain(secret);
+    }
+    for (const marker of [
+      'DEVBOX_UAT:agents',
+      'DEVBOX_UAT:chromium-oauth',
+      'DEVBOX_UAT:electron-vite',
+      'DEVBOX_UAT:push',
+      'DEVBOX_UAT:resume-secret-refresh',
+    ]) {
+      expect(source).toContain(marker);
+      expect(fixture).toContain(marker);
+    }
+    expect(source).toContain('provider UAT requires both existing and missing private-repository paths');
+    expect(source).toContain('runUatContract');
+    expect(source).toContain("readFile(new URL('./uat-fixture.mjs', import.meta.url)");
+    expect(fixture).toContain("electron: '31.7.7'");
+    expect(fixture).toContain("vite: '5.4.20'");
+    expect(fixture).toContain("electron-entry.cjs");
+    expect(fixture).toContain("require('electron')");
+    expect(fixture).toContain("'--no-sandbox'");
+    expect(fixture).toContain("'--disable-gpu'");
+    expect(fixture).toContain("git', ['push'");
+  });
+
+  it('pins manual UAT dispatch to the default-branch head without shell interpolation', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-uat.yml', 'utf8');
+    const source = await readFile('scripts/vercel/provider-smoke.mjs', 'utf8');
+
+    expect(workflow).toContain('SOURCE_BRANCH: ${{ github.event.repository.default_branch }}');
+    expect(workflow).toContain('test "${GITHUB_REF_NAME}" = "${SOURCE_BRANCH}"');
+    expect(workflow).toContain('Verify manual UAT source is the default-branch head');
+    expect(workflow).toContain('if: github.event_name == \'workflow_dispatch\'');
+    expect(workflow).toContain('git rev-parse "refs/remotes/origin/${SOURCE_BRANCH}"');
+    expect(workflow).toContain("SMOKE_UAT_TIMEOUT_MS: '720000'");
+    expect(workflow).toContain("SMOKE_TOTAL_TIMEOUT_MS: '3300000'");
+    expect(source).toContain("SMOKE_UAT_TIMEOUT_MS");
+    expect(source).toContain('resume runtime secret refresh observed');
+    expect(source).toContain('DEVBOX_UAT_REFRESH=');
+    expect(source).not.toContain('resume runtime secret changed');
   });
 });

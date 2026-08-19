@@ -13,10 +13,12 @@ import {
   createVercelBranchMetadataStore,
   createVercelScopeMetadataStore,
 } from '../src/providers/vercel/metadata.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
+import { resolveTestImage, TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
+
+const DISPLAY_TOKEN = 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa';
 
 function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranchRequest {
   const defaults: ProviderBranchRequest = {
@@ -94,7 +96,7 @@ async function seedBranchMetadata(stateHome: string, branch = 'feature/ui'): Pro
     repoKey: 'github.com/acme/repo',
     branch,
   }).write({
-    displayCredentials: { username: 'devbox', password: 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa' },
+    displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
   });
 }
 
@@ -130,6 +132,7 @@ describe('Vercel provider', () => {
     stderr.on('data', (chunk) => { output += chunk.toString(); });
     const opener = vi.fn();
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       lifecycle: (options) => {
         expect(options.credentials).toEqual({
@@ -210,7 +213,7 @@ describe('Vercel provider', () => {
               },
             },
             configuration: {
-              imageReference: VERCEL_IMAGE_PIN.reference,
+              imageReference: TEST_IMAGE_REFERENCE,
               sourceUrl: 'https://github.com/acme/repo.git',
               sourceRevision: 'main',
               requestedBranch: identity.branch,
@@ -256,6 +259,7 @@ describe('Vercel provider', () => {
     };
     const confirmation = vi.fn(async () => true);
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: shell,
       stateHome,
       lifecycle: factory,
@@ -317,6 +321,7 @@ describe('Vercel provider', () => {
       }),
     } as unknown as VercelSandboxClient;
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       client,
@@ -357,6 +362,7 @@ describe('Vercel provider', () => {
     });
     const confirmation = vi.fn(async () => true);
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       lifecycle: currentLifecycle,
@@ -409,6 +415,7 @@ describe('Vercel provider', () => {
       }),
     };
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       lifecycle: currentLifecycle,
@@ -466,7 +473,7 @@ describe('Vercel provider', () => {
         const handle = {
           ...sandbox(),
           name: createRequest.name,
-          image: VERCEL_IMAGE_PIN.reference,
+          image: TEST_IMAGE_REFERENCE,
           persistent: true,
           keepLastSnapshots: { count: 1 },
           tags: { ...createRequest.tags },
@@ -481,6 +488,7 @@ describe('Vercel provider', () => {
     } as unknown as VercelSandboxClient;
     const confirmation = vi.fn(async () => true);
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: {
         ...runner(),
         execQuiet: vi.fn(async (_command: string, args: string[]) => ({
@@ -525,6 +533,7 @@ describe('Vercel provider', () => {
       throw Object.assign(new Error(`Vercel API body ${token}`), { status: 401 });
     });
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-dispatch-')),
       lifecycle: currentLifecycle,
@@ -562,6 +571,7 @@ describe('Vercel provider', () => {
     const shell = runner();
     shell.execQuiet = vi.fn(async () => ({ stdout: '', code: 1 }));
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: shell,
       client: { getOrCreate } as unknown as VercelSandboxClient,
       stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-branch-validation-')),
@@ -578,6 +588,7 @@ describe('Vercel provider', () => {
   it('fails first use in a non-TTY before lifecycle creation', async () => {
     const currentLifecycle = lifecycle();
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-nontty-')),
       lifecycle: () => currentLifecycle,
@@ -614,6 +625,7 @@ describe('Vercel provider', () => {
     } as VercelTerminalAdapter;
     const currentLifecycle = lifecycle();
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       lifecycle: currentLifecycle,
@@ -628,6 +640,7 @@ describe('Vercel provider', () => {
     const refusalStdin = new PassThrough();
     const refusalLifecycle = lifecycle();
     const refusalProvider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-readline-refusal-')),
       lifecycle: refusalLifecycle,
@@ -655,7 +668,7 @@ describe('Vercel provider', () => {
       },
       sandboxId: 'sandbox-id',
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: 'feature/ui',
@@ -678,6 +691,7 @@ describe('Vercel provider', () => {
     };
     const confirmation = vi.fn(async () => true);
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: shell,
       stateHome,
       lifecycle: (options) => {
@@ -721,7 +735,7 @@ describe('Vercel provider', () => {
         tags: { ...identity.tags },
       },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: 'feature/ui',
@@ -747,6 +761,7 @@ describe('Vercel provider', () => {
     shell.exec = vi.fn(async () => 'git@github.com:acme/repo.git');
     shell.execQuiet = vi.fn(async () => { throw new Error('remote query must not run'); });
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: shell,
       stateHome,
       lifecycle: currentLifecycle,
@@ -774,7 +789,7 @@ describe('Vercel provider', () => {
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
     await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
     await metadata.write({
-      displayCredentials: { username: 'devbox', password: 'test-novnc-token-aaaaaaaaaaaaaaaaaaaa' },
+      displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
       identity: {
         name: identity.name,
         repository: identity.canonicalRepository,
@@ -783,7 +798,7 @@ describe('Vercel provider', () => {
         tags: { ...identity.tags },
       },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: 'feature/ui',
@@ -834,11 +849,11 @@ describe('Vercel provider', () => {
     await expect(provider.url(request({ stdout: urlStdout, open: true, env: { VERCEL_TOKEN: 'new-vercel-token' } }))).resolves.toEqual({ exitCode: 0 });
     expect(urls.join('')).toBe([
       '3000: https://sandbox.example/3000  (public)',
-      '6080: https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1  (noVNC display)',
+      `6080: https://sandbox.example/6080/vnc.html?token=${DISPLAY_TOKEN}&autoconnect=1  (noVNC display)`,
       '8080: https://sandbox.example/8080  (public)',
       '',
     ].join('\n'));
-    expect(opener).toHaveBeenCalledWith('https://sandbox.example/vnc.html?token=test-novnc-token-aaaaaaaaaaaaaaaaaaaa&autoconnect=1');
+    expect(opener).toHaveBeenCalledWith(`https://sandbox.example/6080/vnc.html?token=${DISPLAY_TOKEN}&autoconnect=1`);
     currentLifecycle.routes = vi.fn(async () => []);
     await expect(provider.url(request({ env: { VERCEL_TOKEN: 'new-vercel-token' } }))).rejects.toMatchObject({
       code: 'route',
@@ -859,6 +874,7 @@ describe('Vercel provider', () => {
     await seedBranchMetadata(stateHome);
     const terminal = { attach: vi.fn(async () => ({ status: 'exited' as const, code: 23 })) } as VercelTerminalAdapter;
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       lifecycle: currentLifecycle,
@@ -990,7 +1006,7 @@ describe('Vercel provider', () => {
       listSnapshots: vi.fn(async () => []),
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
-    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+    const provider = createVercelProvider({ runner: runner(), stateHome, client, resolveImage: resolveTestImage });
 
     await expect(provider.remove(request({ branch, tty: false }))).resolves.toEqual({ exitCode: 0 });
     expect(client.get).toHaveBeenCalledWith(expect.objectContaining({ name: recovered.name }));
@@ -1013,7 +1029,7 @@ describe('Vercel provider', () => {
       name: oldIdentity.name,
       status: 'stopped' as const,
       persistent: true,
-      image: VERCEL_IMAGE_PIN.reference,
+      image: TEST_IMAGE_REFERENCE,
       tags: { ...oldIdentity.tags },
     } as VercelSandboxHandle;
     const client = {
@@ -1037,6 +1053,7 @@ describe('Vercel provider', () => {
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       client,
@@ -1063,7 +1080,7 @@ describe('Vercel provider', () => {
       deleteSandbox: vi.fn(),
       listSnapshots: vi.fn(),
     } as unknown as VercelSandboxClient;
-    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+    const provider = createVercelProvider({ runner: runner(), stateHome, client, resolveImage: resolveTestImage });
 
     await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
     expect(client.get).not.toHaveBeenCalled();
@@ -1086,7 +1103,7 @@ describe('Vercel provider', () => {
       get: vi.fn(),
       deleteSandbox: vi.fn(),
     } as unknown as VercelSandboxClient;
-    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+    const provider = createVercelProvider({ runner: runner(), stateHome, client, resolveImage: resolveTestImage });
 
     await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).rejects.toMatchObject({
       code: 'identity',
@@ -1117,7 +1134,7 @@ describe('Vercel provider', () => {
       get: vi.fn(),
       deleteSandbox: vi.fn(),
     } as unknown as VercelSandboxClient;
-    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+    const provider = createVercelProvider({ runner: runner(), stateHome, client, resolveImage: resolveTestImage });
 
     await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
     expect(client.get).not.toHaveBeenCalled();
@@ -1160,7 +1177,7 @@ describe('Vercel provider', () => {
       listSnapshots: vi.fn(async () => []),
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
-    const provider = createVercelProvider({ runner: runner(), stateHome, client });
+    const provider = createVercelProvider({ runner: runner(), stateHome, client, resolveImage: resolveTestImage });
 
     await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
     expect(client.get).toHaveBeenCalledWith(expect.objectContaining({ name: own.name }));
@@ -1182,6 +1199,7 @@ describe('Vercel provider', () => {
       }),
     };
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome: await mkdtemp(join(tmpdir(), 'devbox-provider-terminal-error-')),
       lifecycle: lifecycle(),
@@ -1215,7 +1233,7 @@ describe('Vercel provider', () => {
         tags: { ...identity.tags },
       },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: 'feature/ui',
@@ -1232,6 +1250,7 @@ describe('Vercel provider', () => {
       attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
     };
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       lifecycle: currentLifecycle,
@@ -1263,6 +1282,7 @@ describe('Vercel provider', () => {
     stderr.on('data', (chunk) => { output += chunk.toString(); });
 
     const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
       runner: runner(),
       stateHome,
       lifecycle: (options) => {

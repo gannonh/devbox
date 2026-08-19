@@ -21,7 +21,6 @@ import { prepareSandboxRuntime } from '../src/providers/vercel/runtime.js';
 import { createVercelBranchMetadataStore, createVercelScopeMetadataStore } from '../src/providers/vercel/metadata.js';
 import { createVercelProvider } from '../src/providers/vercel/provider.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
-import { VERCEL_IMAGE_PIN } from '../src/providers/vercel/image.js';
 import type { ProviderBranchRequest } from '../src/providers/types.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 import type { VercelLifecycle } from '../src/providers/vercel/lifecycle.js';
@@ -33,6 +32,7 @@ import type {
   VercelSandboxHandle,
   VercelWriteFile,
 } from '../src/providers/vercel/client.js';
+import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -348,7 +348,7 @@ describe('Vercel background setup', () => {
       },
       displayCredentials: { username: DISPLAY_USERNAME, password: 'display-secret' },
       configuration: {
-        imageReference: VERCEL_IMAGE_PIN.reference,
+        imageReference: TEST_IMAGE_REFERENCE,
         sourceUrl: 'https://github.com/acme/repo.git',
         sourceRevision: 'main',
         requestedBranch: branch,
