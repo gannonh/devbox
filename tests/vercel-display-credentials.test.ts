@@ -15,8 +15,7 @@ import type { GitHubSourcePlan } from '../src/providers/vercel/source.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
 import {
-  DISPLAY_PASSWORD_BYTES,
-  DISPLAY_PASSWORD_ENCODING,
+  DISPLAY_CODE_PATTERN,
   DISPLAY_USERNAME,
   generateDisplayPassword,
   getDisplayCredentials,
@@ -808,13 +807,21 @@ describe('Vercel display credentials', () => {
     expect(outputs).toHaveLength(5);
     const [list, url, attach, stop, up] = outputs.map((readOutput) => readOutput());
 
-    // The code pairs the browser, so the display link is the one place it is
-    // allowed to appear; surfaces that do not offer the display never carry it.
+    // Surfaces that do not offer the display never carry the code.
     for (const output of [list, stop]) expect(output).not.toContain(password);
-    for (const output of [url, attach, up]) {
+
+    // --url prints routes only, so the link is the sole carrier there.
+    const urlLines = url.split('\n').filter((line) => line.includes(password));
+    expect(urlLines).toHaveLength(1);
+    expect(urlLines[0]).toContain(`/vnc.html?token=${password}&autoconnect=1`);
+
+    // Boot and resume additionally list the code on its own line so it can be
+    // typed into the pairing form; both carriers are display affordances.
+    for (const output of [attach, up]) {
       const carrying = output.split('\n').filter((line) => line.includes(password));
-      expect(carrying).toHaveLength(1);
-      expect(carrying[0]).toContain(`/vnc.html?token=${password}&autoconnect=1`);
+      expect(carrying).toHaveLength(2);
+      expect(carrying.some((line) => line.includes(`/vnc.html?token=${password}&autoconnect=1`))).toBe(true);
+      expect(carrying.some((line) => line.trim() === `access code: ${password}`)).toBe(true);
     }
   });
 
@@ -840,15 +847,18 @@ describe('Vercel display credentials', () => {
     expect(outputs.join('')).toContain('local provider reports this action as unsupported');
   });
 
-  it('generates distinct URL-safe passwords with at least 128 bits of entropy', () => {
-    const first = generateDisplayPassword();
-    const second = generateDisplayPassword();
+  it('generates a short, unambiguous, distinct pairing code', () => {
+    const codes = Array.from({ length: 200 }, () => generateDisplayPassword());
 
-    expect(DISPLAY_PASSWORD_BYTES * 8).toBeGreaterThanOrEqual(128);
-    expect(DISPLAY_PASSWORD_ENCODING).toBe('base64url');
-    expect(Buffer.from(first, DISPLAY_PASSWORD_ENCODING)).toHaveLength(DISPLAY_PASSWORD_BYTES);
-    expect(first).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(second).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(second).not.toBe(first);
+    for (const code of codes) {
+      // Short enough to read aloud and type into the pairing form; a
+      // 43-character base64url secret is not.
+      expect(code).toHaveLength(9);
+      expect(code).toMatch(DISPLAY_CODE_PATTERN);
+      // The alphabet drops I and O and has no 0 or 1, so the pairs that are
+      // misread on a screen cannot occur.
+      expect(code).not.toMatch(/[0O1I]/);
+    }
+    expect(new Set(codes).size).toBe(codes.length);
   });
 });

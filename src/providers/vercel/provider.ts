@@ -40,6 +40,7 @@ import {
   type VercelScopeMetadataStore,
 } from './metadata.js';
 import { mapVercelError, VercelProviderError } from './errors.js';
+import { createVercelBranchTag } from './identity.js';
 import {
   normalizeRequestedSourceBranch,
   resolveGitHubSource,
@@ -699,7 +700,8 @@ function renderList(
   }
   for (const record of records) {
     const identity = record.tags?.identity ?? 'unknown';
-    const branch = record.tags?.branch ?? 'unknown';
+    const branchTag = record.tags?.branch;
+    const branch = branchFromTag(branchTag) ?? branchTag ?? 'unknown';
     request.stderr.write(`  ${record.name} ${record.status} branch=${branch} identity=${identity}\n`);
   }
 }
@@ -741,19 +743,41 @@ async function resolveRouteLabels(repoRoot: string): Promise<Record<number, stri
   }
 }
 
+/**
+ * One block for both boot and resume.
+ *
+ * Resume used to collapse everything onto a single line, which buried a long
+ * display URL and gave no way to stop or remove the box you had just attached
+ * to. The access code is listed on its own line because it is short enough to
+ * type into the pairing form when a link is stale or you are opening the
+ * display on another device.
+ */
+async function renderVercelBlock(
+  request: ProviderBranchRequest,
+  sandbox: VercelSandboxHandle,
+  setupStatus: VercelSetupStatus | null,
+  token: string,
+  headline: string,
+): Promise<void> {
+  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
+  request.stderr.write(`${headline}\n`);
+  for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
+  if (routes.some(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT)) {
+    request.stderr.write(`  access code: ${token}\n`);
+  }
+  request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
+  request.stderr.write(`  remove: devbox ${request.branch} --provider vercel --rm\n`);
+  const setupNotice = renderSetupNotice(setupStatus);
+  if (setupNotice) request.stderr.write(`${setupNotice}\n`);
+}
+
 async function renderVercelReadyBlock(
   request: ProviderBranchRequest,
   sandbox: VercelSandboxHandle,
   setupStatus: VercelSetupStatus | null,
   token: string,
 ): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
-  request.stderr.write('Vercel devbox ready\n');
-  for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
-  request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
-  request.stderr.write(`  remove: devbox ${request.branch} --provider vercel --rm\n`);
-  const setupNotice = renderSetupNotice(setupStatus);
-  if (setupNotice) request.stderr.write(`${setupNotice}\n`);
+  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox ready');
 }
 
 async function renderVercelAttachNotice(
@@ -762,13 +786,23 @@ async function renderVercelAttachNotice(
   setupStatus: VercelSetupStatus | null,
   token: string,
 ): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
-  const noVnc = routes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
-  request.stderr.write(noVnc
-    ? `Vercel devbox resumed; ${noVnc.line}\n`
-    : 'Vercel devbox resumed\n');
-  const setupNotice = renderSetupNotice(setupStatus);
-  if (setupNotice) request.stderr.write(`${setupNotice}\n`);
+  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed');
+}
+
+/**
+ * Recover the branch a listed Sandbox belongs to.
+ *
+ * The branch tag is `sanitize(branch)-<hash>`, which is not reversible in
+ * general -- `feat/foo` sanitizes to `feat-foo`. Strip the hash and keep the
+ * result only when it rebuilds the identical tag, so the value printed is
+ * always one the user can actually pass back to devbox. Otherwise the raw tag
+ * is shown rather than a branch that would silently fail to match.
+ */
+function branchFromTag(tag: string | undefined): string | undefined {
+  if (!tag) return undefined;
+  const candidate = tag.replace(/-[a-f0-9]{16}$/, '');
+  if (candidate === tag) return undefined;
+  return createVercelBranchTag(candidate) === tag ? candidate : undefined;
 }
 
 function renderVercelRoutes(

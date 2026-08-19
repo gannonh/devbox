@@ -7,11 +7,28 @@ import type {
 } from './metadata-schema.js';
 
 export const DISPLAY_USERNAME = 'devbox' as const;
-export const DISPLAY_PASSWORD_BYTES = 32;
-export const DISPLAY_PASSWORD_ENCODING = 'base64url' as const;
 
+/**
+ * Crockford-style alphabet with 0/O and 1/I/L removed, so a code read off a
+ * screen and typed into the pairing form cannot be transcribed wrongly.
+ */
+const PAIRING_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+export const DISPLAY_CODE_LENGTH = 8;
+export const DISPLAY_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}$/;
+
+/**
+ * A short pairing code, not a password.
+ *
+ * The display link carries this code and the proxy exchanges it for a cookie,
+ * so it only has to survive being read aloud or typed once. 8 characters over a
+ * 32-symbol alphabet is 40 bits, which at any plausible online guess rate is
+ * out of reach, and the alphabet keeps it unambiguous. A 43-character base64url
+ * secret is unusable in the pairing form, which is what it is for.
+ */
 export function generateDisplayPassword(): string {
-  return randomBytes(DISPLAY_PASSWORD_BYTES).toString(DISPLAY_PASSWORD_ENCODING);
+  // 32 divides 256, so masking to 5 bits stays uniform.
+  const chars = Array.from(randomBytes(DISPLAY_CODE_LENGTH), (byte) => PAIRING_ALPHABET[byte & 31]).join('');
+  return `${chars.slice(0, 4)}-${chars.slice(4)}`;
 }
 
 export interface DisplayCredentialsResolution {

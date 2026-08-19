@@ -214,6 +214,7 @@ describe('Vercel URL output', () => {
       '  3000: https://sandbox.example/3000  (public)',
       '  5173: https://sandbox.example/5173  (Vite dev server — public)',
       `  ${NOVNC_LINE}`,
+      `  access code: ${DISPLAY_TOKEN}`,
       '  stop: devbox feature/ui --provider vercel --stop',
       '  remove: devbox feature/ui --provider vercel --rm',
       'setup running; log: /vercel/.devbox/runtime/setup.log',
@@ -289,7 +290,7 @@ describe('Vercel URL output', () => {
     expect(terminal.attach).not.toHaveBeenCalled();
   });
 
-  it('prints only a resumed noVNC notice on attach', async () => {
+  it('prints the full block on attach, not a single collapsed line', async () => {
     const routes = [
       { port: 3000, subdomain: 'sandbox', url: 'https://sandbox.example/3000' },
       { port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' },
@@ -313,13 +314,19 @@ describe('Vercel URL output', () => {
 
     await expect(test.provider.attach(test.request)).resolves.toEqual({ exitCode: 0 });
 
+    // Resume renders the same block as boot: a single line buried the display
+    // URL and left no way to stop or remove the box just attached to.
     const notice = test.errorOutput().slice(test.errorOutput().indexOf('Vercel devbox resumed'));
-    expect(notice).toBe(
-      `Vercel devbox resumed; ${NOVNC_LINE}\n`
-      + 'setup running; log: /vercel/.devbox/runtime/setup.log\n',
-    );
-    expect(notice).not.toContain('--stop');
-    expect(notice).not.toContain('3000:');
+    expect(notice).toBe([
+      'Vercel devbox resumed',
+      '  3000: https://sandbox.example/3000  (public)',
+      `  ${NOVNC_LINE}`,
+      `  access code: ${DISPLAY_TOKEN}`,
+      '  stop: devbox feature/ui --provider vercel --stop',
+      '  remove: devbox feature/ui --provider vercel --rm',
+      'setup running; log: /vercel/.devbox/runtime/setup.log',
+      '',
+    ].join('\n'));
   });
   it('keeps --url working with unlabeled routes when devcontainer.json is malformed', async () => {
     const test = await fixture(

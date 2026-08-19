@@ -123,9 +123,13 @@ export function mapVercelError(
     );
   }
   if (error instanceof VercelResourceNotFoundError || lifecycleCode === 'resource_not_found') {
+    // `command` is the action that just failed; --attach and --stop do not
+    // create anything, so point at the boot command instead of looping the
+    // user back onto the command they just ran.
     return new VercelProviderError(
       'missing',
-      `No matching Vercel sandbox was found; run ${command} to create it again.`,
+      `No matching Vercel sandbox was found for branch '${context.branch ?? '<branch>'}';`
+      + ` run ${createRecoveryCommand(context)} to create it.`,
     );
   }
   if (lifecycleCode === 'stale') {
@@ -288,6 +292,12 @@ function recoveryCommand(context: VercelErrorContext): string {
     case 'up': return base;
     default: return base;
   }
+}
+
+/** The command that actually creates a box, whatever action failed. */
+function createRecoveryCommand(context: VercelErrorContext): string {
+  if (context.action === 'list') return 'devbox --provider vercel --list';
+  return `devbox --provider vercel ${context.branch ?? '<branch>'}`;
 }
 
 function removeRecoveryCommand(context: VercelErrorContext): string {
