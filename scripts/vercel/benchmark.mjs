@@ -433,15 +433,10 @@ async function syncRuntimeSecrets(adapter, sandbox, config, workspace, signal) {
   ], { signal });
   await assertCommand(adapter, sandbox, {
     cmd: 'sh',
-    args: ['-c', 'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token && rm -f /vercel/.devbox/runtime/github-token'],
-    signal,
-  }, 'runtime GitHub authentication');
-  await assertCommand(adapter, sandbox, {
-    cmd: 'sh',
-    args: ['-c', 'if [ ! -e .env ]; then ln -s /vercel/.env .env; fi'],
+    args: ['-c', 'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token && rm -f /vercel/.devbox/runtime/github-token && if [ ! -e .env ]; then ln -s /vercel/.env .env; fi'],
     cwd: workspace,
     signal,
-  }, 'runtime environment link');
+  }, 'runtime GitHub authentication');
 }
 
 async function startDisplayAndProbe(adapter, sandbox, config, signal) {
@@ -458,8 +453,12 @@ async function startDisplayAndProbe(adapter, sandbox, config, signal) {
     timeoutMs: config.stageTimeoutMs,
   });
   await waitForCommand(started, signal);
-  const status = await command(adapter, sandbox, { cmd: '/usr/local/bin/devbox-status', signal });
-  if (status.exitCode !== 0 || !['Xvfb', 'fluxbox', 'x11vnc', 'websockify', 'auth-proxy'].every((service) => status.stdout.includes(`[devbox-status] ${service}=running`))) {
+  const status = await command(adapter, sandbox, {
+    cmd: 'sh',
+    args: ['-c', 'pgrep -x Xvfb >/dev/null && pgrep -x fluxbox >/dev/null && pgrep -x x11vnc >/dev/null && pgrep -f "[w]ebsockify" >/dev/null && pgrep -f "[b]asic-auth-proxy.mjs" >/dev/null'],
+    signal,
+  });
+  if (status.exitCode !== 0) {
     throw new Error('display services are not ready');
   }
   await probeAuthenticatedNoVnc(adapter.domain(sandbox, NOVNC_PORT), password, signal);
@@ -476,13 +475,22 @@ async function checkPorts(routes, signal) {
 }
 
 async function checkRuntimeReadiness(adapter, sandbox, workspace, signal) {
-  for (const agent of ['pi', 'claude', 'codex', 'opencode']) {
-    await assertCommand(adapter, sandbox, { cmd: agent, args: ['--version'], signal }, `${agent} image check`);
-  }
-  await assertCommand(adapter, sandbox, { cmd: 'gh', args: ['auth', 'status', '--hostname', 'github.com'], signal }, 'runtime GitHub auth check');
-  await assertCommand(adapter, sandbox, { cmd: 'test', args: ['-e', '/vercel/.env'], signal }, 'runtime environment check');
-  const branch = await commandText(adapter, sandbox, { cmd: 'git', args: ['branch', '--show-current'], cwd: workspace, signal });
-  if (!branch.trim()) throw new Error('interactive workspace has no branch');
+  await assertCommand(adapter, sandbox, {
+    cmd: 'bash',
+    args: ['-c', [
+      'set -e',
+      'pids=""',
+      'for agent in pi claude codex opencode; do',
+      '  "${agent}" --version >/dev/null 2>&1 & pids="${pids} $!"',
+      'done',
+      'for pid in ${pids}; do wait "${pid}"; done',
+      'gh auth status --hostname github.com >/dev/null 2>&1',
+      'test -e /vercel/.env',
+      'test -n "$(git branch --show-current)"',
+    ].join('\n')],
+    cwd: workspace,
+    signal,
+  }, 'runtime readiness checks');
 }
 
 async function runInteractiveTerminal(adapter, sandbox, cwd, marker, signal, timeoutMs) {
