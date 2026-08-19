@@ -683,7 +683,11 @@ jobs:
           # then prove the pin actually shipped.
           npm pack --ignore-scripts
           tarball="$(ls -1 *.tgz | head -1)"
-          tar -tzf "${tarball}" | grep -qx 'package/dist/vercel-image-pin.json' || {
+          # Capture the listing first: piping tar into `grep -q` makes grep exit
+          # on the first match, and the resulting SIGPIPE fails the pipeline
+          # under pipefail even though the file was found.
+          listing="$(tar -tzf "${tarball}")"
+          grep -qx 'package/dist/vercel-image-pin.json' <<<"${listing}" || {
             echo "packed tarball ${tarball} carries no image pin" >&2
             exit 1
           }
