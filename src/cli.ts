@@ -38,6 +38,7 @@ USAGE
   devbox [--provider local|vercel] <branch> --rm               remove container, worktree, and branch
   devbox [--provider local|vercel] <branch> --password         print the display access code (when supported)
   devbox [--provider local|vercel] --list|-l                  list provider devboxes
+  devbox --provider local|vercel                               set the provider for this repo
   devbox --help|-h                                             show this help
 
 OPTIONS
@@ -229,6 +230,7 @@ export class CliUsageError extends Error {
 export type ParsedCommand =
   | { kind: 'init'; force: boolean }
   | { kind: 'list'; provider?: ProviderName }
+  | { kind: 'set-provider'; provider: ProviderName }
   | { kind: 'branch'; branch: string; provider?: ProviderName; action: BranchAction }
   | { kind: 'help'; scope: 'global' | 'init' | 'list' | 'branch'; branch?: string; action?: BranchAction }
   | { kind: 'error'; message: string; exitCode: number };
@@ -418,7 +420,9 @@ export function parseCliArgs(args: string[]): ParsedCommand {
       if (next === '--help' || next === '-h') return parseGlobalHelp(args.slice(parsed.next + 1));
       if (next === '--provider') return usageError('conflicting --provider flags');
       if (next === 'init') return usageError('--provider cannot be used with init');
-      if (!next) return usageError('missing branch after --provider');
+      // `devbox --provider vercel` on its own sets the provider for this
+      // repository, which is the natural way to use a choice that sticks.
+      if (!next) return { kind: 'set-provider', provider: parsed.provider };
       if (next.startsWith('-')) return usageError(`branch is required before ${next}`);
       return parseBranch(next, args.slice(parsed.next + 1), parsed.provider);
     } catch (error) {
@@ -557,6 +561,12 @@ export async function dispatch(
   }
   const notice = describeProviderChoice(choice);
   if (notice) io.stderr.write(`${notice}\n`);
+
+  if (parsed.kind === 'set-provider') {
+    // resolveProviderChoice already persisted the explicit choice.
+    io.stdout.write(`provider set to ${choice.provider} for this repository\n`);
+    return 0;
+  }
 
   const context = {
     repoRoot: root,

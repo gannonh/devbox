@@ -197,6 +197,30 @@ describe('CLI provider routing', () => {
     expect(io.output().stderr).not.toContain('remembered');
   });
 
+  it('sets the provider for the repository with no branch and no action', async () => {
+    const root = repoRoot();
+    const local = provider('local');
+    const vercel = provider('vercel');
+    const registry: ProviderRegistry = { local, vercel };
+
+    const setIo = streams();
+    expect(await dispatch(['--provider', 'vercel'], setIo, { repoRoot: root, registry, tty: false })).toBe(0);
+    expect(setIo.output().stdout).toContain('provider set to vercel');
+    // Setting a preference must not run a lifecycle action.
+    expect(vercel.up).not.toHaveBeenCalled();
+    expect(vercel.list).not.toHaveBeenCalled();
+
+    // And it takes effect for later commands.
+    expect(await dispatch(['feature'], streams(), { repoRoot: root, registry, tty: false })).toBe(0);
+    expect(vercel.up).toHaveBeenCalledTimes(1);
+
+    const resetIo = streams();
+    expect(await dispatch(['--provider', 'local'], resetIo, { repoRoot: root, registry, tty: false })).toBe(0);
+    expect(resetIo.output().stdout).toContain('provider set to local');
+    expect(await dispatch(['feature'], streams(), { repoRoot: root, registry, tty: false })).toBe(0);
+    expect(local.up).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the remembered provider scoped to one repository', async () => {
     const chosen = repoRoot();
     const untouched = repoRoot();
