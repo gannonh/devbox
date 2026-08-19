@@ -238,7 +238,13 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         } catch {
           // No live resource remains; local recovery state is best effort.
         }
-        request.stderr.write(`Vercel sandbox for ${request.branch}: cleanup verified\n`);
+        // Removal stays idempotent, but must not report a deletion it did not
+        // perform: "cleanup verified" here is indistinguishable from having
+        // actually removed a box, which hides a mistyped branch.
+        request.stderr.write(
+          `No Vercel sandbox exists for ${request.branch}; nothing to remove.\n`
+          + '  run devbox --provider vercel --list to see existing boxes\n',
+        );
         return { exitCode: 0 };
       }
       const result = await prepared.lifecycle.remove();

@@ -1013,6 +1013,33 @@ describe('Vercel provider', () => {
     expect(client.deleteSandbox).toHaveBeenCalledOnce();
   });
 
+  it('reports a no-op removal honestly instead of claiming cleanup', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-remove-absent-'));
+    // Nothing local, nothing in the cloud: this is what a mistyped or
+    // already-removed branch looks like.
+    const client = {
+      listSandboxes: vi.fn(async () => []),
+      get: vi.fn(),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => {}),
+    } as unknown as VercelSandboxClient;
+    const provider = createVercelProvider({ runner: runner(), stateHome, client, resolveImage: resolveTestImage });
+
+    const stderr = new PassThrough();
+    const output: string[] = [];
+    stderr.on('data', (chunk) => output.push(chunk.toString()));
+
+    await expect(provider.remove(request({ branch: 'never-existed', stderr, tty: false })))
+      .resolves.toEqual({ exitCode: 0 });
+
+    const text = output.join('');
+    // Idempotent, but it must not read as though a box was deleted.
+    expect(text).toContain('No Vercel sandbox exists for never-existed');
+    expect(text).not.toContain('cleanup verified');
+    expect(client.deleteSandbox).not.toHaveBeenCalled();
+  });
+
   it('recovers and removes a lost old-version sandbox from authoritative branch tags', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-recovery-old-version-'));
     const remote = 'github.com/acme/repo';
