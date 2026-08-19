@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -183,7 +184,18 @@ describe('VCR channel resolution', () => {
     await expect(resolve('nightly', credentials)).rejects.toThrow(/does not exist/);
   });
 
-  it('fails closed when the registry omits the digest header', async () => {
+  it('derives the digest from the manifest bytes when the header is absent', async () => {
+    // Docker-Content-Digest is only RECOMMENDED, and the digest is by
+    // definition the hash of the manifest the registry just returned.
+    const manifest = '{"schemaVersion":2,"layers":[]}';
+    const expected = `sha256:${createHash('sha256').update(manifest).digest('hex')}`;
+    const fetchImpl = (async () => new Response(manifest, { status: 200 })) as unknown as typeof globalThis.fetch;
+
+    const resolve = createVcrChannelResolver({ fetch: fetchImpl, repository });
+    await expect(resolve('nightly', credentials)).resolves.toBe(expected);
+  });
+
+  it('fails closed when the registry returns neither a digest header nor a manifest', async () => {
     const resolve = createVcrChannelResolver({ fetch: respond({ status: 200 }), repository });
 
     await expect(resolve('nightly', credentials)).rejects.toThrow(/did not return a manifest digest/);

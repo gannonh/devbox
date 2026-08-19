@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { VercelCredentials } from './auth.js';
 import {
   VercelImageResolutionError,
@@ -88,12 +89,18 @@ export function createVcrChannelResolver(
       );
     }
 
-    const digest = response.headers.get('docker-content-digest');
-    if (!digest) {
+    // Docker-Content-Digest is only RECOMMENDED by the distribution spec. When
+    // it is absent the digest is still knowable: it is the hash of the manifest
+    // bytes the registry just returned.
+    const reported = response.headers.get('docker-content-digest')?.trim();
+    if (reported) return reported;
+
+    const manifest = Buffer.from(await response.arrayBuffer());
+    if (manifest.length === 0) {
       throw new VercelImageResolutionError(
         `Vercel container registry did not return a manifest digest for image channel '${channel}'`,
       );
     }
-    return digest.trim();
+    return `sha256:${createHash('sha256').update(manifest).digest('hex')}`;
   };
 }
