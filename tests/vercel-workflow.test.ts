@@ -146,7 +146,11 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain("if: ${{ needs.candidate.outputs.image_reused == 'true' }}");
     expect(workflow).toContain("if: ${{ needs.candidate.outputs.image_reused != 'true' }}");
     expect(workflow).toContain('prior nightly pin is');
-    expect(workflow).toContain('image reuse needs a prior nightly to carry the pin');
+    // Reuse is only safe when the pin for that digest can actually be
+    // recovered; otherwise the run builds, which is also how the first ever
+    // run bootstraps before any nightly exists.
+    expect(workflow).toContain('nightly-pin.mjs');
+    expect(workflow).toContain('building to produce evidence');
     // The content key is only recorded for a digest that passed both gates.
     expect(workflow).toMatch(/Record the image content key[\s\S]*?steps\.drift\.outputs\.skip != 'true'/);
   });
@@ -401,6 +405,7 @@ describe('Vercel image and release workflows', () => {
       exists('scripts/vercel/assert-zstd-manifest.mjs'),
       exists('scripts/vercel/emit-image-pin.mjs'),
       exists('scripts/vercel/retag-image.mjs'),
+      exists('scripts/vercel/nightly-pin.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),
     ]);
   });

@@ -232,11 +232,23 @@ jobs:
             --scope "${PUBLISHER_TEAM_SLUG}" --format json 2>/dev/null \
             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s.slice(s.indexOf("{")));const usable=j.status==="ready"&&j.kind==="manifest";process.stdout.write(usable?(j.manifestDigest??""):"")}catch{process.stdout.write("")}})' || true)"
 
-          if [[ "${existing}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+          # A reuse run inherits the pin the nightly published for this digest.
+          # If that pin cannot be recovered there is no evidence to carry, so
+          # build instead of reusing -- which is also how the very first run
+          # bootstraps, before any nightly has been published.
+          prior_digest=''
+          if prior="$(node scripts/vercel/nightly-pin.mjs 2>/dev/null)"; then
+            prior_digest="$(node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).reference.split("@").pop()' <<<"${prior}" 2>/dev/null || echo '')"
+          fi
+
+          if [[ "${existing}" =~ ^sha256:[a-f0-9]{64}$ && "${prior_digest}" == "${existing}" ]]; then
             echo 'skip=true' >> "$GITHUB_OUTPUT"
             echo "reuse_digest=${existing}" >> "$GITHUB_OUTPUT"
             echo "reuse_reference=${repository}@${existing}" >> "$GITHUB_OUTPUT"
             echo "images/vercel unchanged (${content_tag}); reusing ${existing} without rebuilding."
+          elif [[ "${existing}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+            echo "images/vercel unchanged, but no published nightly carries a pin for ${existing}; building to produce evidence."
           else
             echo 'skip=false' >> "$GITHUB_OUTPUT"
             echo "images/vercel changed or has no built image (${content_tag}); building a candidate."
@@ -593,30 +605,23 @@ jobs:
       # A reuse run produced no evidence of its own, and must not invent any.
       # The pin belongs to the image: take the one the last nightly published
       # for this exact digest, and refuse it if the digests disagree.
+      # A reuse run produced no evidence of its own, and must not invent any.
+      # The pin belongs to the image: take the one the last nightly published
+      # for this exact digest, and refuse it if the digests disagree.
       - name: Reuse the pin already published for this digest
         if: ${{ needs.candidate.outputs.image_reused == 'true' }}
         env:
           CANDIDATE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
         run: |
           set -euo pipefail
-          version="$(npm view @gannonh/devbox dist-tags.nightly 2>/dev/null || true)"
-          [[ -n "${version}" ]] || {
-            echo 'image reuse needs a prior nightly to carry the pin; none is published' >&2
-            exit 1
-          }
-          work="${RUNNER_TEMP}/prior-nightly"
-          mkdir -p "${work}"
-          ( cd "${work}" && npm pack "@gannonh/devbox@${version}" >/dev/null && tar -xzf ./*.tgz )
-          pin="${work}/package/dist/vercel-image-pin.json"
-          [[ -f "${pin}" ]] || { echo "nightly ${version} carries no image pin" >&2; exit 1; }
-          reference="$(node -p "require('${pin}').reference")"
+          node scripts/vercel/nightly-pin.mjs > dist/vercel-image-pin.json
+          reference="$(node -p "require('./dist/vercel-image-pin.json').reference")"
           [[ "${reference##*@}" == "${CANDIDATE_DIGEST}" ]] || {
             echo "prior nightly pin is ${reference##*@}, expected ${CANDIDATE_DIGEST}" >&2
             exit 1
           }
-          cp "${pin}" dist/vercel-image-pin.json
           npm run validate:release
-          echo "Reused the pin published with ${version} for ${CANDIDATE_DIGEST}"
+          echo "Reused the published pin for ${CANDIDATE_DIGEST}"
 
       - name: Emit image pin from validated evidence
         if: ${{ needs.candidate.outputs.image_reused != 'true' }}
