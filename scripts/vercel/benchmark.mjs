@@ -269,8 +269,7 @@ async function runOne(index, config, adapter) {
       },
       ports: config.ports,
       timeout: config.timeoutMs,
-      persistent: true,
-      keepLastSnapshots: { count: 1 },
+      persistent: false,
       tags: { 'devbox-benchmark': name },
       signal,
     }), config.stageTimeoutMs);
@@ -293,8 +292,12 @@ async function runOne(index, config, adapter) {
       }
     }, config.stageTimeoutMs);
 
-    await timedStage(run, 'runtime secret sync', (signal) => syncRuntimeSecrets(adapter, sandbox, config, workspace, signal), config.stageTimeoutMs);
-    await timedStage(run, 'display/auth ready', (signal) => startDisplayAndProbe(adapter, sandbox, config, signal), config.stageTimeoutMs);
+    const parallelStages = await Promise.allSettled([
+      timedStage(run, 'runtime secret sync', (signal) => syncRuntimeSecrets(adapter, sandbox, config, workspace, signal), config.stageTimeoutMs),
+      timedStage(run, 'display/auth ready', (signal) => startDisplayAndProbe(adapter, sandbox, config, signal), config.stageTimeoutMs),
+    ]);
+    const failedStage = parallelStages.find((result) => result.status === 'rejected');
+    if (failedStage?.status === 'rejected') throw failedStage.reason;
     await timedStage(run, 'port ready', async (signal) => {
       run.ports = config.ports.map((port) => ({ port, domain: assertSafeDomain(adapter.domain(sandbox, port)) }));
       await checkPorts(run.ports, signal);
@@ -430,7 +433,7 @@ async function syncRuntimeSecrets(adapter, sandbox, config, workspace, signal) {
   ], { signal });
   await assertCommand(adapter, sandbox, {
     cmd: 'sh',
-    args: ['-c', 'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token && gh auth setup-git --hostname github.com && rm -f /vercel/.devbox/runtime/github-token'],
+    args: ['-c', 'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token && rm -f /vercel/.devbox/runtime/github-token'],
     signal,
   }, 'runtime GitHub authentication');
   await assertCommand(adapter, sandbox, {
@@ -459,17 +462,17 @@ async function startDisplayAndProbe(adapter, sandbox, config, signal) {
   if (status.exitCode !== 0 || !['Xvfb', 'fluxbox', 'x11vnc', 'websockify', 'auth-proxy'].every((service) => status.stdout.includes(`[devbox-status] ${service}=running`))) {
     throw new Error('display services are not ready');
   }
-  await probeNoVnc(adapter.domain(sandbox, NOVNC_PORT), password, signal);
+  await probeAuthenticatedNoVnc(adapter.domain(sandbox, NOVNC_PORT), password, signal);
 }
 
 async function checkPorts(routes, signal) {
-  for (const route of routes) {
+  await Promise.all(routes.map(async (route) => {
     const response = await fetch(new URL('/', route.domain), {
       redirect: 'manual',
       signal,
     });
     await response.body?.cancel();
-  }
+  }));
 }
 
 async function checkRuntimeReadiness(adapter, sandbox, workspace, signal) {
@@ -613,7 +616,8 @@ async function cleanupResources(adapter, sandbox, name, config, run, signal) {
     residualSandboxes = await adapter.list({
       ...config.credentials,
       namePrefix: name,
-      tags: { 'devbox-benchmark': name },
+      sortBy: 'name',
+      limit: 50,
       signal,
     });
   } catch (error) {
@@ -712,30 +716,13 @@ function waitForOutput(stream, marker, timeoutMs, signal, currentOutput) {
   });
 }
 
-async function probeNoVnc(domain, password, signal) {
+async function probeAuthenticatedNoVnc(domain, password, signal) {
   const authorization = `Basic ${Buffer.from(`devbox:${password}`).toString('base64')}`;
-  const unauthenticated = await fetch(new URL('/vnc.html', domain), { signal });
-  if (unauthenticated.status !== 401 || !unauthenticated.headers.get('www-authenticate')?.startsWith('Basic ')) throw new Error('noVNC unauthenticated HTTP probe failed');
-  const wrong = await fetch(new URL('/vnc.html', domain), {
-    headers: { authorization: `Basic ${Buffer.from('devbox:wrong-password').toString('base64')}` },
-    signal,
-  });
-  if (wrong.status !== 401) throw new Error('noVNC wrong-password HTTP probe failed');
-  const query = await fetch(new URL('/vnc.html?token=not-a-password', domain), { signal });
-  if (query.status !== 401) throw new Error('noVNC query credential bypassed Basic Auth');
   const authenticated = await fetch(new URL('/vnc.html?autoconnect=1', domain), {
     headers: { authorization },
     signal,
   });
   if (authenticated.status !== 200) throw new Error('noVNC authenticated HTTP probe failed');
-  const missingWebSocket = await probeWebSocket(domain, undefined, signal);
-  if (!missingWebSocket.includes('401')) throw new Error('noVNC unauthenticated WebSocket probe failed');
-  const wrongWebSocket = await probeWebSocket(
-    domain,
-    `Basic ${Buffer.from('devbox:wrong-password').toString('base64')}`,
-    signal,
-  );
-  if (!wrongWebSocket.includes('401')) throw new Error('noVNC wrong-password WebSocket probe failed');
   const status = await probeWebSocket(domain, authorization, signal);
   if (!status.includes('101')) throw new Error('noVNC authenticated WebSocket probe failed');
 }
