@@ -84,6 +84,17 @@ describe('release workflow contract', () => {
     expect(String(resolve.run)).not.toContain('git tag --list');
   });
 
+  it('checks out the repository before promoting its image', async () => {
+    const wf = await loadWorkflow();
+    const jobs = wf.jobs as Record<string, Record<string, unknown>>;
+    const promote = jobs['promote-image'] as { steps: Array<Record<string, unknown>> };
+    const names = stepNames(promote.steps);
+    const checkout = promote.steps[names.indexOf('Checkout')];
+
+    expect(checkout?.uses).toMatch(/^actions\/checkout@[a-f0-9]{40}/);
+    expect(names.indexOf('Checkout')).toBeLessThan(names.indexOf('Move the proven digest to the stable channel'));
+  });
+
   it('runs on ubuntu-latest', async () => {
     const wf = await loadWorkflow();
     const jobs = wf.jobs as Record<string, Record<string, unknown>>;
