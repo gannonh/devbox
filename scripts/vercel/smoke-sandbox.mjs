@@ -6,7 +6,7 @@
  * prints token/password values and always attempts to stop/delete the Sandbox,
  * verify terminal VM sessions, then clean up matching snapshots.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import net from 'node:net';
@@ -431,6 +431,32 @@ try {
     }
   }
   if (!binaryProbesPassed) throw new Error('one or more working-binary probes failed');
+
+  // Candidate validation: every agent declared in images/vercel/agents.json
+  // must be installed at its exact pinned version inside the Sandbox. A stale
+  // or partially updated image fails here, before any promotion can occur.
+  const agentManifest = JSON.parse(await readFile('images/vercel/agents.json', 'utf8'));
+  let agentChecksPassed = true;
+  for (const [name, agent] of Object.entries(agentManifest.agents)) {
+    try {
+      const probe = await command(agent.binary, [agent.versionFlag]);
+      const output = `${probe.stdout}\n${probe.stderr}`.trim();
+      agentChecksPassed = recordCheck(
+        `agent ${name} version`,
+        probe.exitCode === 0 && output.includes(agent.version),
+        output,
+      ) && agentChecksPassed;
+    } catch (error) {
+      agentChecksPassed = recordCheck(
+        `agent ${name} version`,
+        false,
+        error instanceof Error ? error.message : error,
+      ) && agentChecksPassed;
+    }
+  }
+  if (!agentChecksPassed) {
+    throw new Error('one or more declared agent versions are missing or stale in the candidate image');
+  }
 
   const startResult = await timed('startup', async (signal) => {
     const start = await sandbox.runCommand({

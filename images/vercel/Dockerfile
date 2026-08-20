@@ -72,6 +72,10 @@ ARG UBUNTU_SNAPSHOT=20260801T000000Z
 
 COPY --from=node /opt/node /usr/local
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
+# Coding-agent pins derive from agents.json at build time. The manifest is the
+# single source of truth (Dockerfile, provenance, and smoke gates all agree),
+# so a partial update cannot be built: agents.json and the build fail together.
+COPY agents.json /usr/local/share/devbox/agents.json
 
 RUN set -eux; \
     ln -s bun /usr/local/bin/bunx; \
@@ -122,13 +126,14 @@ RUN set -eux; \
     python -m pip install --no-cache-dir "pip==25.1.1" "uv==0.12.2"; \
     rm -rf /root/.cache/pip /var/lib/apt/lists/*; \
     git lfs install --system; \
+    agent_version() { jq -r --arg agent "$1" '.agents[$agent].version' /usr/local/share/devbox/agents.json; }; \
     npm install -g \
       npm@11.17.0 \
       pnpm@11.20.0 \
-      opencode-ai@1.18.15 \
-      @anthropic-ai/claude-code@2.1.224 \
-      @openai/codex@0.147.0 \
-      @earendil-works/pi-coding-agent@0.84.1; \
+      "opencode-ai@$(agent_version opencode)" \
+      "@anthropic-ai/claude-code@$(agent_version claude)" \
+      "@openai/codex@$(agent_version codex)" \
+      "@earendil-works/pi-coding-agent@$(agent_version pi)"; \
     npm cache clean --force; \
     node --version | grep -F 'v24.19.0'; \
     npm --version | grep -F '11.17.0'; \
@@ -138,10 +143,10 @@ RUN set -eux; \
     pip --version | grep -F '25.1.1'; \
     uv --version | grep -F '0.12.2'; \
     gh --version | grep -F 'gh version 2.97.0'; \
-    opencode --version | grep -F '1.18.15'; \
-    claude --version | grep -F '2.1.224'; \
-    codex --version | grep -F '0.147.0'; \
-    pi --version | grep -F '0.84.1'
+    opencode --version | grep -F "$(agent_version opencode)"; \
+    claude --version | grep -F "$(agent_version claude)"; \
+    codex --version | grep -F "$(agent_version codex)"; \
+    pi --version | grep -F "$(agent_version pi)"
 
 RUN chown -R ubuntu:ubuntu /vercel
 

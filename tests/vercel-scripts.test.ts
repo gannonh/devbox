@@ -217,6 +217,11 @@ describe('Vercel supply-chain script boundaries', () => {
     for (const probe of probeBlock.matchAll(/'([^ ']+)[^']*'/g)) {
       literal.add(`binary ${probe[1]}`);
     }
+    // `agent <name> version` checks are generated from the version manifest.
+    const agentManifest = JSON.parse(await readFile('images/vercel/agents.json', 'utf8'));
+    for (const name of Object.keys(agentManifest.agents)) {
+      literal.add(`agent ${name} version`);
+    }
 
     const missing = REQUIRED_SMOKE_CHECKS.filter((name: string) => !literal.has(name));
     expect(missing, `contract requires checks the smoke never records: ${missing.join(', ')}`)

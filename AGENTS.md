@@ -15,6 +15,7 @@
   gh workflow run nightly.yml --ref <branch> -f publish=true   # also publish @dev-<branch>
   gh run watch
   ```
+- Coding-agent versions live in `images/vercel/agents.json` (the Dockerfile derives from it). The **Agent refresh** workflow checks daily and on manual dispatch for registry drift, validates an immutable candidate, and opens a reviewable promotion PR on `agent-update/agents`; merging the PR is the approval, and the scheduled Nightly then promotes the identical digest. It never retags a channel itself. Manual urgent refresh: `gh workflow run agent-refresh.yml -f agents=pi,claude`. See `docs/runbooks/agent-version-refresh.md`.
 - Before calling UAT blocked, check `gh secret list` (names only) and the run's failure reason. A green CI run proves nothing about the cloud path — CI is credential-free by design. Only report missing credentials after a dispatched Nightly reaches its configuration gate and fails.
 - The image pin is a build output, never source. Do not add a digest to `src/`; `scripts/vercel/emit-image-pin.mjs` writes it into `dist/` at publish time, and a checkout resolves the `nightly` channel. Set `DEVBOX_VERCEL_IMAGE` to a fully-qualified digest to run a locally built image. See [ADR 0004](docs/adrs/0004-image-pin-as-build-output.md).
 - Never expose secret values from `.env`, `.env.local`, GitHub Actions, command output, logs, evidence, or metadata.

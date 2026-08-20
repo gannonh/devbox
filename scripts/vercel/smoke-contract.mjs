@@ -34,6 +34,11 @@ export const REQUIRED_SMOKE_CHECKS = Object.freeze([
   'binary claude',
   'binary codex',
   'binary opencode',
+  // Exact installed versions of the declared agents (images/vercel/agents.json).
+  'agent pi version',
+  'agent claude version',
+  'agent codex version',
+  'agent opencode version',
   'binary gh',
   'binary node',
   'binary bun',

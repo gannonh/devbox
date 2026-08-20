@@ -193,7 +193,11 @@ inputs: the audited upstream repository and `UPSTREAM_COMMIT`, hashes of the
 upstream Ubuntu and Universal Dockerfiles, digest-pinned Ubuntu/Bun bases, the
 Node archive checksum, dated apt snapshot, and exact runtime package versions.
 The managed VMI digest and version inventory are parity evidence only; Docker
-never attempts to pull the managed VMI.
+never attempts to pull the managed VMI. Coding-agent versions (Pi, Claude Code,
+Codex, OpenCode) are declared in `images/vercel/agents.json`; the Dockerfile
+derives its pins from that manifest, and the daily
+[agent version refresh](agent-version-refresh.md) runbook keeps them current
+through reviewable promotion PRs.
 
 `images/vercel/Dockerfile` reproduces that reviewed upstream recipe, then adds
 Chromium, Xvfb, fluxbox, x11vnc, noVNC/websockify, and the pairing noVNC proxy.
@@ -231,7 +235,10 @@ To update Universal, fetch the proposed upstream commit, hash its
 changes, then update every affected digest, checksum, version, and snapshot in
 `provenance.json` and the Dockerfile together. A reviewed provenance update must
 pass the local image check and both real Sandbox smoke gates; never update only
-the commit or restore floating inputs.
+the commit or restore floating inputs. To update a coding agent instead, merge
+an **Agent refresh** promotion PR (see
+[agent version refresh](agent-version-refresh.md)); never hand-edit agent pins
+in the Dockerfile, which derives them from `agents.json` at build time.
 
 ## The three channels
 

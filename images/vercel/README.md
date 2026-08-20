@@ -6,6 +6,10 @@ x11vnc, noVNC/websockify, and an access-code pairing noVNC proxy. The
 checked-in [`provenance.json`](./provenance.json) is the source of truth for
 the upstream commit and recipe hashes, observed managed-VMI inventory, base
 references, Node checksum, apt snapshot, and exact runtime package versions.
+Coding-agent versions (Pi, Claude Code, Codex, OpenCode) are declared in
+[`agents.json`](./agents.json); the Dockerfile derives its install pins from
+that manifest at build time, so the manifest is the only place an agent
+version is declared.
 
 ## Build
 

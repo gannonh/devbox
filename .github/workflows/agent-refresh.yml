@@ -1,0 +1,540 @@
+name: Agent refresh
+
+# Keeps the coding-agent versions declared in images/vercel/agents.json
+# current. Runs on a schedule (daily, after the Nightly build) or by manual
+# dispatch for an urgent refresh. It detects drift against the npm registry,
+# applies the updates to the manifest + provenance, builds an immutable
+# candidate image, validates it (manifest contract, provenance, zstd manifest,
+# VCR readiness, exact-digest publisher + consumer Sandbox smokes), and opens
+# or updates ONE reviewable promotion PR on the fixed `agent-update/agents`
+# branch. Merging that PR is the human approval; the scheduled Nightly then
+# builds the identical content and moves the nightly channel to the same
+# digest. Nothing in this workflow retags a channel or changes the production
+# pin: a failed candidate leaves the pin untouched and fails the run loudly.
+concurrency:
+  group: devbox-agent-refresh
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      agents:
+        description: 'Comma-separated agent names to refresh (default: all declared agents)'
+        required: false
+        type: string
+  schedule:
+    - cron: '0 4 * * *'
+
+permissions:
+  contents: read
+
+env:
+  VERCEL_IMAGE_REPOSITORY: devbox
+  SMOKE_TIMEOUT_MS: '600000'
+  SMOKE_SDK_TIMEOUT_MS: '30000'
+  SMOKE_COMMAND_TIMEOUT_MS: '60000'
+  SMOKE_HTTP_TIMEOUT_MS: '10000'
+  SMOKE_CLEANUP_TIMEOUT_MS: '120000'
+  SMOKE_DELETE_VERIFY_TIMEOUT_MS: '30000'
+
+jobs:
+  # Credential-free detection. When nothing drifted, the workflow ends here
+  # green and no write-capable token was ever minted.
+  detect:
+    name: Detect available agent updates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_updates: ${{ steps.check.outputs.has_updates }}
+      agents: ${{ steps.check.outputs.agents }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check declared agents against the registry
+        id: check
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/agent-drift.json"
+          if [[ -n "${{ inputs.agents }}" ]]; then
+            node scripts/vercel/check-agent-updates.mjs --out "${report}" --agents "${{ inputs.agents }}"
+          else
+            node scripts/vercel/check-agent-updates.mjs --out "${report}"
+          fi
+          updates="$(node -p "JSON.parse(require('fs').readFileSync('${report}', 'utf8')).updates.join(',')")"
+          if [[ -n "${updates}" ]]; then
+            echo "has_updates=true" >> "$GITHUB_OUTPUT"
+            echo "agents=${updates}" >> "$GITHUB_OUTPUT"
+            echo "::notice::Agent updates available: ${updates}"
+            node -p "JSON.parse(require('fs').readFileSync('${report}', 'utf8')).agents.map(a => a.name + ': ' + a.declared + ' -> ' + a.latest).join('\n')" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "has_updates=false" >> "$GITHUB_OUTPUT"
+            echo "All declared coding agents are current; no candidate build needed."
+          fi
+
+  refresh:
+    name: Build and smoke the candidate, then open the promotion PR
+    needs: detect
+    if: >-
+      needs.detect.outputs.has_updates == 'true' &&
+      (github.event_name != 'workflow_dispatch' || github.actor == github.repository_owner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      AGENT_FILTER: ${{ needs.detect.outputs.agents }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install audited Vercel CLI
+        # Keep VCR JSON/scope behavior reproducible; update only with a reviewed audit.
+        run: npm install --global vercel@58.11.0 --no-audit --no-fund
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Validate scoped publisher configuration
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+        run: |
+          set -euo pipefail
+          test -n "${VERCEL_PUBLISHER_TOKEN}" || { echo 'publisher token secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_TEAM_ID}" || { echo 'publisher team ID secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_PROJECT_ID}" || { echo 'publisher project ID secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_TEAM_SLUG}" || { echo 'publisher team slug secret is missing' >&2; exit 1; }
+          test -n "${VERCEL_PUBLISHER_PROJECT_SLUG}" || { echo 'publisher project slug secret is missing' >&2; exit 1; }
+          slug_re='^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'
+          [[ "${VERCEL_PUBLISHER_TEAM_SLUG}" =~ ${slug_re} ]] || { echo 'publisher team slug is malformed' >&2; exit 1; }
+          [[ "${VERCEL_PUBLISHER_PROJECT_SLUG}" =~ ${slug_re} ]] || { echo 'publisher project slug is malformed' >&2; exit 1; }
+          artifact_dir="${RUNNER_TEMP}/vercel-image-evidence"
+          echo "ARTIFACT_DIR=${artifact_dir}" >> "$GITHUB_ENV"
+          mkdir -p "${artifact_dir}"
+
+      - name: Validate independent consumer configuration
+        env:
+          PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          PUBLISHER_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          CONSUMER_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          CONSUMER_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          CONSUMER_TEAM_SLUG: ${{ secrets.VERCEL_CONSUMER_TEAM_SLUG }}
+          CONSUMER_PROJECT_SLUG: ${{ secrets.VERCEL_CONSUMER_PROJECT_SLUG }}
+        run: |
+          set -euo pipefail
+          for name in CONSUMER_TOKEN CONSUMER_TEAM_ID CONSUMER_PROJECT_ID CONSUMER_TEAM_SLUG CONSUMER_PROJECT_SLUG; do
+            test -n "${!name}" || { echo "${name} secret is missing" >&2; exit 1; }
+          done
+          if [[ "${PUBLISHER_TOKEN}" == "${CONSUMER_TOKEN}" ]]; then
+            echo 'consumer token must be different from the publisher token' >&2
+            exit 1
+          fi
+          slug_re='^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'
+          [[ "${CONSUMER_TEAM_SLUG}" =~ ${slug_re} ]] || { echo 'consumer team slug is malformed' >&2; exit 1; }
+          [[ "${CONSUMER_PROJECT_SLUG}" =~ ${slug_re} ]] || { echo 'consumer project slug is malformed' >&2; exit 1; }
+          if [[ "${PUBLISHER_TEAM_ID}" == "${CONSUMER_TEAM_ID}" && "${PUBLISHER_PROJECT_ID}" == "${CONSUMER_PROJECT_ID}" ]]; then
+            echo 'consumer credentials must target a different Vercel team or project' >&2
+            exit 1
+          fi
+          if [[ "${PUBLISHER_TEAM_SLUG}" == "${CONSUMER_TEAM_SLUG}" && "${PUBLISHER_PROJECT_SLUG}" == "${CONSUMER_PROJECT_SLUG}" ]]; then
+            echo 'consumer slugs must target a different Vercel team or project' >&2
+            exit 1
+          fi
+
+      - name: Validate mirrored Universal provenance
+        id: provenance
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs');
+          const provenance = JSON.parse(fs.readFileSync('images/vercel/provenance.json', 'utf8'));
+          const requiredRuntimePackages = ['npm', 'pnpm', 'python', 'pip', 'uv', 'gh', 'pi', 'claude', 'codex', 'opencode'];
+          const managedVersions = provenance.observedManagedVmi?.versions ?? {};
+          const runtimePackages = provenance.runtimePackages ?? {};
+          const required = [
+            provenance.schemaVersion === 1,
+            provenance.platform === 'linux/amd64',
+            /^https:\/\/github\.com\/vercel\/sandbox$/.test(provenance.upstream?.repository ?? ''),
+            /^[a-f0-9]{40}$/.test(provenance.upstream?.commit ?? ''),
+            /^[a-f0-9]{64}$/.test(provenance.upstream?.ubuntuDockerfileSha256 ?? ''),
+            /^[a-f0-9]{64}$/.test(provenance.upstream?.universalDockerfileSha256 ?? ''),
+            /^sha256:[a-f0-9]{64}$/.test(provenance.observedManagedVmi?.digest ?? ''),
+            managedVersions.user === 'ubuntu',
+            managedVersions.node === provenance.node?.version,
+            managedVersions.bun === '1.3.14',
+            requiredRuntimePackages.every((name) => /^\d+\.\d+\.\d+$/.test(runtimePackages[name] ?? '')),
+            requiredRuntimePackages.every((name) => managedVersions[name] === runtimePackages[name]),
+            /^docker\.io\/library\/ubuntu:26\.04@sha256:[a-f0-9]{64}$/.test(provenance.baseImages?.ubuntu ?? ''),
+            /^docker\.io\/oven\/bun:1\.3\.14@sha256:[a-f0-9]{64}$/.test(provenance.baseImages?.bun ?? ''),
+            provenance.node?.version === '24.19.0',
+            provenance.node?.platform === 'linux-x64',
+            /^[a-f0-9]{64}$/.test(provenance.node?.sha256 ?? ''),
+            /^\d+\.\d+\.\d+\.\d+$/.test(provenance.chromium?.version ?? ''),
+            provenance.chromium?.platform === 'linux64',
+            provenance.chromium?.url === `https://storage.googleapis.com/chrome-for-testing-public/${provenance.chromium?.version}/linux64/chrome-linux64.zip`,
+            /^[a-f0-9]{64}$/.test(provenance.chromium?.sha256 ?? ''),
+            /^\d{8}T\d{6}Z$/.test(provenance.aptSnapshot ?? ''),
+          ];
+          if (required.some((value) => !value)) throw new Error('mirrored Universal provenance is malformed or unpinned');
+          NODE
+          upstream_repository="$(node -p "JSON.parse(require('fs').readFileSync('images/vercel/provenance.json')).upstream.repository")"
+          upstream_commit="$(node -p "JSON.parse(require('fs').readFileSync('images/vercel/provenance.json')).upstream.commit")"
+          expected_ubuntu_hash="$(node -p "JSON.parse(require('fs').readFileSync('images/vercel/provenance.json')).upstream.ubuntuDockerfileSha256")"
+          expected_universal_hash="$(node -p "JSON.parse(require('fs').readFileSync('images/vercel/provenance.json')).upstream.universalDockerfileSha256")"
+          upstream_checkout="$(mktemp -d)"
+          trap 'rm -rf "${upstream_checkout}"' EXIT
+          git -C "${upstream_checkout}" init --quiet
+          git -C "${upstream_checkout}" fetch --quiet --depth 1 "${upstream_repository}.git" "${upstream_commit}"
+          actual_ubuntu_hash="$(git -C "${upstream_checkout}" show FETCH_HEAD:images/ubuntu/Dockerfile | sha256sum | awk '{print $1}')"
+          actual_universal_hash="$(git -C "${upstream_checkout}" show FETCH_HEAD:images/universal/Dockerfile | sha256sum | awk '{print $1}')"
+          [[ "${actual_ubuntu_hash}" == "${expected_ubuntu_hash}" ]] || { echo 'pinned upstream Ubuntu Dockerfile hash mismatch' >&2; exit 1; }
+          [[ "${actual_universal_hash}" == "${expected_universal_hash}" ]] || { echo 'pinned upstream Universal Dockerfile hash mismatch' >&2; exit 1; }
+          cp images/vercel/provenance.json "${ARTIFACT_DIR}/provenance.json"
+          ubuntu_base_reference="$(node -p "JSON.parse(require('fs').readFileSync('images/vercel/provenance.json')).baseImages.ubuntu")"
+          bun_base_reference="$(node -p "JSON.parse(require('fs').readFileSync('images/vercel/provenance.json')).baseImages.bun")"
+          echo "upstream_commit=${upstream_commit}" >> "$GITHUB_OUTPUT"
+          echo "ubuntu_base_reference=${ubuntu_base_reference}" >> "$GITHUB_OUTPUT"
+          echo "bun_base_reference=${bun_base_reference}" >> "$GITHUB_OUTPUT"
+
+      # Re-resolve drift in this job (fresh npm view) so the applied report is
+      # the one the candidate is built from.
+      - name: Resolve the update report
+        id: drift
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/agent-drift.json"
+          if [[ -n "${AGENT_FILTER}" ]]; then
+            node scripts/vercel/check-agent-updates.mjs --out "${report}" --agents "${AGENT_FILTER}"
+          else
+            node scripts/vercel/check-agent-updates.mjs --out "${report}"
+          fi
+          updates="$(node -p "JSON.parse(require('fs').readFileSync('${report}', 'utf8')).updates.join(',')")"
+          [[ -n "${updates}" ]] || { echo 'no agent updates remain; nothing to build' >&2; exit 1; }
+          echo "updates=${updates}" >> "$GITHUB_OUTPUT"
+          cp "${report}" "${ARTIFACT_DIR}/agent-drift.json"
+
+      - name: Apply the agent updates to the manifest and provenance
+        run: |
+          set -euo pipefail
+          node scripts/vercel/apply-agent-updates.mjs --report "${RUNNER_TEMP}/agent-drift.json"
+
+      - name: Assert the manifest contract
+        run: |
+          set -euo pipefail
+          node scripts/vercel/assert-agent-manifest.mjs
+
+      # One fixed promotion branch, one open PR. If the open PR already
+      # carries exactly the content this run would produce, it is current:
+      # skip the rebuild instead of churning evidence daily while the PR waits
+      # for review. Any difference (newer drift, main moved) rebuilds it.
+      # A filtered (urgent) run never touches an open PR: a subset rebuild
+      # would revert the broader updates the PR already carries.
+      - name: Skip when the open promotion PR is already current
+        run: |
+          set -euo pipefail
+          open_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --head agent-update/agents --json number --jq '.[0].number // ""' 2>/dev/null || true)"
+          if [[ -n "${open_pr}" && -n "${AGENT_FILTER}" ]]; then
+            echo "::notice::Open promotion PR #${open_pr} already covers this refresh; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          fetch_result="$(git fetch --quiet origin agent-update/agents 2>&1 && echo ok || echo fail)"
+          if [[ "${fetch_result}" != 'ok' ]]; then
+            echo 'no promotion branch exists yet; building the candidate.'
+            exit 0
+          fi
+          if [[ -z "${open_pr}" ]]; then
+            echo 'promotion branch exists without an open PR; rebuilding the candidate.'
+            exit 0
+          fi
+          if cmp -s <(git show "origin/agent-update/agents:images/vercel/agents.json" 2>/dev/null || true) images/vercel/agents.json \
+            && cmp -s <(git show "origin/agent-update/agents:images/vercel/provenance.json" 2>/dev/null || true) images/vercel/provenance.json; then
+            echo "::notice::Open promotion PR #${open_pr} already carries this exact update; skipping the rebuild."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Open promotion PR #${open_pr} is stale; rebuilding the candidate."
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare immutable candidate reference
+        id: candidate
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          UPSTREAM_COMMIT: ${{ steps.provenance.outputs.upstream_commit }}
+          UBUNTU_BASE_REFERENCE: ${{ steps.provenance.outputs.ubuntu_base_reference }}
+        run: |
+          set -euo pipefail
+          candidate_tree="$(git add -A images/vercel && git write-tree)"
+          upstream_short="${UPSTREAM_COMMIT:0:12}"
+          ubuntu_digest="${UBUNTU_BASE_REFERENCE##*@}"
+          ubuntu_short="${ubuntu_digest#sha256:}"
+          ubuntu_short="${ubuntu_short:0:12}"
+          tag="agent-${candidate_tree:0:12}-${ubuntu_short}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          reference="vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${VERCEL_IMAGE_REPOSITORY}:${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "reference=${reference}" >> "$GITHUB_OUTPUT"
+          printf '{"candidateTag":"%s","candidateReference":"%s","upstreamCommit":"%s","ubuntuBaseReference":"%s","updates":"%s"}\n' \
+            "${tag}" "${reference}" "${UPSTREAM_COMMIT}" "${UBUNTU_BASE_REFERENCE}" "${{ steps.drift.outputs.updates }}" > "${ARTIFACT_DIR}/candidate.json"
+
+      - name: Authenticate Buildx to VCR
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # Password is piped to Docker and the login output is kept out of the
+          # action log.  The token is never passed as a command-line argument.
+          printf '%s' "${VERCEL_PUBLISHER_TOKEN}" | docker login vcr.vercel.com \
+            --username "${VERCEL_PUBLISHER_TEAM_ID}" --password-stdin \
+            > "${ARTIFACT_DIR}/docker-login.log" 2>&1
+
+      - name: Build and push linux/amd64 zstd candidate
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+        run: |
+          set -euo pipefail
+          build_started_ms="$(date +%s%3N)"
+          set +e
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --output "type=image,name=${CANDIDATE_REFERENCE},push=true,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true" \
+            images/vercel 2>&1 | node scripts/vercel/redact-artifacts.mjs | tee "${ARTIFACT_DIR}/build.log"
+          pipeline_status=("${PIPESTATUS[@]}")
+          set -e
+          build_finished_ms="$(date +%s%3N)"
+          build_duration_ms=$((build_finished_ms - build_started_ms))
+          printf '{"stage":"build","startedEpochMs":%s,"finishedEpochMs":%s,"durationMs":%s}\n' \
+            "${build_started_ms}" "${build_finished_ms}" "${build_duration_ms}" > "${ARTIFACT_DIR}/build-timing.json"
+          status=0
+          for code in "${pipeline_status[@]}"; do
+            if [[ "${code}" -ne 0 ]]; then status="${code}"; fi
+          done
+          if [[ "${status}" -ne 0 ]]; then exit "${status}"; fi
+
+      - name: Resolve candidate manifest digest
+        id: manifest
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          CANDIDATE_REFERENCE: ${{ steps.candidate.outputs.reference }}
+        run: |
+          set -euo pipefail
+          manifest_started_ms="$(date +%s%3N)"
+          set +e
+          docker buildx imagetools inspect "${CANDIDATE_REFERENCE}" > "${ARTIFACT_DIR}/manifest-inspect.log" 2>&1
+          inspect_status=$?
+          set -e
+          manifest_finished_ms="$(date +%s%3N)"
+          manifest_duration_ms=$((manifest_finished_ms - manifest_started_ms))
+          printf '{"stage":"manifest","startedEpochMs":%s,"finishedEpochMs":%s,"durationMs":%s}\n' \
+            "${manifest_started_ms}" "${manifest_finished_ms}" "${manifest_duration_ms}" > "${ARTIFACT_DIR}/manifest-timing.json"
+          if [[ "${inspect_status}" -ne 0 ]]; then exit "${inspect_status}"; fi
+          digest="$(awk '/Digest:/ {print $2; exit}' "${ARTIFACT_DIR}/manifest-inspect.log")"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'candidate manifest digest could not be resolved' >&2; exit 1; }
+          digest_reference="${CANDIDATE_REFERENCE%:*}@${digest}"
+          docker buildx imagetools inspect --raw "${digest_reference}" > "${ARTIFACT_DIR}/manifest-raw.json"
+          node scripts/vercel/assert-zstd-manifest.mjs --expected-digest "${digest}" \
+            < "${ARTIFACT_DIR}/manifest-raw.json" > "${ARTIFACT_DIR}/manifest-compression.json"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          printf '{"candidateDigest":"%s","inspectedReference":"%s"}\n' \
+            "${digest}" "${digest_reference}" > "${ARTIFACT_DIR}/selected-candidate.json"
+
+      - name: Verify immutable candidate tag digest
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          CANDIDATE_TAG: ${{ steps.candidate.outputs.tag }}
+          CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
+        run: |
+          set -euo pipefail
+          VERCEL_TOKEN="${VERCEL_PUBLISHER_TOKEN}" vercel vcr tag inspect "${VERCEL_IMAGE_REPOSITORY}" "${CANDIDATE_TAG}" \
+            --project "${VERCEL_PUBLISHER_PROJECT_ID}" --scope "${VERCEL_PUBLISHER_TEAM_SLUG}" --format json \
+            > "${ARTIFACT_DIR}/candidate-tag-final.json"
+          tag_digest="$(node scripts/vercel/assert-candidate-tag.mjs < "${ARTIFACT_DIR}/candidate-tag-final.json")"
+          [[ "${tag_digest}" == "${CANDIDATE_DIGEST}" ]] || {
+            echo "immutable candidate tag digest mismatch: ${tag_digest} != ${CANDIDATE_DIGEST}" >&2
+            exit 1
+          }
+
+      # wait-vcr-ready handles Preparing and image_not_ready as bounded
+      # transient states, and fails immediately/actionably on Unoptimized or
+      # authentication errors.
+      - name: Poll VCR readiness
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_IMAGE_TAG: ${{ steps.candidate.outputs.tag }}
+          VERCEL_PUBLISHER_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          VERCEL_PUBLISHER_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          VERCEL_IMAGE_REPOSITORY: ${{ env.VERCEL_IMAGE_REPOSITORY }}
+          READINESS_TIMEOUT_MINUTES: '15'
+          READINESS_EVIDENCE: ${{ runner.temp }}/vercel-image-evidence/readiness.json
+        run: |
+          set -euo pipefail
+          export READINESS_TIMEOUT_MS="$((READINESS_TIMEOUT_MINUTES * 60 * 1000))"
+          node scripts/vercel/wait-vcr-ready.mjs
+
+      # smoke-sandbox records terminal session state and snapshot statuses;
+      # cleanup requires the Sandbox deleted and no non-deleted snapshot residual.
+      - name: Publisher Sandbox smoke gate
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_PUBLISHER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PUBLISHER_PROJECT_ID }}
+          IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          EXPECTED_IMAGE_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          SMOKE_ROLE: publisher
+          SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#publisher-smoke
+          SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/publisher-smoke.json
+        run: node scripts/vercel/smoke-sandbox.mjs
+
+      - name: Redact publisher evidence
+        id: redact_publisher
+        if: ${{ always() && steps.skip.outputs.skip != 'true' }}
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+        run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      # This is the independent cross-project public-consumption gate; it is
+      # intentionally separate from the publisher Sandbox credentials.
+      - name: Independent consumer Sandbox smoke gate
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          EXPECTED_IMAGE_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
+          EXPECTED_IMAGE_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
+          SMOKE_ROLE: consumer
+          SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#consumer-smoke
+          SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/consumer-smoke.json
+        run: node scripts/vercel/smoke-sandbox.mjs
+
+      - name: Redact all evidence
+        id: redact_final
+        if: always()
+        env:
+          VERCEL_PUBLISHER_TOKEN: ${{ secrets.VERCEL_PUBLISHER_TOKEN }}
+          VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+        run: |
+          set +e
+          node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+          status=$?
+          if [[ "${status}" -ne 0 ]]; then
+            # Never leave a partially redacted directory eligible for upload.
+            rm -rf "${ARTIFACT_DIR}"
+            exit "${status}"
+          fi
+
+      - name: Upload redacted evidence
+        if: ${{ always() && steps.redact_final.outcome == 'success' && steps.redact_publisher.outcome != 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vercel-agent-refresh-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}/vercel-image-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+      # Only a fully validated candidate reaches the promotion branch. The
+      # commit carries exactly the image content that was built and smoked.
+      - name: Commit and push the promotion branch
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add images/vercel
+          git commit -m "chore(vercel): refresh coding-agent versions
+
+          Updates images/vercel/agents.json and the matching provenance
+          version records to the registry-latest versions validated by this
+          run's candidate build and dual smoke gates."
+          git push --force origin HEAD:agent-update/agents
+          echo "Pushed ${GITHUB_SHA:0:12}... -> agent-update/agents"
+
+      - name: Create or update the promotion PR
+        if: steps.skip.outputs.skip != 'true'
+        env:
+          CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node scripts/vercel/render-agent-pr-body.mjs \
+            --report "${RUNNER_TEMP}/agent-drift.json" \
+            --candidate-digest "${CANDIDATE_DIGEST}" \
+            --run-url "${RUN_URL}" > "${RUNNER_TEMP}/pr-body.md"
+          existing="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --head agent-update/agents --json number --jq '.[0].number // ""')"
+          if [[ -n "${existing}" ]]; then
+            gh pr edit "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/pr-body.md"
+            echo "Updated promotion PR #${existing}"
+            echo "pr_url=https://github.com/${GITHUB_REPOSITORY}/pull/${existing}" >> "$GITHUB_OUTPUT"
+          else
+            url="$(gh pr create --repo "${GITHUB_REPOSITORY}" \
+              --base "${GITHUB_REF_NAME}" --head agent-update/agents \
+              --title "chore(vercel): refresh coding-agent versions" \
+              --body-file "${RUNNER_TEMP}/pr-body.md")"
+            echo "Opened promotion PR: ${url}"
+            echo "pr_url=${url}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Job summary
+        if: always()
+        env:
+          CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          report="${RUNNER_TEMP}/agent-drift.json"
+          {
+            echo '## Agent refresh'
+            echo ''
+            if [[ -f "${report}" ]]; then
+              node -p "JSON.parse(require('fs').readFileSync('${report}', 'utf8')).agents.map(a => '- ' + a.name + ': ' + a.declared + ' -> ' + a.latest).join('\n')"
+              echo ''
+            fi
+            if [[ -n "${CANDIDATE_DIGEST}" ]]; then
+              echo "Candidate digest: \`${CANDIDATE_DIGEST}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY" || true

@@ -83,13 +83,26 @@ describe('Vercel Universal mirror provenance', () => {
     const npmPackages: Record<string, string> = {
       npm: 'npm',
       pnpm: 'pnpm',
+    };
+    for (const [name, packageName] of Object.entries(npmPackages)) {
+      expect(dockerfile).toContain(`${packageName}@${provenance.runtimePackages[name]}`);
+    }
+    // Coding-agent pins derive from agents.json at build time: a partial
+    // update (Dockerfile bumped without the manifest) is rejected by
+    // construction, and the manifest is the single source of truth.
+    const agentPackages: Record<string, string> = {
       opencode: 'opencode-ai',
       claude: '@anthropic-ai/claude-code',
       codex: '@openai/codex',
       pi: '@earendil-works/pi-coding-agent',
     };
-    for (const [name, packageName] of Object.entries(npmPackages)) {
-      expect(dockerfile).toContain(`${packageName}@${provenance.runtimePackages[name]}`);
+    expect(dockerfile).toContain('COPY agents.json /usr/local/share/devbox/agents.json');
+    expect(dockerfile).toContain('jq -r --arg agent "$1" \'.agents[$agent].version\' /usr/local/share/devbox/agents.json');
+    for (const [name, packageName] of Object.entries(agentPackages)) {
+      expect(dockerfile).toContain(`"${packageName}@$(agent_version ${name})"`);
+      expect(dockerfile).toContain(`${name} --version | grep -F "$(agent_version ${name})"`);
+      // No literal agent version may live in the Dockerfile.
+      expect(dockerfile).not.toMatch(new RegExp(`${packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@\\d`));
     }
     expect(dockerfile).toContain(`pip==${provenance.runtimePackages.pip}`);
     expect(dockerfile).toContain(`uv==${provenance.runtimePackages.uv}`);
