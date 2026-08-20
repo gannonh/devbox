@@ -77,9 +77,10 @@ credential-free lint/typecheck/build/test gate only.
 ## Urgent refresh
 
 Dispatch **Agent refresh** manually from the default branch as the repository
-owner. Use the `agents` input to refresh a subset, e.g. `pi,claude`. If an
-open promotion PR already exists for the other agents, it is updated
-in place; otherwise a new PR is opened.
+owner. Use the `agents` input to refresh a subset, e.g. `pi,claude`. While a
+promotion PR is open, a subset dispatch is skipped (the PR already covers
+those agents); a full dispatch without the input rebuilds and updates the
+open PR in place, or opens a new one when none is open.
 
 ## Release-source failures
 

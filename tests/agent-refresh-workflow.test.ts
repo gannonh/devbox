@@ -63,8 +63,11 @@ describe('agent refresh workflow', () => {
     const workflow = await workflowText();
     expect(workflow).toContain('agent-update/agents');
     expect(workflow).toContain('cmp -s <(git show "origin/agent-update/agents:images/vercel/agents.json"');
-    // A filtered (urgent) run must never clobber a broader open PR.
+    // A manually filtered run must never clobber a broader open PR; a full
+    // run falls through to the content comparison and updates the PR in place.
     expect(workflow).toContain('already covers this refresh');
+    expect(workflow).toContain('[[ -n "${open_pr}" && -n "${{ inputs.agents }}" ]]');
+    expect(workflow).toContain('--base "${{ github.event.repository.default_branch }}"');
   });
 
   it('runs both exact-digest smoke gates before the promotion PR exists', async () => {

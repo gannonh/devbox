@@ -256,14 +256,15 @@ jobs:
       # One fixed promotion branch, one open PR. If the open PR already
       # carries exactly the content this run would produce, it is current:
       # skip the rebuild instead of churning evidence daily while the PR waits
-      # for review. Any difference (newer drift, main moved) rebuilds it.
-      # A filtered (urgent) run never touches an open PR: a subset rebuild
-      # would revert the broader updates the PR already carries.
+      # for review. Any difference (newer drift, main moved) rebuilds and
+      # force-pushes it, so a full (scheduled or urgent) run keeps the open
+      # PR current in place. A manually filtered run never touches an open
+      # PR: a subset rebuild would revert the broader updates it carries.
       - name: Skip when the open promotion PR is already current
         run: |
           set -euo pipefail
           open_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --head agent-update/agents --json number --jq '.[0].number // ""' 2>/dev/null || true)"
-          if [[ -n "${open_pr}" && -n "${AGENT_FILTER}" ]]; then
+          if [[ -n "${open_pr}" && -n "${{ inputs.agents }}" ]]; then
             echo "::notice::Open promotion PR #${open_pr} already covers this refresh; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -513,7 +514,7 @@ jobs:
             echo "pr_url=https://github.com/${GITHUB_REPOSITORY}/pull/${existing}" >> "$GITHUB_OUTPUT"
           else
             url="$(gh pr create --repo "${GITHUB_REPOSITORY}" \
-              --base "${GITHUB_REF_NAME}" --head agent-update/agents \
+              --base "${{ github.event.repository.default_branch }}" --head agent-update/agents \
               --title "chore(vercel): refresh coding-agent versions" \
               --body-file "${RUNNER_TEMP}/pr-body.md")"
             echo "Opened promotion PR: ${url}"
