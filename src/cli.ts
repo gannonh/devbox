@@ -16,7 +16,7 @@ import {
   type ProviderRegistry,
 } from './providers/registry.js';
 import { describeProviderChoice, resolveProviderChoice } from './providers/preference.js';
-import { parseExposePortsList, VercelPortsError } from './providers/vercel/ports.js';
+import { parseExposePortsList, VercelPortsError } from './providers/ports.js';
 import type {
   DevboxProvider,
   DisplayCredentialsResult,

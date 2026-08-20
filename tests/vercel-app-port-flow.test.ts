@@ -535,9 +535,10 @@ describe('zero-config app port flow', () => {
     expect(metadata?.appPorts).toMatchObject({ selected: [], applied: [4000, DEVBOX_NOVNC_PROXY_PORT] });
   });
 
-  it('reconciles and rethrows when the route update itself fails', async () => {
+  it('retains pending and continues when the route update itself fails', async () => {
     const store = await branchStore();
-    const failing = run({
+    const fingerprint = detectAppPorts([{ path: '.', content: VITE_PACKAGE }]).fingerprint;
+    const { result, updates, output, ...harness } = await run({
       store,
       client: {
         onUpdate: () => {
@@ -546,9 +547,23 @@ describe('zero-config app port flow', () => {
       },
     });
 
-    await expect(failing).rejects.toThrow('sandbox update rejected');
-    const metadata = await store.read();
-    expect(metadata?.pendingAppPorts).toBeUndefined();
+    expect(updates).toEqual([[5173, DEVBOX_NOVNC_PROXY_PORT]]);
+    expect(result).toMatchObject({
+      selected: [],
+      applied: [DEVBOX_NOVNC_PROXY_PORT],
+      updated: false,
+    });
+    expect(output).toContain('route update failed');
+    expect(output).toContain('pending retained');
+    const metadata = await harness.metadata();
+    expect(metadata?.pendingAppPorts).toEqual({
+      previous: [DEVBOX_NOVNC_PROXY_PORT],
+      desired: [5173, DEVBOX_NOVNC_PROXY_PORT],
+      selected: [5173],
+      fingerprint,
+      detectorVersion: APP_PORT_DETECTOR_VERSION,
+      revision: REVISION,
+    });
     expect(metadata?.appPorts).toBeUndefined();
   });
 

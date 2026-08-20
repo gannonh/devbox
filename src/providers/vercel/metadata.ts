@@ -13,6 +13,10 @@ export type {
   MetadataLock,
   MetadataLockOptions,
 } from './metadata-lock.js';
+export {
+  toBranchMetadataInput,
+  withAppPortFields,
+} from './metadata-schema.js';
 export type {
   VercelIdentityTags,
   VercelAppPortSelection,

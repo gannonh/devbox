@@ -117,6 +117,49 @@ export interface VercelBranchMetadata extends VercelBranchMetadataInput {
   repoKeyHash: string;
 }
 
+/**
+ * Copy every optional branch field into a write input.
+ *
+ * Metadata `write` replaces the whole document; omitting a field clears it.
+ * Features that patch one concern (display credentials, app ports) must start
+ * from this helper so they cannot wipe another feature's durable state.
+ */
+export function toBranchMetadataInput(metadata: VercelBranchMetadata): VercelBranchMetadataInput {
+  return {
+    ...(metadata.identity === undefined ? {} : { identity: metadata.identity }),
+    ...(metadata.sandboxId === undefined ? {} : { sandboxId: metadata.sandboxId }),
+    ...(metadata.snapshotIds === undefined ? {} : { snapshotIds: metadata.snapshotIds }),
+    ...(metadata.residual === undefined ? {} : { residual: metadata.residual }),
+    ...(metadata.configuration === undefined ? {} : { configuration: metadata.configuration }),
+    ...(metadata.displayCredentials === undefined ? {} : { displayCredentials: metadata.displayCredentials }),
+    ...(metadata.appPorts === undefined ? {} : { appPorts: metadata.appPorts }),
+    ...(metadata.pendingAppPorts === undefined ? {} : { pendingAppPorts: metadata.pendingAppPorts }),
+  };
+}
+
+/**
+ * Rebuild a branch write with explicit app-port fields.
+ *
+ * `undefined` clears that field (omit-on-write). Other branch fields are
+ * preserved from `metadata` when present.
+ */
+export function withAppPortFields(
+  metadata: VercelBranchMetadata | null,
+  appPorts: VercelAppPortSelection | undefined,
+  pendingAppPorts: VercelPendingAppPorts | undefined,
+): VercelBranchMetadataInput {
+  const {
+    appPorts: _ignoredAppPorts,
+    pendingAppPorts: _ignoredPending,
+    ...rest
+  } = metadata === null ? {} : toBranchMetadataInput(metadata);
+  return {
+    ...rest,
+    ...(appPorts === undefined ? {} : { appPorts }),
+    ...(pendingAppPorts === undefined ? {} : { pendingAppPorts }),
+  };
+}
+
 const INPUT_FIELDS = [
   'teamId',
   'projectId',
