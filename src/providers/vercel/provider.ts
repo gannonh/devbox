@@ -105,6 +105,8 @@ interface PreparedOperation {
   source?: GitHubSourcePlan;
   recovery?: VercelRecoveryInput;
   alreadyAbsent: boolean;
+  /** Same-branch sandboxes in another Vercel scope, which are never touched. */
+  foreignScope: string[];
 }
 
 interface PreparedUp {
@@ -269,6 +271,21 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         // Removal stays idempotent, but must not report a deletion it did not
         // perform: "cleanup verified" here is indistinguishable from having
         // actually removed a box, which hides a mistyped branch.
+        //
+        // Nor may it claim nothing exists while --list is showing one. A
+        // same-branch box in another Vercel team/project is deliberately left
+        // alone, but saying so is the difference between an honest no-op and a
+        // command that appears broken.
+        if (prepared.foreignScope.length > 0) {
+          request.stderr.write(
+            `No Vercel sandbox for ${request.branch} in this team/project.\n`
+            + `  ${prepared.foreignScope.length} sandbox(es) for this branch belong to another Vercel `
+            + 'team/project and were not touched:\n'
+            + prepared.foreignScope.map((name) => `    ${name}\n`).join('')
+            + '  set VERCEL_TEAM_ID/VERCEL_PROJECT_ID to that scope and retry to remove them\n',
+          );
+          return { exitCode: 0 };
+        }
         request.stderr.write(
           `No Vercel sandbox exists for ${request.branch}; nothing to remove.\n`
           + '  run devbox --provider vercel --list to see existing boxes\n',
@@ -399,7 +416,16 @@ async function prepareStored(
       true,
       origin.canonical,
     );
-    return { lifecycle, scopeStore, scopeMetadata, metadata: null, credentials, source: undefined, alreadyAbsent: false };
+    return {
+      lifecycle,
+      scopeStore,
+      scopeMetadata,
+      metadata: null,
+      credentials,
+      source: undefined,
+      alreadyAbsent: false,
+      foreignScope: [],
+    };
   }
   const branch = normalizeRequestedSourceBranch((request as ProviderBranchRequest).branch);
   const branchStore = createBranchStore(origin, branch, options);
@@ -420,14 +446,16 @@ async function prepareStored(
   }
   let recovery: VercelRecoveryInput | undefined;
   let alreadyAbsent = false;
+  let foreignScope: string[] = [];
   if (action === 'remove' && !metadata) {
-    const recovered = await recoverMissingBranchSandbox(client, origin, branch, credentials);
-    if (!recovered) {
+    const result = await recoverMissingBranchSandbox(client, origin, branch, credentials);
+    foreignScope = result.foreignScope;
+    if (!result.recovered) {
       alreadyAbsent = true;
     } else {
       recovery = {
-        identity: recovered.identity,
-        ...(recovered.snapshotIds === undefined ? {} : { snapshotIds: recovered.snapshotIds }),
+        identity: result.recovered.identity,
+        ...(result.recovered.snapshotIds === undefined ? {} : { snapshotIds: result.recovered.snapshotIds }),
       };
     }
   }
@@ -455,6 +483,7 @@ async function prepareStored(
     source,
     recovery,
     alreadyAbsent,
+    foreignScope,
   };
 }
 
@@ -738,6 +767,14 @@ function renderList(
     const branch = branchFromTag(branchTag) ?? branchTag ?? 'unknown';
     request.stderr.write(`  ${record.name} ${record.status} branch=${branch} identity=${identity}\n`);
   }
+  // Rows are not marked with the scope that owns them. The identity tag hashes
+  // the team and project, and recomputing it needs the exact branch string --
+  // which the branch tag cannot yield back for any branch containing a slash
+  // (`feature/ui` sanitizes to `feature-ui` but hashes the original). A marker
+  // that silently never fires for the commonest branch shape would read as
+  // "every row is yours", so the listing stays neutral and `--rm` explains the
+  // scope it declined to touch. Distinguishing them here needs a scope tag on
+  // the sandbox itself.
 }
 
 interface RenderedVercelRoute {
