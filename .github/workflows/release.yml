@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Full semver (e.g. 1.2.0). Empty = patch bump from last tag.'
+        description: 'Full semver (e.g. 1.2.0). Empty = patch bump from last stable tag.'
         required: false
         type: string
       nightly_version:
