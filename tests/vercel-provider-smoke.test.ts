@@ -256,8 +256,10 @@ describe('Vercel provider smoke configuration', () => {
     expect(source).not.toContain('sandbox.openInteractive');
     expect(source).not.toContain('execFile');
     expect(source).not.toContain('process.argv');
-    expect(source.indexOf('const image = assertPromotedVercelImagePin'))
-      .toBeLessThan(source.indexOf('initializeSecretValues();'));
+    expect(source).toContain('image: expectedImageReference');
+    const imageValidation = source.indexOf('const image = parseVercelImageReference(expectedImageReference)');
+    expect(imageValidation).toBeGreaterThan(-1);
+    expect(imageValidation).toBeLessThan(source.indexOf('initializeSecretValues();'));
     expect(source).not.toContain('vercel sandbox');
     expect(source).toContain("'private clone requested revision HEAD'");
     expect(source).toContain("'private clone existing revision branch state'");

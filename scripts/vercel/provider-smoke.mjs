@@ -667,6 +667,7 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
     const source = buildSource(config, remote, requestedBranch, sourceRevision, requestedBranchExists);
     const createRequest = buildVercelSandboxCreateRequest({
       name: identity.name,
+      image: expectedImageReference,
       source: source.source,
       timeoutMs: smokeTimeoutMs,
       tags: { ...identity.tags },
