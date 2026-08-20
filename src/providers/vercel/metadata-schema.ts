@@ -148,11 +148,11 @@ export function withAppPortFields(
   appPorts: VercelAppPortSelection | undefined,
   pendingAppPorts: VercelPendingAppPorts | undefined,
 ): VercelBranchMetadataInput {
-  const {
-    appPorts: _ignoredAppPorts,
-    pendingAppPorts: _ignoredPending,
-    ...rest
-  } = metadata === null ? {} : toBranchMetadataInput(metadata);
+  const rest: VercelBranchMetadataInput = metadata === null
+    ? {}
+    : { ...toBranchMetadataInput(metadata) };
+  delete rest.appPorts;
+  delete rest.pendingAppPorts;
   return {
     ...rest,
     ...(appPorts === undefined ? {} : { appPorts }),
