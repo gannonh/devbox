@@ -8,6 +8,7 @@
 * [noVNC access-code pairing](0003-novnc-access-code-pairing.md) - the printed display link pairs the browser on click; supersedes the Basic Auth clause of ADR 0002.
 * [Image pin as a build output](0004-image-pin-as-build-output.md) - tags for development, digests for releases; removes the promotion pull request.
 * [Zero-configuration public app ports](0005-zero-config-public-app-ports.md) - a bounded remote `package.json` detector, one public-route confirmation, and a pending/commit port update for issue [#13](https://github.com/gannonh/devbox/issues/13).
+* [Coding-agent version manifest](0006-agent-version-manifest.md) - a single manifest declares the supported agents; the image derives from it and promotion is a reviewable pull request for issue [#12](https://github.com/gannonh/devbox/issues/12).
 
 ## Proposed
 

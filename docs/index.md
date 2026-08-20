@@ -17,6 +17,7 @@ okf_version: "0.1"
 * [noVNC access-code pairing](/adrs/0003-novnc-access-code-pairing.md) - the printed display link pairs the browser on click.
 * [Image pin as a build output](/adrs/0004-image-pin-as-build-output.md) - three channels, zero CI-authored pull requests.
 * [Zero-configuration public app ports](/adrs/0005-zero-config-public-app-ports.md) - detect from remote metadata, confirm once, update in place.
+* [Coding-agent version manifest](/adrs/0006-agent-version-manifest.md) - single manifest declares the agents; the image derives from it and promotion is a reviewable pull request.
 
 ## Architecture and references
 
@@ -26,6 +27,7 @@ okf_version: "0.1"
 ## Runbooks
 
 * [Vercel image supply chain](/runbooks/vercel-image-supply-chain.md) - publisher setup, candidate smoke, promotion, rollback, and cleanup.
+* [Coding-agent version refresh](/runbooks/agent-version-refresh.md) - daily update detection, candidate validation, promotion PR, and rollback for the supported agents.
 * [Vercel provider convergence](/runbooks/vercel-provider-convergence.md) - real UAT and five-run benchmark reproduction.
 
 ## History

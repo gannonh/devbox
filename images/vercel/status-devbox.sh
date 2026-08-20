@@ -47,6 +47,32 @@ check_image() {
       fi
     done
   fi
+  # Exact declared versions (agents.json is embedded in the image): a stale or
+  # partially updated image fails the local contract check. A missing,
+  # unreadable, or unparseable manifest fails closed too.
+  manifest="/usr/local/share/devbox/agents.json"
+  if [[ ! -r "${manifest}" ]]; then
+    printf '[devbox-status] FAIL: agent manifest is missing or unreadable\n' >&2
+    failed=1
+  elif records="$(jq -r '.agents | to_entries[] | [.value.binary, .value.version, .value.versionFlag] | @tsv' "${manifest}")"; then
+    if [[ -z "${records}" ]]; then
+      printf '[devbox-status] FAIL: agent manifest declares no agents\n' >&2
+      failed=1
+    else
+      while IFS=$'\t' read -r binary version flag; do
+        [[ -n "${binary}" && -n "${version}" && -n "${flag}" ]] || continue
+        output="$(timeout 5s "${binary}" "${flag}" 2>&1 || true)"
+        if ! grep -Fq "${version}" <<<"${output}"; then
+          printf '[devbox-status] FAIL: %s version %s not observed (got: %s)\n' \
+            "${binary}" "${version}" "${output:0:200}" >&2
+          failed=1
+        fi
+      done <<<"${records}"
+    fi
+  else
+    printf '[devbox-status] FAIL: agent manifest is not valid JSON\n' >&2
+    failed=1
+  fi
   if [[ "${failed}" -eq 0 ]]; then
     printf '[devbox-status] image checks passed (user=%s uid=%s)\n' "$(id -un)" "$(id -u)"
   fi

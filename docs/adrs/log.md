@@ -28,3 +28,7 @@
 * **Provider convergence**: Accepted direct SDK lifecycle, the public digest-pinned image, Basic Auth display access, explicit public-port policy, and benchmark/UAT evidence gates for issue [#7](https://github.com/gannonh/devbox/issues/7).
 * **noVNC access-code pairing**: Restored the pairing display link that a PR #11 review introduced and issue [#7](https://github.com/gannonh/devbox/issues/7) work undid without a decision; supersedes the Basic Auth display clause of ADR 0002.
 * **Image pin as a build output**: Took the digest out of the source tree so an image change is one pull request instead of two, replaced the promotion job with pin emission, and collapsed the label-gated credentialed jobs into a nightly/release pair.
+
+## 2026-08-20
+
+* **Coding-agent version manifest**: Accepted the single-source-of-truth agent manifest with Dockerfile derivation, provenance agreement, exact in-image and smoke version gates, and reviewable-PR promotion for issue [#12](https://github.com/gannonh/devbox/issues/12).
