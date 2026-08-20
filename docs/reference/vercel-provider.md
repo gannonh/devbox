@@ -187,6 +187,29 @@ password: <generated-secret>
 The code is generated with at least 128 bits of CSPRNG entropy. See
 [ADR 0003](../adrs/0003-novnc-access-code-pairing.md).
 
+## Sandboxes another scope owns
+
+A sandbox's identity hashes the repository, the branch, **and** the Vercel team
+and project. Two boxes can therefore exist for one branch — one per scope — and
+`--rm` only ever removes the one belonging to the credentials in use. Deleting
+another team's resources is not this command's business.
+
+`--rm` says so rather than reporting an empty result:
+
+```text
+No Vercel sandbox for my-feature in this team/project.
+  1 sandbox(es) for this branch belong to another Vercel team/project and were not touched:
+    devbox-vercel-v-0-1-2-github-com-acme-repo-my-feature-<hash>
+  set VERCEL_TEAM_ID/VERCEL_PROJECT_ID to that scope and retry to remove them
+```
+
+`--list` does not mark which rows the current scope owns. Recomputing a row's
+identity needs the exact branch string, and the branch tag cannot yield it back
+for any branch containing a slash — `feature/ui` sanitizes to `feature-ui` but
+hashes the original — so a marker would silently never fire for the commonest
+branch shape and read as "every row is yours". Distinguishing them in the
+listing needs a scope tag on the sandbox itself.
+
 ## Runtime and cleanup
 
 GitHub source is remote-first: dirty files and unpushed commits are excluded.
