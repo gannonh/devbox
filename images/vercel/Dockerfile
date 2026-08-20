@@ -94,7 +94,7 @@ RUN set -eux; \
       dnsutils \
       file \
       fzf \
-      gh=2.97.0 \
+      gh=2.98.0 \
       git \
       git-lfs \
       gnupg \
@@ -143,7 +143,7 @@ RUN set -eux; \
     python --version | grep -F 'Python 3.14.4'; \
     pip --version | grep -F '25.1.1'; \
     uv --version | grep -F '0.12.2'; \
-    gh --version | grep -F 'gh version 2.97.0'; \
+    gh --version | grep -F 'gh version 2.98.0'; \
     opencode --version | grep -F "$(agent_version opencode)"; \
     claude --version | grep -F "$(agent_version claude)"; \
     codex --version | grep -F "$(agent_version codex)"; \
