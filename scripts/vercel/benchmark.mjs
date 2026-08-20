@@ -38,7 +38,6 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
-const PORT_READY_RETRY_MS = 15_000;
 const NOVNC_PORT = 6080;
 const NOVNC_INTERNAL_PORT = 6081;
 const VCR_REFERENCE = /^vcr\.vercel\.com\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\/[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?@(sha256:[a-f0-9]{64})$/;
@@ -305,9 +304,10 @@ async function runOne(index, config, adapter) {
     const settledStages = await Promise.allSettled(parallelStages);
     const failedStage = settledStages.find((result) => result.status === 'rejected');
     if (failedStage?.status === 'rejected') throw failedStage.reason;
-    await timedStage(run, 'port ready', async (signal) => {
+    await timedStage(run, 'port ready', async () => {
+      // Configured app ports may intentionally have no server yet. Their
+      // domains must resolve safely; noVNC readiness is probed separately.
       run.ports = config.ports.map((port) => ({ port, domain: assertSafeDomain(adapter.domain(sandbox, port)) }));
-      await checkPorts(run.ports, signal);
     }, config.stageTimeoutMs);
     await timedStage(run, 'terminal ready', async (signal) => {
       await checkRuntimeReadiness(adapter, sandbox, workspace, signal);
@@ -467,24 +467,6 @@ async function startDisplayAndProbe(adapter, sandbox, config, signal) {
     throw new Error('display services are not ready');
   }
   await probeAuthenticatedNoVnc(adapter.domain(sandbox, NOVNC_PORT), password, signal);
-}
-
-async function checkPorts(routes, signal) {
-  await Promise.all(routes.map(async (route) => {
-    const deadline = Date.now() + PORT_READY_RETRY_MS;
-    let status = 0;
-    while (Date.now() < deadline) {
-      const response = await fetch(new URL('/', route.domain), {
-        redirect: 'manual',
-        signal,
-      });
-      status = response.status;
-      await response.body?.cancel();
-      if (status !== 502 && status !== 503) return;
-      await sleep(250, undefined);
-    }
-    throw new Error(`port ${route.port} returned gateway status ${status}`);
-  }));
 }
 
 async function checkRuntimeReadiness(adapter, sandbox, workspace, signal) {

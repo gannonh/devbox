@@ -114,7 +114,8 @@ describe('Vercel benchmark public boundary', () => {
 
     expect(source).toContain('stdin.write(Buffer.from([0x1d]))');
     expect(source).toContain("result.reason !== 'escape'");
-    expect(source).toContain('await checkPorts(run.ports, signal)');
+    expect(source).toContain('config.ports.map((port) => ({ port, domain: assertSafeDomain');
+    expect(source).not.toContain('checkPorts');
     expect(source).toContain('[n]ovnc-proxy.mjs');
     expect(source).not.toContain('basic-auth-proxy.mjs');
     expect(source).not.toContain("}).catch(() => []);");
