@@ -65,7 +65,12 @@ import { prepareSandboxRuntime, RUNTIME_PREPARATION_TIMEOUT_MS } from './runtime
 import { renderSetupNotice, type VercelSetupStatus } from './setup.js';
 import { addSecrets } from './redaction.js';
 import { DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts, VercelPortsError } from './ports.js';
-import { applyAppPorts, type AppPortFlowResult, type AppPortPrompt } from './app-port-flow.js';
+import {
+  applyAppPorts,
+  type AppPortFlowMode,
+  type AppPortFlowResult,
+  type AppPortPrompt,
+} from './app-port-flow.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -215,6 +220,11 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       const sandbox = await prepared.lifecycle.attach();
       const repository = prepared.source?.remote.repository;
       if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
+      // Say this before anything that can prompt. Runtime sync and the app-port
+      // question both come first, and a boot-shaped prompt with no preceding
+      // context reads as "it is creating a new sandbox" -- which attach cannot
+      // do: it fails when there is no record and no live box to resume.
+      request.stderr.write(`Attaching to the existing Vercel sandbox for ${request.branch}\n`);
       const setupStatus = await prepareSandboxRuntime({
         repoRoot: request.repoRoot,
         repository,
@@ -236,6 +246,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         prepared.branchStore!,
         repository,
         secrets,
+        'resume',
       );
       await renderVercelAttachNotice(
         request,
@@ -811,8 +822,10 @@ async function resolveAppPorts(
   branchStore: VercelBranchMetadataStore,
   repository: string,
   secrets: readonly string[],
+  mode: AppPortFlowMode = 'boot',
 ): Promise<AppPortFlowResult> {
   return applyAppPorts({
+    mode,
     sandbox,
     client,
     branchStore,

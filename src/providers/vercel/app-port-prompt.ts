@@ -32,6 +32,12 @@ export interface AppPortPromptOptions {
   candidates: readonly AppPortCandidate[];
   /** True when one framework produced several literal ports. */
   conflicting: boolean;
+  /**
+   * Make an empty answer keep the current set instead of accepting the
+   * candidates. A resume is usually "get me back in", so Enter must not be the
+   * key that publishes a new port.
+   */
+  keepOnEmptyAnswer?: boolean;
   /** Injection seam for tests; defaults to a readline question on stdin. */
   ask?: (question: string) => Promise<string>;
 }
@@ -57,11 +63,8 @@ export async function promptForAppPorts(
     if (candidatePorts.length === 0) return await promptWithoutCandidates(ask, options);
     options.stderr.write(renderCandidateBlock(options));
     for (;;) {
-      const answer = (await ask(
-        options.conflicting
-          ? 'Expose which app port(s)? [y=all/n=none/e=edit] '
-          : 'Expose the detected app port(s)? [Y/n/e=edit] ',
-      )).trim();
+      const retained = uniquePorts(options.retained ?? []);
+      const answer = (await ask(question(options, retained))).trim();
       if (answer.length === 0) {
         // A conflict has no defensible default: two literal ports in one dev
         // script mean the project itself is ambiguous about which one runs.
@@ -69,7 +72,9 @@ export async function promptForAppPorts(
           options.stderr.write('  conflicting candidates require an explicit answer\n');
           continue;
         }
-        return { decision: 'accepted', selected: candidatePorts };
+        return options.keepOnEmptyAnswer
+          ? { decision: 'accepted', selected: retained }
+          : { decision: 'accepted', selected: candidatePorts };
       }
       if (/^y(?:es)?$/i.test(answer)) return { decision: 'accepted', selected: candidatePorts };
       if (/^n(?:o)?$/i.test(answer)) return { decision: 'rejected', selected: [] };
@@ -145,6 +150,15 @@ async function editSelection(
       if (/^n(?:o)?$/i.test(retry)) return undefined;
     }
   }
+}
+
+/** Spell out what an empty answer will do, since it differs by mode. */
+function question(options: AppPortPromptOptions, retained: readonly number[]): string {
+  if (options.conflicting) return 'Expose which app port(s)? [y=all/n=none/e=edit] ';
+  if (!options.keepOnEmptyAnswer) return 'Expose the detected app port(s)? [Y/n/e=edit] ';
+  return retained.length > 0
+    ? `Expose the detected app port(s)? [y/n/e=edit, Enter keeps ${retained.join(', ')}] `
+    : 'Expose the detected app port(s)? [y/n/e=edit, Enter exposes none] ';
 }
 
 function renderCandidateBlock(options: AppPortPromptOptions): string {

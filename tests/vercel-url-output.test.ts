@@ -444,6 +444,9 @@ describe('Vercel zero-config app routes', () => {
     await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
     await expect(test.provider.attach(test.request)).resolves.toEqual({ exitCode: 0 });
 
+    // Attaching must say so before anything that can prompt, or a port question
+    // reads as a fresh boot.
+    expect(test.errorOutput()).toContain('Attaching to the existing Vercel sandbox for feature/ui');
     expect(appPortPrompt).toHaveBeenCalledTimes(1);
     expect(updates).toEqual([[5173, 6080]]);
     const resumed = test.errorOutput().slice(test.errorOutput().lastIndexOf('Vercel devbox resumed'));

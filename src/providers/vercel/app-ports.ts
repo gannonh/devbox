@@ -26,8 +26,11 @@ import { createHash } from 'node:crypto';
  * Bump whenever the grammar below changes. Stored selections are bound to this
  * value so an upgraded detector re-prompts instead of silently reusing a
  * selection that a different grammar produced.
+ *
+ * 2: workspace member manifests are read, and candidates carry the workspace
+ *    they came from.
  */
-export const APP_PORT_DETECTOR_VERSION = 1;
+export const APP_PORT_DETECTOR_VERSION = 2;
 
 export const VITE_DEFAULT_PORT = 5173;
 export const NEXT_DEFAULT_PORT = 3000;

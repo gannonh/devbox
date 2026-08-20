@@ -40,6 +40,15 @@ import type { ProviderInput } from '../types.js';
 export type AppPortPrompt = typeof promptForAppPorts;
 
 /**
+ * Why the flow is running. A boot is already a decision point, so its prompt
+ * defaults to accepting what was detected. A resume is usually "get me back
+ * in" -- often a second terminal beside a running dev server -- so its prompt
+ * defaults to keeping whatever is already exposed and never stands between the
+ * user and their shell.
+ */
+export type AppPortFlowMode = 'boot' | 'resume';
+
+/**
  * The scan is two short commands on a Sandbox that is already up. Bound it
  * separately from the rest of the flow, which waits on a human at the prompt.
  */
@@ -62,6 +71,7 @@ export interface AppPortFlowOptions {
   secrets?: readonly string[];
   signal?: AbortSignal;
   prompt?: AppPortPrompt;
+  mode?: AppPortFlowMode;
 }
 
 export interface AppPortFlowResult {
@@ -149,6 +159,7 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
       retained: previousSelection?.selected ?? [],
       candidates,
       conflicting,
+      keepOnEmptyAnswer: options.mode === 'resume',
     });
     // Rejecting or editing replaces only the inferred selection this flow
     // owns; the trusted configured ports are added back below regardless.

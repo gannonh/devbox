@@ -31,6 +31,7 @@ async function prompt(
     configured?: number[];
     conflicting?: boolean;
     retained?: number[];
+    keepOnEmptyAnswer?: boolean;
   } = {},
 ) {
   const stderr = new PassThrough();
@@ -42,6 +43,7 @@ async function prompt(
     stderr,
     configured: overrides.configured ?? [],
     ...(overrides.retained === undefined ? {} : { retained: overrides.retained }),
+    ...(overrides.keepOnEmptyAnswer === undefined ? {} : { keepOnEmptyAnswer: overrides.keepOnEmptyAnswer }),
     candidates: overrides.candidates ?? [VITE],
     conflicting: overrides.conflicting ?? false,
     ask: scripted.ask,
@@ -128,6 +130,28 @@ describe('public app port prompt', () => {
 
     expect(rendered).toContain('answer y, n, or e');
     expect(result).toEqual({ decision: 'rejected', selected: [] });
+  });
+
+  it('keeps the current set on Enter when resuming, rather than exposing new ports', async () => {
+    const { result, questions } = await prompt([''], { retained: [4173], keepOnEmptyAnswer: true });
+
+    // A resume is usually "get me back in"; Enter must not be the key that
+    // publishes a port that was not exposed a moment ago.
+    expect(questions[0]).toContain('Enter keeps 4173');
+    expect(result).toEqual({ decision: 'accepted', selected: [4173] });
+  });
+
+  it('exposes nothing on Enter when resuming with nothing previously accepted', async () => {
+    const { result, questions } = await prompt([''], { keepOnEmptyAnswer: true });
+
+    expect(questions[0]).toContain('Enter exposes none');
+    expect(result).toEqual({ decision: 'accepted', selected: [] });
+  });
+
+  it('still accepts the new candidates on an explicit yes while resuming', async () => {
+    const { result } = await prompt(['y'], { retained: [4173], keepOnEmptyAnswer: true });
+
+    expect(result).toEqual({ decision: 'accepted', selected: [5173] });
   });
 
   it('offers manual entry when the detector inferred nothing', async () => {
