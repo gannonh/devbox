@@ -13,11 +13,17 @@ issue: https://github.com/gannonh/devbox/issues/13
 **Detect from remote metadata, confirm once, update in place, and bind the
 result to the exact checkout.**
 
-- The detector reads exactly three fields of the remote checkout's root
-  `package.json` — `dependencies`, `devDependencies`, and `scripts.dev` — as
-  data. No script or config is executed, no workspace is traversed, and no
-  script, source, or `.env` text leaves the detector; callers receive
-  `{ port, framework, source }` records only.
+- The detector reads exactly three fields of each `package.json` it is given —
+  `dependencies`, `devDependencies`, and `scripts.dev` — as data. No script or
+  config is executed, and no script, source, or `.env` text leaves the detector;
+  callers receive `{ port, framework, source, workspace }` records only.
+- It is given the repository root manifest and, when the repository declares
+  workspaces, each member's manifest. Members are discovered from the
+  `workspaces` field and/or `pnpm-workspace.yaml`; only literal paths and
+  single-level wildcards are honored, and `.`/`..` segments are refused so no
+  pattern can read outside the checkout.
+- When nothing is inferred, a TTY is still asked, with the default inverted so
+  that Enter exposes nothing.
 - Its grammar is literal. Frameworks are exact dependency keys or
   whitespace-delimited `vite`/`next` command tokens (optionally after `npx`);
   ports are unquoted decimal tokens in `PORT=`, `--port`, `--port=`, `-p`, or
@@ -52,10 +58,19 @@ inside the Sandbox. And a public route is an irreversible-feeling act: the URL i
 reachable by anyone who has it. Those together rule out both "guess and expose"
 and "read the developer's working tree."
 
-The detector is deliberately dumb. A smarter one — evaluating `vite.config.ts`,
-resolving workspaces, running `npm run dev --dry-run` — would be more accurate
-and would also mean executing repository code to decide what to make public.
-Refusing to interpret is the security property, not a limitation to fix later.
+The detector is deliberately dumb. A smarter one — evaluating `vite.config.ts`
+or running `npm run dev --dry-run` — would be more accurate and would also mean
+executing repository code to decide what to make public. Refusing to interpret
+is the security property, not a limitation to fix later.
+
+Reading workspace members is not a departure from that. The first
+implementation read only the root manifest, which tested green against a
+fixture whose root was a Vite app — and returned nothing for a real Turborepo,
+where the root manifest is a task-runner shell (`"dev": "turbo dev"`) and the
+app lives in `apps/web`. That is the common monorepo shape, so a root-only
+detector answers "no app ports were inferred" for most repositories that have
+one. Members are read the same way the root is: as data, with the same grammar,
+from paths the repository itself declares.
 
 ## The port maximum is 14, and only measurement found that
 
@@ -78,6 +93,15 @@ recorded next to it.
 
 - **Expose detected ports automatically.** A false positive is a public URL. The
   confirmation is the whole safety property.
+- **Say nothing when nothing is detected.** Detecting nothing is not the same as
+  having nothing to expose — a layout the grammar does not reach, or a server
+  started by another runner, still has a port the user knows. Silence left them
+  to discover `--expose-ports` and boot again. The prompt appears, but its
+  default is "none" so a repository with no web app stays one keystroke from
+  booting.
+- **Glob workspaces ourselves, or shell out to `pnpm list`.** The first invents
+  a matcher; the second executes the package manager. Reading the declared
+  patterns and expanding one level covers the real layouts without either.
 - **Recreate the Sandbox with the new port set.** Destroys the running
   workspace to add a route, when the API supports updating one in place.
 - **Store only the selected ports.** Without the fingerprint and revision, a
@@ -105,6 +129,11 @@ recorded next to it.
 - Adding a framework means adding a defaults entry and, if it changes the
   grammar, bumping `APP_PORT_DETECTOR_VERSION` — which re-prompts every stored
   selection rather than reusing an answer the old grammar produced.
+- A monorepo with several apps produces several candidates, all under the
+  13-app-port cap. The prompt labels each with its workspace path, because two
+  apps on adjacent ports are otherwise indistinguishable.
+- Nested workspaces (a member that declares its own members) are still not
+  followed. One level is what the declared patterns describe.
 
 ## Verification
 

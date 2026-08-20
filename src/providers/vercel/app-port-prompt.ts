@@ -27,6 +27,8 @@ export interface AppPortPromptOptions {
   stderr: Writable;
   /** Trusted explicit app ports; retained regardless of the answer. */
   configured: readonly number[];
+  /** App ports confirmed on an earlier run; kept when the answer is empty. */
+  retained?: readonly number[];
   candidates: readonly AppPortCandidate[];
   /** True when one framework produced several literal ports. */
   conflicting: boolean;
@@ -39,7 +41,6 @@ export async function promptForAppPorts(
   options: AppPortPromptOptions,
 ): Promise<AppPortPromptResult> {
   const candidatePorts = uniquePorts(options.candidates.map(({ port }) => port));
-  if (candidatePorts.length === 0) return { decision: 'rejected', selected: [] };
 
   let ask = options.ask;
   let close: (() => void) | undefined;
@@ -49,6 +50,11 @@ export async function promptForAppPorts(
     close = readline.close;
   }
   try {
+    // Detecting nothing is not the same as having nothing to expose: a
+    // monorepo layout the grammar does not reach, or a server started by some
+    // other runner, still has a port the user knows. Offer it rather than
+    // leaving them to discover --expose-ports and boot again.
+    if (candidatePorts.length === 0) return await promptWithoutCandidates(ask, options);
     options.stderr.write(renderCandidateBlock(options));
     for (;;) {
       const answer = (await ask(
@@ -76,6 +82,45 @@ export async function promptForAppPorts(
     }
   } finally {
     close?.();
+  }
+}
+
+/**
+ * Ask for ports when the detector inferred none.
+ *
+ * The default is deliberately inverted from the candidate prompt: an empty
+ * answer exposes nothing new, so a repository with no web app at all stays one
+ * keystroke from booting and no default ever makes something public.
+ */
+async function promptWithoutCandidates(
+  ask: (question: string) => Promise<string>,
+  options: AppPortPromptOptions,
+): Promise<AppPortPromptResult> {
+  const retained = uniquePorts(options.retained ?? []);
+  const lines = ['No app ports were inferred from the remote checkout.'];
+  const configured = uniquePorts(options.configured);
+  if (configured.length > 0) lines.push(`  retained (configured): ${configured.join(', ')}`);
+  if (retained.length > 0) lines.push(`  retained (confirmed earlier): ${retained.join(', ')}`);
+  lines.push('  accepted app routes are PUBLIC: anyone with the URL can reach them');
+  options.stderr.write(`${lines.join('\n')}\n`);
+
+  for (;;) {
+    const answer = (await ask(
+      retained.length > 0
+        ? '  app ports to expose (comma-separated, Enter to keep the current set): '
+        : '  app ports to expose (comma-separated, Enter for none): ',
+    )).trim();
+    if (answer.length === 0) {
+      return retained.length > 0
+        ? { decision: 'accepted', selected: retained }
+        : { decision: 'rejected', selected: [] };
+    }
+    try {
+      return { decision: 'edited', selected: parseExposePortsList(answer) };
+    } catch (error) {
+      if (!(error instanceof VercelPortsError)) throw error;
+      options.stderr.write(`  ${error.message.replace(/^--expose-ports /, '')}\n`);
+    }
   }
 }
 

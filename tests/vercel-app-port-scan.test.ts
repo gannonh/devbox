@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { scanRemoteAppPorts } from '../src/providers/vercel/app-port-scan.js';
-import { MAX_PACKAGE_JSON_BYTES, VITE_DEFAULT_PORT } from '../src/providers/vercel/app-ports.js';
+import {
+  MAX_PACKAGE_JSON_BYTES,
+  MAX_WORKSPACE_MANIFESTS,
+  VITE_DEFAULT_PORT,
+} from '../src/providers/vercel/app-ports.js';
 import type {
   VercelCommandResult,
   VercelRunCommandRequest,
@@ -10,9 +14,21 @@ import type {
 
 const REVISION = 'a'.repeat(40);
 
+const US = '\u001f';
+/** A separator written into JSON content, which must stay escaped. */
+const UNIT_ESCAPE = '\u001f';
+const RS = '\u001e';
+
+/** Build the scanner's `path<US>contents<RS>` wire format. */
+function emitted(files: Record<string, string>): string {
+  return Object.entries(files).map(([path, content]) => `${path}${US}${content}${RS}`).join('');
+}
+
 interface ScanScript {
   revision?: { exitCode: number; stdout?: string } | Error;
   packageJson?: { exitCode: number; stdout?: string } | Error;
+  /** Second sh call: workspace member manifests. */
+  members?: { exitCode: number; stdout?: string } | Error;
 }
 
 function scanClient(script: ScanScript) {
@@ -20,7 +36,10 @@ function scanClient(script: ScanScript) {
   const client = {
     runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
       requests.push(request);
-      const step = request.cmd === 'git' ? script.revision : script.packageJson;
+      const isMemberRead = (request.args ?? []).join(' ').includes('for f in');
+      const step = request.cmd === 'git'
+        ? script.revision
+        : isMemberRead ? script.members : script.packageJson;
       if (step instanceof Error) throw step;
       const resolved = step ?? { exitCode: 0, stdout: '' };
       return {
@@ -50,12 +69,12 @@ describe('remote app port scan', () => {
   it('reads the remote revision and root package.json from the checkout only', async () => {
     const result = await scan({
       revision: { exitCode: 0, stdout: `${REVISION}\n` },
-      packageJson: { exitCode: 0, stdout: JSON.stringify({ scripts: { dev: 'vite' } }) },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': JSON.stringify({ scripts: { dev: 'vite' } }) }) },
     });
 
     expect(result.revision).toBe(REVISION);
     expect(result.detection.candidates).toEqual([
-      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default' },
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: '.' },
     ]);
     expect(result.warnings).toEqual([]);
     expect(result.requests).toHaveLength(2);
@@ -71,7 +90,7 @@ describe('remote app port scan', () => {
   it('treats a missing root package.json as no inferred ports', async () => {
     const result = await scan({
       revision: { exitCode: 0, stdout: REVISION },
-      packageJson: { exitCode: 42 },
+      packageJson: { exitCode: 0, stdout: '' },
     });
 
     expect(result.revision).toBe(REVISION);
@@ -82,7 +101,7 @@ describe('remote app port scan', () => {
   it('surfaces a malformed root package.json as a bounded warning without failing', async () => {
     const result = await scan({
       revision: { exitCode: 0, stdout: REVISION },
-      packageJson: { exitCode: 0, stdout: '{"scripts": {"dev": "vite --port 4321"' },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': '{"scripts": {"dev": "vite --port 4321"' }) },
     });
 
     expect(result.detection.candidates).toEqual([]);
@@ -94,11 +113,11 @@ describe('remote app port scan', () => {
   it('reports a read failure without echoing repository content', async () => {
     const result = await scan({
       revision: { exitCode: 0, stdout: REVISION },
-      packageJson: { exitCode: 1, stdout: 'cat: package.json: secret content' },
+      packageJson: new Error('read failed'),
     });
 
     expect(result.detection.candidates).toEqual([]);
-    expect(result.warnings).toEqual(['remote root package.json could not be read (exit code 1)']);
+    expect(result.warnings[0]).toContain('remote root package.json could not be read');
   });
 
   it('infers nothing when the checkout revision cannot be resolved', async () => {
@@ -137,7 +156,7 @@ describe('remote app port scan', () => {
   it('bounds the scan with an abort signal on both commands', async () => {
     const { client, requests } = scanClient({
       revision: { exitCode: 0, stdout: REVISION },
-      packageJson: { exitCode: 0, stdout: '{}' },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': '{}' }) },
     });
     const controller = new AbortController();
 
@@ -149,5 +168,115 @@ describe('remote app port scan', () => {
     });
 
     expect(requests.every((request) => request.signal === controller.signal)).toBe(true);
+  });
+});
+
+
+describe('workspace manifest scanning', () => {
+  const TURBO_ROOT = JSON.stringify({
+    scripts: { dev: 'turbo dev' },
+    devDependencies: { turbo: '^2.0.0' },
+  });
+
+  it('reads members declared only in pnpm-workspace.yaml and finds the app there', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: {
+        exitCode: 0,
+        stdout: emitted({
+          './package.json': TURBO_ROOT,
+          './pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - "packages/*"\n',
+        }),
+      },
+      members: {
+        exitCode: 0,
+        stdout: emitted({
+          './apps/web/package.json': JSON.stringify({ scripts: { dev: 'vite' }, devDependencies: { vite: '^8' } }),
+          './packages/ui/package.json': JSON.stringify({ name: 'ui' }),
+        }),
+      },
+    });
+
+    expect(result.detection.candidates).toEqual([
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: 'apps/web' },
+    ]);
+    expect(result.workspaces).toEqual(['apps/web', 'packages/ui']);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('expands only the declared patterns', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: {
+        exitCode: 0,
+        stdout: emitted({
+          './package.json': JSON.stringify({ workspaces: ['apps/*'], scripts: { dev: 'turbo dev' } }),
+        }),
+      },
+      members: { exitCode: 0, stdout: '' },
+    });
+
+    expect(result.requests).toHaveLength(3);
+    const members = result.requests[2].args?.join(' ') ?? '';
+    expect(members).toContain('./apps/*/package.json');
+    expect(members).not.toContain('packages');
+  });
+
+  it('does not run a member read when no workspaces are declared', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': JSON.stringify({ scripts: { dev: 'vite' } }) }) },
+    });
+
+    expect(result.requests).toHaveLength(2);
+    expect(result.workspaces).toEqual([]);
+  });
+
+  it('survives a member read failure with the root result intact', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: {
+        exitCode: 0,
+        stdout: emitted({ './package.json': JSON.stringify({ workspaces: ['apps/*'], devDependencies: { vite: '^8' } }) }),
+      },
+      members: new Error('member read failed'),
+    });
+
+    expect(result.detection.candidates).toEqual([
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: '.' },
+    ]);
+    expect(result.warnings[0]).toContain('workspace manifests could not be read');
+  });
+
+  it('caps how many member manifests it will take', async () => {
+    const many: Record<string, string> = {};
+    for (let index = 0; index < MAX_WORKSPACE_MANIFESTS + 5; index += 1) {
+      many[`./apps/app${index}/package.json`] = JSON.stringify({ name: `app${index}` });
+    }
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': JSON.stringify({ workspaces: ['apps/*'] }) }) },
+      members: { exitCode: 0, stdout: emitted(many) },
+    });
+
+    expect(result.workspaces).toHaveLength(MAX_WORKSPACE_MANIFESTS);
+    expect(result.warnings.some((warning) => warning.includes('the rest were skipped'))).toBe(true);
+  });
+
+  it('cannot have a record boundary forged by manifest content', async () => {
+    // Valid JSON cannot carry a raw separator, so an escaped one in a string
+    // value stays inside its own record instead of inventing a new file.
+    const hostile = JSON.stringify({
+      name: `x${UNIT_ESCAPE}./evil/package.json`,
+      devDependencies: { vite: '^8' },
+    });
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': hostile }) },
+    });
+
+    expect(result.detection.candidates).toEqual([
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: '.' },
+    ]);
   });
 });

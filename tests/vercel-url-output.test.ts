@@ -363,7 +363,8 @@ describe('Vercel zero-config app routes', () => {
         }
         if (command.cmd === 'git') return { exitCode: 0, stdout: async () => `${REVISION}\n` };
         if ((command.args ?? []).join(' ').includes('package.json')) {
-          return { exitCode: 0, stdout: async () => JSON.stringify({ scripts: { dev: 'vite' } }) };
+          const manifest = JSON.stringify({ scripts: { dev: 'vite' } });
+          return { exitCode: 0, stdout: async () => `./package.json\u001f${manifest}\u001e` };
         }
         return { exitCode: 0 };
       }),

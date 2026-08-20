@@ -164,18 +164,18 @@ describe('CLI provider routing', () => {
     expect(await dispatch(['feature'], rememberedIo, { repoRoot: root, registry, tty: false })).toBe(0);
     expect(vercel.up).toHaveBeenCalledTimes(2);
     expect(local.up).not.toHaveBeenCalled();
-    expect(rememberedIo.output().stderr).toContain('provider: vercel (remembered');
+    expect(rememberedIo.output().stderr).toContain('[devbox/vercel] (change with --provider [local|vercel])');
 
     // --provider local switches back and stops the notice.
     const switchIo = streams();
     expect(await dispatch(['--provider', 'local', 'feature'], switchIo, { repoRoot: root, registry, tty: false })).toBe(0);
     expect(local.up).toHaveBeenCalledTimes(1);
-    expect(switchIo.output().stderr).not.toContain('remembered');
+    expect(switchIo.output().stderr).not.toContain('[devbox/');
 
     const afterSwitchIo = streams();
     expect(await dispatch(['feature'], afterSwitchIo, { repoRoot: root, registry, tty: false })).toBe(0);
     expect(local.up).toHaveBeenCalledTimes(2);
-    expect(afterSwitchIo.output().stderr).not.toContain('remembered');
+    expect(afterSwitchIo.output().stderr).not.toContain('[devbox/');
   });
 
   it('falls back to local when the stored preference is unreadable', async () => {
@@ -194,7 +194,7 @@ describe('CLI provider routing', () => {
     const io = streams();
     expect(await dispatch(['feature'], io, { repoRoot: root, registry, tty: false })).toBe(0);
     expect(local.up).toHaveBeenCalledTimes(1);
-    expect(io.output().stderr).not.toContain('remembered');
+    expect(io.output().stderr).not.toContain('[devbox/');
   });
 
   it('sets the provider for the repository with no branch and no action', async () => {

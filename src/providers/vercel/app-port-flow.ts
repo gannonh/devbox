@@ -98,6 +98,14 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     signal: scanSignal(options.signal),
   });
   for (const warning of scan.warnings) options.stderr.write(`app ports: ${warning}\n`);
+  if (scan.workspaces.length > 0 && scan.detection.candidates.length === 0) {
+    // Saying which members were read turns "nothing found" into something the
+    // user can act on: either the app is elsewhere, or its dev script is one
+    // the grammar deliberately does not interpret.
+    options.stderr.write(
+      `app ports: scanned ${scan.workspaces.length} workspace manifest(s): ${scan.workspaces.join(', ')}\n`,
+    );
+  }
 
   const revision = scan.revision;
   if (revision === undefined) {
@@ -124,14 +132,7 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     if (selected.length > 0) {
       options.stderr.write(`app ports: reusing the confirmed selection ${formatPorts(selected)}\n`);
     }
-  } else if (candidates.length === 0) {
-    selected = [...(previousSelection?.selected ?? [])];
-    options.stderr.write(
-      selected.length === 0
-        ? 'app ports: no app ports were inferred from the remote checkout\n'
-        : `app ports: no app ports were inferred; keeping ${formatPorts(selected)}\n`,
-    );
-  } else if (!candidatesFit(configured, candidates)) {
+  } else if (candidates.length > 0 && !candidatesFit(configured, candidates)) {
     // Offering a port that cannot be applied would turn a keystroke into a
     // failed boot, so report the capacity instead of asking.
     selected = [...(previousSelection?.selected ?? [])];
@@ -145,6 +146,7 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
       stdin: options.stdin,
       stderr: options.stderr,
       configured,
+      retained: previousSelection?.selected ?? [],
       candidates,
       conflicting,
     });
@@ -153,7 +155,16 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     selected = [...result.selected];
   } else {
     selected = [...(previousSelection?.selected ?? [])];
-    writeNonInteractiveNotice(options, candidates, selected);
+    if (candidates.length === 0) {
+      options.stderr.write(
+        selected.length === 0
+          ? 'app ports: no app ports were inferred from the remote checkout;'
+            + ` expose them with: devbox ${options.branch} --provider vercel --expose-ports <list>\n`
+          : `app ports: no app ports were inferred; keeping ${formatPorts(selected)}\n`,
+      );
+    } else {
+      writeNonInteractiveNotice(options, candidates, selected);
+    }
   }
 
   const desired = buildDesiredPortSet(configured, selected);

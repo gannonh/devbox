@@ -1,11 +1,17 @@
 /**
  * Bounded app-port detection for a remote checkout.
  *
- * The detector reads the remote repository's root `package.json` as data and
- * nothing else: `dependencies`, `devDependencies`, and the root `scripts.dev`
- * string. No package script or JavaScript/TypeScript config is executed, no
- * workspace is traversed, and no raw script, source, or `.env` text ever
- * leaves this module -- callers receive structured candidates only.
+ * The detector reads `package.json` manifests as data and nothing else:
+ * `dependencies`, `devDependencies`, and the `scripts.dev` string of each. No
+ * package script or JavaScript/TypeScript config is executed, and no raw
+ * script, source, or `.env` text ever leaves this module -- callers receive
+ * structured candidates only.
+ *
+ * A monorepo keeps its apps one level down, so the caller may supply workspace
+ * manifests alongside the root one; each is parsed independently and its
+ * candidates are labeled with the path they came from. Which manifests exist is
+ * the scanner's problem (see app-port-scan.ts); this module only parses what it
+ * is handed.
  *
  * The grammar is intentionally literal. A framework is an exact dependency key
  * or a `vite`/`next` executable token in command position (optionally after
@@ -26,17 +32,40 @@ export const APP_PORT_DETECTOR_VERSION = 1;
 export const VITE_DEFAULT_PORT = 5173;
 export const NEXT_DEFAULT_PORT = 3000;
 
-/** Largest root package.json the scanner will read from the Sandbox. */
+/** Largest package.json the scanner will read from the Sandbox. */
 export const MAX_PACKAGE_JSON_BYTES = 262_144;
+
+/** Workspace patterns honored from one repository, and members read from them. */
+export const MAX_WORKSPACE_PATTERNS = 16;
+export const MAX_WORKSPACE_MANIFESTS = 32;
+
+/**
+ * A literal path, optionally ending in a single-level wildcard. Dots are
+ * allowed inside a segment (`my.app`) but a `.`/`..` segment is refused
+ * separately, so no pattern can traverse out of the checkout.
+ */
+const WORKSPACE_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*(?:\/\*)?$/;
 
 export type AppPortFramework = 'vite' | 'next';
 /** Where a candidate port came from; both are safe to print. */
 export type AppPortEvidence = 'framework-default' | 'dev-script';
 
+/** The repository root manifest's path in a candidate or manifest list. */
+export const ROOT_MANIFEST_PATH = '.';
+
+export interface PackageManifest {
+  /** Path relative to the repository root; `.` for the root manifest. */
+  path: string;
+  /** File contents, or null when the manifest does not exist. */
+  content: string | null;
+}
+
 export interface AppPortCandidate {
   port: number;
   framework: AppPortFramework;
   source: AppPortEvidence;
+  /** Manifest the candidate came from; `.` for the repository root. */
+  workspace: string;
 }
 
 export interface AppPortDetection {
@@ -72,27 +101,51 @@ interface Segment {
 }
 
 /**
- * Detect app-port candidates from the remote root `package.json` text.
+ * Detect app-port candidates from one or more `package.json` manifests.
  *
- * `null` (no such file) yields no candidates. Malformed JSON yields a bounded
- * warning and no candidates so a Sandbox is never failed by a project's own
- * broken metadata.
+ * A missing manifest yields no candidates. Malformed JSON yields a bounded
+ * warning naming the path and no candidates from that manifest, so neither a
+ * Sandbox nor the other workspaces are failed by one project's broken metadata.
  */
-export function detectAppPorts(packageJson: string | null): AppPortDetection {
-  if (packageJson === null) return detection([], false, []);
+export function detectAppPorts(manifests: readonly PackageManifest[]): AppPortDetection {
+  const candidates: AppPortCandidate[] = [];
+  const warnings: string[] = [];
+  let conflicting = false;
+  for (const manifest of manifests) {
+    const result = detectManifest(manifest);
+    candidates.push(...result.candidates);
+    warnings.push(...result.warnings);
+    conflicting ||= result.conflicting;
+  }
+  return detection(candidates, conflicting, warnings);
+}
+
+interface ManifestDetection {
+  candidates: AppPortCandidate[];
+  conflicting: boolean;
+  warnings: string[];
+}
+
+function detectManifest(manifest: PackageManifest): ManifestDetection {
+  const empty: ManifestDetection = { candidates: [], conflicting: false, warnings: [] };
+  if (manifest.content === null) return empty;
+  const label = manifest.path === ROOT_MANIFEST_PATH ? 'root package.json' : `${manifest.path}/package.json`;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(packageJson) as unknown;
+    parsed = JSON.parse(manifest.content) as unknown;
   } catch (error) {
     // The parser message can echo file content; keep only the offset.
     const position = /position (\d+)/i.exec(error instanceof Error ? error.message : '')?.[1];
-    return detection([], false, [
-      `remote root package.json is not valid JSON${position === undefined ? '' : ` (at byte ${position})`}`
-      + '; no app ports were inferred',
-    ]);
+    return {
+      ...empty,
+      warnings: [
+        `remote ${label} is not valid JSON${position === undefined ? '' : ` (at byte ${position})`}`
+        + '; no app ports were inferred from it',
+      ],
+    };
   }
   if (!isRecord(parsed)) {
-    return detection([], false, ['remote root package.json is not a JSON object; no app ports were inferred']);
+    return { ...empty, warnings: [`remote ${label} is not a JSON object; no app ports were inferred from it`] };
   }
 
   const declared = new Set<AppPortFramework>();
@@ -112,7 +165,7 @@ export function detectAppPorts(packageJson: string | null): AppPortDetection {
   }
 
   const frameworks = FRAMEWORKS.filter((framework) => declared.has(framework));
-  if (frameworks.length === 0) return detection([], false, []);
+  if (frameworks.length === 0) return empty;
 
   const literal = new Map<AppPortFramework, Set<number>>(
     frameworks.map((framework) => [framework, new Set<number>()]),
@@ -131,16 +184,17 @@ export function detectAppPorts(packageJson: string | null): AppPortDetection {
 
   const candidates: AppPortCandidate[] = [];
   let conflicting = false;
+  const workspace = manifest.path;
   for (const framework of frameworks) {
     const ports = [...(literal.get(framework) ?? [])].sort((left, right) => left - right);
     if (ports.length === 0) {
-      candidates.push({ port: FRAMEWORK_DEFAULTS[framework], framework, source: 'framework-default' });
+      candidates.push({ port: FRAMEWORK_DEFAULTS[framework], framework, source: 'framework-default', workspace });
       continue;
     }
     if (ports.length > 1) conflicting = true;
-    for (const port of ports) candidates.push({ port, framework, source: 'dev-script' });
+    for (const port of ports) candidates.push({ port, framework, source: 'dev-script', workspace });
   }
-  return detection(candidates, conflicting, []);
+  return { candidates, conflicting, warnings: [] };
 }
 
 /**
@@ -148,7 +202,8 @@ export function detectAppPorts(packageJson: string | null): AppPortDetection {
  * sorted candidates plus the detector version.
  */
 export function fingerprintAppPortCandidates(candidates: readonly AppPortCandidate[]): string {
-  const sorted = sortCandidates(candidates).map(({ port, framework, source }) => [port, framework, source]);
+  const sorted = sortCandidates(candidates)
+    .map(({ port, framework, source, workspace }) => [port, framework, source, workspace]);
   return createHash('sha256')
     .update(JSON.stringify({ detectorVersion: APP_PORT_DETECTOR_VERSION, candidates: sorted }))
     .digest('hex');
@@ -156,9 +211,89 @@ export function fingerprintAppPortCandidates(candidates: readonly AppPortCandida
 
 /** Human-readable, content-free label for a candidate. */
 export function describeAppPortCandidate(candidate: AppPortCandidate): string {
-  return candidate.source === 'framework-default'
+  const evidence = candidate.source === 'framework-default'
     ? `${candidate.framework} default`
     : `${candidate.framework} dev script`;
+  // The path is what disambiguates two apps in one monorepo, so it is part of
+  // the label rather than a detail the prompt drops.
+  return candidate.workspace === ROOT_MANIFEST_PATH
+    ? evidence
+    : `${evidence} — ${candidate.workspace}`;
+}
+
+/**
+ * Workspace member patterns declared by a repository, as data.
+ *
+ * Two conventions exist and a repository may use either: npm/yarn/bun put a
+ * `workspaces` array (or `{ packages: [...] }`) in the root `package.json`,
+ * while pnpm keeps a `packages:` list in `pnpm-workspace.yaml`. Both are read
+ * here; neither is executed.
+ *
+ * Only two pattern shapes are honored, matching the detector's refusal to
+ * interpret: a literal path (`apps/web`) and a single-level trailing wildcard
+ * (`apps/*`). Recursive `**`, negations, and anything with characters outside a
+ * conservative path set are dropped rather than guessed at.
+ */
+export function parseWorkspacePatterns(
+  rootPackageJson: string | null,
+  pnpmWorkspaceYaml: string | null,
+): string[] {
+  const patterns: string[] = [];
+  if (rootPackageJson !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rootPackageJson) as unknown;
+    } catch {
+      parsed = undefined;
+    }
+    if (isRecord(parsed)) {
+      const declared = parsed.workspaces;
+      const list = Array.isArray(declared)
+        ? declared
+        : isRecord(declared) && Array.isArray(declared.packages) ? declared.packages : [];
+      for (const entry of list) if (typeof entry === 'string') patterns.push(entry);
+    }
+  }
+  if (pnpmWorkspaceYaml !== null) patterns.push(...parsePnpmPackages(pnpmWorkspaceYaml));
+
+  const valid: string[] = [];
+  for (const pattern of patterns) {
+    const trimmed = pattern.trim();
+    if (!WORKSPACE_PATTERN.test(trimmed)) continue;
+    // `.` and `..` match the segment class, and a traversal would send the
+    // scanner outside the checkout it is supposed to be reading.
+    if (trimmed.split('/').some((segment) => segment === '.' || segment === '..')) continue;
+    if (!valid.includes(trimmed)) valid.push(trimmed);
+    if (valid.length >= MAX_WORKSPACE_PATTERNS) break;
+  }
+  return valid;
+}
+
+/**
+ * Read the `packages:` sequence out of `pnpm-workspace.yaml`.
+ *
+ * A bounded line reader rather than a YAML parser: the block is a flat list of
+ * scalars, and anything else in the file is none of the detector's business.
+ */
+function parsePnpmPackages(source: string): string[] {
+  const packages: string[] = [];
+  let inBlock = false;
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+#.*$/, '');
+    if (/^packages:\s*$/.test(line)) {
+      inBlock = true;
+      continue;
+    }
+    if (!inBlock) continue;
+    const item = /^\s*-\s*(.+?)\s*$/.exec(line);
+    if (item) {
+      packages.push(item[1].replace(/^(['"])(.*)\1$/, '$2'));
+      continue;
+    }
+    // Any non-item, non-blank line ends the sequence.
+    if (line.trim().length > 0) break;
+  }
+  return packages;
 }
 
 function detection(
@@ -179,7 +314,8 @@ function sortCandidates(candidates: readonly AppPortCandidate[]): AppPortCandida
   return [...candidates].sort((left, right) =>
     left.port - right.port
     || left.framework.localeCompare(right.framework)
-    || left.source.localeCompare(right.source));
+    || left.source.localeCompare(right.source)
+    || left.workspace.localeCompare(right.workspace));
 }
 
 /**

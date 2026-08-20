@@ -18,6 +18,14 @@ import type {
 import type { ProviderInput } from '../src/providers/types.js';
 
 const REVISION = 'b'.repeat(40);
+const US = '\u001f';
+const RS = '\u001e';
+
+/** The scanner's `path<US>contents<RS>` wire format. */
+function emitted(files: Record<string, string>): string {
+  return Object.entries(files).map(([path, content]) => `${path}${US}${content}${RS}`).join('');
+}
+
 const OTHER_REVISION = 'c'.repeat(40);
 const VITE_PACKAGE = JSON.stringify({ scripts: { dev: 'vite' } });
 const NEXT_PACKAGE = JSON.stringify({ dependencies: { next: '15.0.0' } });
@@ -59,6 +67,10 @@ function fakeSandbox(ports: number[]) {
 
 interface ClientOptions {
   packageJson?: string | null;
+  /** Workspace member manifests keyed by path, e.g. `apps/web`. */
+  members?: Record<string, string>;
+  /** Contents of pnpm-workspace.yaml, the only declaration in many repos. */
+  pnpmWorkspace?: string;
   revision?: string;
   packageJsonExitCode?: number;
   onUpdate?: (ports: readonly number[]) => void;
@@ -74,11 +86,21 @@ function fakeClient(state: { ports: number[] }, options: ClientOptions = {}) {
           stdout: async () => `${options.revision ?? REVISION}\n`,
         } as unknown as VercelCommandResult;
       }
+      if ((request.args ?? []).join(' ').includes('for f in')) {
+        return {
+          exitCode: 0,
+          stdout: async () => emitted(Object.fromEntries(
+            Object.entries(options.members ?? {}).map(([path, content]) => [`./${path}/package.json`, content]),
+          )),
+        } as unknown as VercelCommandResult;
+      }
       const content = options.packageJson === undefined ? VITE_PACKAGE : options.packageJson;
-      if (content === null) return { exitCode: 42, stdout: async () => '' } as unknown as VercelCommandResult;
       return {
         exitCode: options.packageJsonExitCode ?? 0,
-        stdout: async () => content,
+        stdout: async () => emitted({
+          ...(content === null ? {} : { './package.json': content }),
+          ...(options.pnpmWorkspace === undefined ? {} : { './pnpm-workspace.yaml': options.pnpmWorkspace }),
+        }),
       } as unknown as VercelCommandResult;
     }),
     updatePorts: vi.fn(async (_sandbox: VercelSandboxHandle, ports: readonly number[]) => {
@@ -191,12 +213,48 @@ describe('zero-config app port flow', () => {
     expect(metadata?.appPorts).toEqual({
       selected: [5173],
       applied: [5173, DEVBOX_NOVNC_PROXY_PORT],
-      fingerprint: detectAppPorts(VITE_PACKAGE).fingerprint,
+      fingerprint: detectAppPorts([{ path: '.', content: VITE_PACKAGE }]).fingerprint,
       detectorVersion: APP_PORT_DETECTOR_VERSION,
       revision: REVISION,
     });
     expect(metadata?.pendingAppPorts).toBeUndefined();
     expect(output).not.toContain('scripts');
+  });
+
+  it('finds the app in a monorepo whose root only runs a task runner', async () => {
+    const { updates, result, output } = await run({
+      client: {
+        // The exact shape of a Turborepo: the root declares members only in
+        // pnpm-workspace.yaml and its dev script just runs the task runner.
+        packageJson: JSON.stringify({
+          scripts: { dev: 'turbo dev' },
+          devDependencies: { turbo: '^2.0.0' },
+        }),
+        pnpmWorkspace: 'packages:\n  - "apps/*"\n  - "packages/*"\n',
+        members: {
+          'apps/web': JSON.stringify({ scripts: { dev: 'vite' }, devDependencies: { vite: '^8' } }),
+          'packages/ui': JSON.stringify({ name: 'ui' }),
+        },
+      },
+    });
+
+    expect(updates).toEqual([[5173, DEVBOX_NOVNC_PROXY_PORT]]);
+    expect(result).toMatchObject({ selected: [5173], labels: { 5173: 'vite' } });
+    // The workspace path is what tells the user which app the port belongs to.
+    expect(output).not.toContain('no app ports were inferred');
+  });
+
+  it('names the workspaces it read when a monorepo yields nothing', async () => {
+    const { output } = await run({
+      client: {
+        packageJson: JSON.stringify({ workspaces: ['packages/*'], scripts: { dev: 'turbo dev' } }),
+        members: { 'packages/ui': JSON.stringify({ name: 'ui' }) },
+      },
+      tty: false,
+      answers: [],
+    });
+
+    expect(output).toContain('scanned 1 workspace manifest(s): packages/ui');
   });
 
   it('detects Next 3000 and applies it the same way', async () => {
@@ -275,12 +333,32 @@ describe('zero-config app port flow', () => {
     })).rejects.toThrow(/verified service maximum is 14.*at most 13 app ports/s);
   });
 
-  it('reports no inferred ports without failing when nothing is detected', async () => {
-    const { updates, output, result } = await run({ client: { packageJson: null } });
+  it('still asks in a TTY when nothing is detected, so ports can be added by hand', async () => {
+    const { updates, result, prompt } = await run({ client: { packageJson: null } });
+
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.calls[0][0]).toMatchObject({ candidates: [] });
+    expect(updates).toEqual([]);
+    expect(result.selected).toEqual([]);
+  });
+
+  it('exposes a hand-entered port when nothing was detected', async () => {
+    const { updates } = await run({ client: { packageJson: null }, answers: ['e:4173'] });
+
+    expect(updates).toEqual([[4173, DEVBOX_NOVNC_PROXY_PORT]]);
+  });
+
+  it('reports no inferred ports without failing outside a TTY', async () => {
+    const { updates, output, result } = await run({
+      client: { packageJson: null },
+      tty: false,
+      answers: [],
+    });
 
     expect(updates).toEqual([]);
     expect(result.selected).toEqual([]);
-    expect(output).toContain('no app ports were inferred');
+    expect(output).toContain('no app ports were inferred from the remote checkout');
+    expect(output).toContain('--expose-ports <list>');
   });
 
   it('never exposes a new port outside a TTY and names the exact opt-in syntax', async () => {
@@ -407,7 +485,7 @@ describe('zero-config app port flow', () => {
         previous: [DEVBOX_NOVNC_PROXY_PORT],
         desired: [5173, DEVBOX_NOVNC_PROXY_PORT],
         selected: [5173],
-        fingerprint: detectAppPorts(VITE_PACKAGE).fingerprint,
+        fingerprint: detectAppPorts([{ path: '.', content: VITE_PACKAGE }]).fingerprint,
         detectorVersion: APP_PORT_DETECTOR_VERSION,
         revision: REVISION,
       },
@@ -417,6 +495,7 @@ describe('zero-config app port flow', () => {
       store,
       ports: [DEVBOX_NOVNC_PROXY_PORT],
       client: { packageJson: null },
+      tty: false,
       answers: [],
     });
 
@@ -432,7 +511,7 @@ describe('zero-config app port flow', () => {
         previous: [4000, DEVBOX_NOVNC_PROXY_PORT],
         desired: [4000, 5173, DEVBOX_NOVNC_PROXY_PORT],
         selected: [5173],
-        fingerprint: detectAppPorts(VITE_PACKAGE).fingerprint,
+        fingerprint: detectAppPorts([{ path: '.', content: VITE_PACKAGE }]).fingerprint,
         detectorVersion: APP_PORT_DETECTOR_VERSION,
         revision: REVISION,
       },
@@ -443,6 +522,7 @@ describe('zero-config app port flow', () => {
       forwardPorts: [4000],
       ports: [4000, 9999, DEVBOX_NOVNC_PROXY_PORT],
       client: { packageJson: null },
+      tty: false,
       answers: [],
     });
 

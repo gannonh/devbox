@@ -48,10 +48,27 @@ the internal noVNC listener are never exposed.
 
 After the remote checkout is ready, Vercel scans it for app ports so a normal
 Vite or Next project needs no devbox-specific configuration. The scan reads
-only the remote repository's root `package.json` — `dependencies`,
-`devDependencies`, and the root `scripts.dev` string — as data. Nothing is
-executed, workspaces are not traversed, and no script, source, or `.env` text is
-printed.
+`package.json` manifests as data — `dependencies`, `devDependencies`, and the
+`scripts.dev` string of each. Nothing is executed and no script, source, or
+`.env` text is printed.
+
+It reads the repository root manifest, and, when the repository declares
+workspaces, each member's manifest too. That second part is not an optimization:
+a Turborepo or pnpm workspace keeps its root manifest as a task-runner shell
+(`"dev": "turbo dev"`) with the actual app one level down, so a root-only scan
+would find nothing in the most common monorepo layout. Members are discovered
+from the `workspaces` field and/or `pnpm-workspace.yaml`, whichever the
+repository uses. Only literal paths (`apps/web`) and single-level wildcards
+(`apps/*`) are honored; `**`, negations, and traversals are dropped rather than
+interpreted, and at most 16 patterns and 32 member manifests are read.
+
+Candidates from a workspace are labeled with their path, so two apps in one
+repository are never ambiguous:
+
+```text
+  candidate: 5173 (vite default — apps/web)
+  candidate: 3001 (next dev script — apps/docs)
+```
 
 | Evidence | Candidate |
 | --- | --- |
@@ -72,6 +89,21 @@ Enter accepts, `n` rejects, and `e` edits the inferred set only — the edit
 prompt can never drop a configured port. Accepted ports are applied to the
 running Sandbox with a single full-port-list update; the Sandbox is never
 recreated to add a route.
+
+When the detector infers nothing, a TTY is still asked — the default inverted so
+that Enter exposes nothing:
+
+```text
+No app ports were inferred from the remote checkout.
+  accepted app routes are PUBLIC: anyone with the URL can reach them
+  app ports to expose (comma-separated, Enter for none):
+```
+
+Detecting nothing is not the same as having nothing to expose: a layout the
+grammar deliberately does not reach, or a server started by some other runner,
+still has a port you know. A repository with no web app at all stays one
+keystroke from booting, and the answer is remembered like any other, so you are
+asked once per project state rather than on every boot.
 
 Outside a TTY nothing new is ever exposed. The run reports the skipped
 candidates and the exact opt-in, which is also how you script the behavior:

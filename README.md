@@ -148,10 +148,11 @@ and retry script live in `/vercel/.devbox/runtime/`.
 #### Zero-config app ports
 
 A normal Vite or Next repository needs no devbox-specific port configuration.
-After the remote checkout lands, devbox reads that checkout's root
-`package.json` — dependencies and the root `dev` script only, as data, never
-executed — and offers the conventional `5173`/`3000` port, or a literal port the
-dev script names:
+After the remote checkout lands, devbox reads that checkout's `package.json`
+manifests — dependencies and the `dev` script only, as data, never executed —
+and offers the conventional `5173`/`3000` port, or a literal port the dev script
+names. In a monorepo it reads the workspace members too, so a Turborepo whose
+root just runs `turbo dev` still finds the app in `apps/web`:
 
 ```text
 Detected app ports in the remote checkout:
@@ -161,7 +162,8 @@ Expose the detected app port(s)? [Y/n/e=edit]
 ```
 
 Enter accepts, `n` declines, and `e` edits the inferred list; configured
-`forwardPorts` are always retained either way. The accepted ports are added to
+`forwardPorts` are always retained either way. If nothing is detected you are
+still asked, so you can name a port by hand — there Enter means *none*. The accepted ports are added to
 the running Sandbox without recreating it, and the ready banner prints the
 public URL. Outside a TTY nothing new is exposed unless you ask explicitly:
 

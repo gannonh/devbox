@@ -4,9 +4,9 @@ import { promptForAppPorts } from '../src/providers/vercel/app-port-prompt.js';
 import type { AppPortCandidate } from '../src/providers/vercel/app-ports.js';
 import type { ProviderInput } from '../src/providers/types.js';
 
-const VITE: AppPortCandidate = { port: 5173, framework: 'vite', source: 'framework-default' };
-const NEXT_A: AppPortCandidate = { port: 4100, framework: 'next', source: 'dev-script' };
-const NEXT_B: AppPortCandidate = { port: 4200, framework: 'next', source: 'dev-script' };
+const VITE: AppPortCandidate = { port: 5173, framework: 'vite', source: 'framework-default', workspace: '.' };
+const NEXT_A: AppPortCandidate = { port: 4100, framework: 'next', source: 'dev-script', workspace: '.' };
+const NEXT_B: AppPortCandidate = { port: 4200, framework: 'next', source: 'dev-script', workspace: '.' };
 
 function scriptedAsk(answers: string[]): {
   ask: (question: string) => Promise<string>;
@@ -26,7 +26,12 @@ function scriptedAsk(answers: string[]): {
 
 async function prompt(
   answers: string[],
-  overrides: { candidates?: AppPortCandidate[]; configured?: number[]; conflicting?: boolean } = {},
+  overrides: {
+    candidates?: AppPortCandidate[];
+    configured?: number[];
+    conflicting?: boolean;
+    retained?: number[];
+  } = {},
 ) {
   const stderr = new PassThrough();
   const output: string[] = [];
@@ -36,6 +41,7 @@ async function prompt(
     stdin: new PassThrough() as unknown as ProviderInput,
     stderr,
     configured: overrides.configured ?? [],
+    ...(overrides.retained === undefined ? {} : { retained: overrides.retained }),
     candidates: overrides.candidates ?? [VITE],
     conflicting: overrides.conflicting ?? false,
     ask: scripted.ask,
@@ -124,17 +130,40 @@ describe('public app port prompt', () => {
     expect(result).toEqual({ decision: 'rejected', selected: [] });
   });
 
-  it('never prompts when there are no candidates', async () => {
-    const scripted = scriptedAsk([]);
+  it('offers manual entry when the detector inferred nothing', async () => {
+    const { result, rendered, questions } = await prompt(['5173'], { candidates: [] });
 
-    await expect(promptForAppPorts({
-      stdin: new PassThrough() as unknown as ProviderInput,
-      stderr: new PassThrough(),
-      configured: [4000],
-      candidates: [],
-      conflicting: false,
-      ask: scripted.ask,
-    })).resolves.toEqual({ decision: 'rejected', selected: [] });
-    expect(scripted.questions).toEqual([]);
+    expect(rendered).toContain('No app ports were inferred from the remote checkout.');
+    expect(rendered).toContain('accepted app routes are PUBLIC');
+    expect(questions[0]).toContain('Enter for none');
+    expect(result).toEqual({ decision: 'edited', selected: [5173] });
+  });
+
+  it('defaults to exposing nothing when nothing was inferred', async () => {
+    const { result } = await prompt([''], { candidates: [] });
+
+    expect(result).toEqual({ decision: 'rejected', selected: [] });
+  });
+
+  it('re-asks an invalid manual entry instead of exposing it', async () => {
+    const { result, rendered } = await prompt(['5900', 'not-a-port', '4173'], { candidates: [] });
+
+    expect(rendered).toContain('the VNC port stays private');
+    expect(rendered).toContain('is not a decimal port');
+    expect(result).toEqual({ decision: 'edited', selected: [4173] });
+  });
+
+  it('keeps an earlier confirmed set when the manual answer is empty', async () => {
+    const { result, rendered, questions } = await prompt([''], { candidates: [], retained: [5173] });
+
+    expect(rendered).toContain('retained (confirmed earlier): 5173');
+    expect(questions[0]).toContain('Enter to keep the current set');
+    expect(result).toEqual({ decision: 'accepted', selected: [5173] });
+  });
+
+  it('lists configured ports as retained in the manual prompt too', async () => {
+    const { rendered } = await prompt([''], { candidates: [], configured: [4000] });
+
+    expect(rendered).toContain('retained (configured): 4000');
   });
 });

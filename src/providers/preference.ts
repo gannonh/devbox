@@ -19,6 +19,8 @@ import type { ProviderName } from './types.js';
 
 const PREFERENCES_DIRECTORY = 'repos';
 const APP_DIRECTORY = 'devbox';
+/** Selectable providers, in the order the CLI documents them. */
+const PROVIDER_NAMES: readonly ProviderName[] = ['local', 'vercel'];
 
 export interface ProviderPreferenceOptions {
   /** Overridable for tests; defaults to the XDG state home. */
@@ -97,8 +99,12 @@ export function resolveProviderChoice(
 /**
  * A one-line notice when a non-local provider was applied from memory, so a
  * remembered cloud provider is always visible before it spends anything.
+ *
+ * The tag carries the provider rather than describing it in prose, so the line
+ * reads the same however many providers exist. The switch hint lists the
+ * registry's names so it stays correct as providers are added.
  */
 export function describeProviderChoice(choice: ProviderChoice): string | undefined {
   if (!choice.remembered || choice.provider === 'local') return undefined;
-  return `[devbox] provider: ${choice.provider} (remembered; use --provider local to change)`;
+  return `[devbox/${choice.provider}] (change with --provider [${PROVIDER_NAMES.join('|')}])`;
 }
