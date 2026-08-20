@@ -460,7 +460,7 @@ async function startDisplayAndProbe(adapter, sandbox, config, signal) {
   await waitForCommand(started, signal);
   const status = await command(adapter, sandbox, {
     cmd: 'sh',
-    args: ['-c', 'pgrep -x Xvfb >/dev/null && pgrep -x fluxbox >/dev/null && pgrep -x x11vnc >/dev/null && pgrep -f "[w]ebsockify" >/dev/null && pgrep -f "[b]asic-auth-proxy.mjs" >/dev/null'],
+    args: ['-c', 'pgrep -x Xvfb >/dev/null && pgrep -x fluxbox >/dev/null && pgrep -x x11vnc >/dev/null && pgrep -f "[w]ebsockify" >/dev/null && pgrep -f "[n]ovnc-proxy.mjs" >/dev/null'],
     signal,
   });
   if (status.exitCode !== 0) {
