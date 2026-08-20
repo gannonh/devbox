@@ -14,28 +14,27 @@
 import type { Writable } from 'node:stream';
 import {
   APP_PORT_DETECTOR_VERSION,
-  describeAppPortCandidate,
   type AppPortCandidate,
 } from './app-ports.js';
+import { decideAppPortSelection } from './app-port-decision.js';
 import { scanRemoteAppPorts } from './app-port-scan.js';
 import { promptForAppPorts } from './app-port-prompt.js';
 import {
   appPortsOf,
   buildDesiredPortSet,
-  DEVBOX_NOVNC_PROXY_PORT,
-  MAX_VERCEL_SANDBOX_PORTS,
   resolveDevcontainerPorts,
   samePortSet,
 } from './ports.js';
-import type {
-  VercelAppPortSelection,
-  VercelBranchMetadata,
-  VercelBranchMetadataInput,
-  VercelBranchMetadataStore,
-  VercelPendingAppPorts,
+import {
+  withAppPortFields,
+  type VercelAppPortSelection,
+  type VercelBranchMetadata,
+  type VercelBranchMetadataStore,
+  type VercelPendingAppPorts,
 } from './metadata.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from './client.js';
 import type { ProviderInput } from '../types.js';
+import { redactSecrets } from './redaction.js';
 
 export type AppPortPrompt = typeof promptForAppPorts;
 
@@ -133,25 +132,18 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     && previousSelection.fingerprint === fingerprint
     && previousSelection.revision === revision;
 
+  const decision = decideAppPortSelection({
+    branch: options.branch,
+    ...(options.exposePorts === undefined ? {} : { exposePorts: options.exposePorts }),
+    reusable,
+    previousSelected: previousSelection?.selected ?? [],
+    candidates,
+    configured,
+    tty: options.tty,
+  });
+
   let selected: number[];
-  if (options.exposePorts !== undefined) {
-    selected = [...options.exposePorts];
-    options.stderr.write(`app ports: exposing ${formatPorts(selected)} from --expose-ports\n`);
-  } else if (reusable) {
-    selected = [...previousSelection.selected];
-    if (selected.length > 0) {
-      options.stderr.write(`app ports: reusing the confirmed selection ${formatPorts(selected)}\n`);
-    }
-  } else if (candidates.length > 0 && !candidatesFit(configured, candidates)) {
-    // Offering a port that cannot be applied would turn a keystroke into a
-    // failed boot, so report the capacity instead of asking.
-    selected = [...(previousSelection?.selected ?? [])];
-    options.stderr.write(
-      `app ports: not offering ${formatPorts(candidatePorts(candidates))}; `
-      + `${configured.length} configured port(s) plus the reserved noVNC port ${DEVBOX_NOVNC_PROXY_PORT} `
-      + `leave room for ${remainingCapacity(configured)} more\n`,
-    );
-  } else if (options.tty) {
+  if (decision.kind === 'prompt') {
     const result = await (options.prompt ?? promptForAppPorts)({
       stdin: options.stdin,
       stderr: options.stderr,
@@ -165,17 +157,8 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     // owns; the trusted configured ports are added back below regardless.
     selected = [...result.selected];
   } else {
-    selected = [...(previousSelection?.selected ?? [])];
-    if (candidates.length === 0) {
-      options.stderr.write(
-        selected.length === 0
-          ? 'app ports: no app ports were inferred from the remote checkout;'
-            + ` expose them with: devbox ${options.branch} --provider vercel --expose-ports <list>\n`
-          : `app ports: no app ports were inferred; keeping ${formatPorts(selected)}\n`,
-      );
-    } else {
-      writeNonInteractiveNotice(options, candidates, selected);
-    }
+    selected = decision.selected;
+    if (decision.notice !== undefined) options.stderr.write(`${decision.notice}\n`);
   }
 
   const desired = buildDesiredPortSet(configured, selected);
@@ -194,7 +177,7 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     detectorVersion: APP_PORT_DETECTOR_VERSION,
     revision,
   };
-  await options.branchStore.write(branchInput(metadata, previousSelection, pending));
+  await options.branchStore.write(withAppPortFields(metadata, previousSelection, pending));
   try {
     await options.client.updatePorts(
       options.sandbox,
@@ -202,10 +185,21 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
       options.signal === undefined ? undefined : { signal: options.signal },
     );
   } catch (error) {
-    // The pending record is durable, so reconcile against the Sandbox's real
-    // route set rather than guessing whether the update landed.
-    await reconcilePendingAppPorts(options, await options.branchStore.read());
-    throw error;
+    // Leave the pending record alone. This handle's routes may still match
+    // `previous` even when the service already applied `desired` (timeout after
+    // a successful update), and reconciling against that stale snapshot would
+    // clear pending and can roll the next attach back to the older selection.
+    const detail = redactSecrets(error, options.secrets ?? []);
+    options.stderr.write(
+      `app ports: route update failed (${detail}); `
+      + 'pending retained so the next attach can reconcile against fresh routes\n',
+    );
+    return {
+      selected: [...(previousSelection?.selected ?? [])],
+      applied: previous,
+      updated: false,
+      labels: frameworkLabels(candidates, previousSelection?.selected ?? []),
+    };
   }
   const selection: VercelAppPortSelection = {
     selected,
@@ -214,7 +208,7 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     detectorVersion: APP_PORT_DETECTOR_VERSION,
     revision,
   };
-  await options.branchStore.write(branchInput(metadata, selection, undefined));
+  await options.branchStore.write(withAppPortFields(metadata, selection, undefined));
   return { selected, applied: desired, updated: true, labels };
 }
 
@@ -290,60 +284,8 @@ async function writeBranch(
   appPorts: VercelAppPortSelection | undefined,
   pendingAppPorts: VercelPendingAppPorts | undefined,
 ): Promise<VercelBranchMetadata | null> {
-  await options.branchStore.write(branchInput(metadata, appPorts, pendingAppPorts));
+  await options.branchStore.write(withAppPortFields(metadata, appPorts, pendingAppPorts));
   return options.branchStore.read();
-}
-
-/** Rebuild the stored record with new app-port fields; omission clears them. */
-function branchInput(
-  metadata: VercelBranchMetadata | null,
-  appPorts: VercelAppPortSelection | undefined,
-  pendingAppPorts: VercelPendingAppPorts | undefined,
-): VercelBranchMetadataInput {
-  return {
-    ...(metadata?.identity === undefined ? {} : { identity: metadata.identity }),
-    ...(metadata?.sandboxId === undefined ? {} : { sandboxId: metadata.sandboxId }),
-    ...(metadata?.snapshotIds === undefined ? {} : { snapshotIds: metadata.snapshotIds }),
-    ...(metadata?.residual === undefined ? {} : { residual: metadata.residual }),
-    ...(metadata?.configuration === undefined ? {} : { configuration: metadata.configuration }),
-    ...(metadata?.displayCredentials === undefined ? {} : { displayCredentials: metadata.displayCredentials }),
-    ...(appPorts === undefined ? {} : { appPorts }),
-    ...(pendingAppPorts === undefined ? {} : { pendingAppPorts }),
-  };
-}
-
-function writeNonInteractiveNotice(
-  options: AppPortFlowOptions,
-  candidates: readonly AppPortCandidate[],
-  retained: readonly number[],
-): void {
-  const skipped = [...new Set(candidates.map(({ port }) => port))].sort((left, right) => left - right);
-  const detail = candidates
-    .map((candidate) => `${candidate.port} (${describeAppPortCandidate(candidate)})`)
-    .join(', ');
-  options.stderr.write(
-    `app ports: skipped ${detail} because this run is not interactive\n`
-    + `  expose them with: devbox ${options.branch} --provider vercel --expose-ports ${skipped.join(',')}\n`
-    + (retained.length === 0 ? '' : `  keeping the previously confirmed ${formatPorts(retained)}\n`),
-  );
-}
-
-function candidatePorts(candidates: readonly AppPortCandidate[]): number[] {
-  return [...new Set(candidates.map(({ port }) => port))].sort((left, right) => left - right);
-}
-
-/** Room left for app ports once the configured set and reserved noVNC are in. */
-function remainingCapacity(configured: readonly number[]): number {
-  const reserved = new Set([...configured, DEVBOX_NOVNC_PROXY_PORT]);
-  return MAX_VERCEL_SANDBOX_PORTS - reserved.size;
-}
-
-function candidatesFit(
-  configured: readonly number[],
-  candidates: readonly AppPortCandidate[],
-): boolean {
-  const additional = candidatePorts(candidates).filter((port) => !configured.includes(port));
-  return additional.length <= remainingCapacity(configured);
 }
 
 function frameworkLabels(

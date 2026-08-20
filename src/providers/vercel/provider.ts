@@ -19,7 +19,6 @@ import {
 } from './auth.js';
 import {
   createVercelSandboxClient,
-  type SandboxRoute,
   type VercelSandboxClient,
   type VercelSandboxHandle,
 } from './client.js';
@@ -39,7 +38,7 @@ import {
   type VercelScopeMetadata,
   type VercelScopeMetadataStore,
 } from './metadata.js';
-import { mapVercelError, VercelProviderError } from './errors.js';
+import { mapVercelError } from './errors.js';
 import { createVercelBranchTag } from './identity.js';
 import {
   normalizeRequestedSourceBranch,
@@ -62,15 +61,20 @@ import {
   type VercelTerminalStreams,
 } from './terminal.js';
 import { prepareSandboxRuntime, RUNTIME_PREPARATION_TIMEOUT_MS } from './runtime.js';
-import { renderSetupNotice, type VercelSetupStatus } from './setup.js';
-import { addSecrets } from './redaction.js';
-import { DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts, VercelPortsError } from './ports.js';
+import { addSecrets, redactSecrets } from './redaction.js';
+import { DEVBOX_NOVNC_PROXY_PORT } from './ports.js';
 import {
   applyAppPorts,
   type AppPortFlowMode,
   type AppPortFlowResult,
   type AppPortPrompt,
 } from './app-port-flow.js';
+import {
+  renderVercelAttachNotice,
+  renderVercelReadyBlock,
+  renderVercelRoutes,
+  resolveRouteLabels,
+} from './provider-routes.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -788,25 +792,6 @@ function renderList(
   // the sandbox itself.
 }
 
-interface RenderedVercelRoute {
-  route: SandboxRoute;
-  url: string;
-  line: string;
-}
-
-async function renderedRoutesForSandbox(
-  sandbox: VercelSandboxHandle,
-  repoRoot: string,
-  token: string,
-  extraLabels: Record<number, string> = {},
-): Promise<RenderedVercelRoute[]> {
-  return renderVercelRoutes(
-    sandbox.routes ?? [],
-    { ...await resolveRouteLabels(repoRoot), ...extraLabels },
-    token,
-  );
-}
-
 /**
  * Detect, confirm, and apply public app routes for the remote checkout.
  *
@@ -823,22 +808,29 @@ async function resolveAppPorts(
   repository: string,
   secrets: readonly string[],
   mode: AppPortFlowMode = 'boot',
-): Promise<AppPortFlowResult> {
-  return applyAppPorts({
-    mode,
-    sandbox,
-    client,
-    branchStore,
-    repoRoot: request.repoRoot,
-    workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
-    branch: request.branch,
-    tty: request.tty,
-    stdin: request.stdin,
-    stderr: request.stderr,
-    ...(request.exposePorts === undefined ? {} : { exposePorts: request.exposePorts }),
-    secrets,
-    ...(options.appPortPrompt === undefined ? {} : { prompt: options.appPortPrompt }),
-  });
+): Promise<AppPortFlowResult | undefined> {
+  try {
+    return await applyAppPorts({
+      mode,
+      sandbox,
+      client,
+      branchStore,
+      repoRoot: request.repoRoot,
+      workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
+      branch: request.branch,
+      tty: request.tty,
+      stdin: request.stdin,
+      stderr: request.stderr,
+      ...(request.exposePorts === undefined ? {} : { exposePorts: request.exposePorts }),
+      secrets,
+      ...(options.appPortPrompt === undefined ? {} : { prompt: options.appPortPrompt }),
+    });
+  } catch (error) {
+    request.stderr.write(
+      `app ports: ${redactSecrets(error, secrets)}; continuing with configured routes only\n`,
+    );
+    return undefined;
+  }
 }
 
 async function displayToken(
@@ -849,73 +841,6 @@ async function displayToken(
   const token = (await resolveDisplayCredentials(store)).credentials.password;
   addSecrets(secrets, token);
   return token;
-}
-
-// Labels are cosmetic enrichment on read surfaces. A malformed
-// devcontainer.json must not break --url or a resume the way it cannot
-// break stop/remove/list (see the up()-only ports resolution in the
-// lifecycle); `up` fails hard on it when the ports actually matter.
-async function resolveRouteLabels(repoRoot: string): Promise<Record<number, string>> {
-  try {
-    return (await resolveDevcontainerPorts(repoRoot)).labels;
-  } catch (error) {
-    if (!(error instanceof VercelPortsError)) throw error;
-    return {};
-  }
-}
-
-/**
- * One block for both boot and resume.
- *
- * Resume used to collapse everything onto a single line, which buried a long
- * display URL and gave no way to stop or remove the box you had just attached
- * to. The access code is listed on its own line because it is short enough to
- * type into the pairing form when a link is stale or you are opening the
- * display on another device.
- */
-async function renderVercelBlock(
-  request: ProviderBranchRequest,
-  sandbox: VercelSandboxHandle,
-  setupStatus: VercelSetupStatus | null,
-  token: string,
-  headline: string,
-  appPorts?: AppPortFlowResult,
-): Promise<void> {
-  const routes = await renderedRoutesForSandbox(
-    sandbox,
-    request.repoRoot,
-    token,
-    appPorts?.labels ?? {},
-  );
-  request.stderr.write(`${headline}\n`);
-  for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
-  if (routes.some(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT)) {
-    request.stderr.write(`  access code: ${token}\n`);
-  }
-  request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
-  request.stderr.write(`  remove: devbox ${request.branch} --provider vercel --rm\n`);
-  const setupNotice = renderSetupNotice(setupStatus);
-  if (setupNotice) request.stderr.write(`${setupNotice}\n`);
-}
-
-async function renderVercelReadyBlock(
-  request: ProviderBranchRequest,
-  sandbox: VercelSandboxHandle,
-  setupStatus: VercelSetupStatus | null,
-  token: string,
-  appPorts?: AppPortFlowResult,
-): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox ready', appPorts);
-}
-
-async function renderVercelAttachNotice(
-  request: ProviderBranchRequest,
-  sandbox: VercelSandboxHandle,
-  setupStatus: VercelSetupStatus | null,
-  token: string,
-  appPorts?: AppPortFlowResult,
-): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed', appPorts);
 }
 
 /**
@@ -932,60 +857,6 @@ function branchFromTag(tag: string | undefined): string | undefined {
   const candidate = tag.replace(/-[a-f0-9]{16}$/, '');
   if (candidate === tag) return undefined;
   return createVercelBranchTag(candidate) === tag ? candidate : undefined;
-}
-
-function renderVercelRoutes(
-  routes: readonly SandboxRoute[],
-  labels: Record<number, string>,
-  token: string,
-): RenderedVercelRoute[] {
-  return [...routes]
-    .sort((left, right) => left.port - right.port)
-    .map((route) => {
-      const safe = assertSafeRouteUrl(route.url);
-      const url = route.port === DEVBOX_NOVNC_PROXY_PORT
-        ? novncPairingUrl(safe, token)
-        : safe;
-      const description = route.port === DEVBOX_NOVNC_PROXY_PORT
-        ? 'noVNC display'
-        : labels[route.port] ? `${labels[route.port]} — public` : 'public';
-      return {
-        route,
-        url,
-        line: `${route.port}: ${url}  (${description})`,
-      };
-    });
-}
-
-// The display link carries the branch access code so a click pairs the browser.
-// The proxy exchanges it for an HttpOnly cookie and redirects the code out of
-// the address bar; see images/vercel/novnc-proxy.mjs.
-function novncPairingUrl(routeUrl: string, token: string): string {
-  // Resolve relatively: a Vercel route may carry a path prefix that an
-  // absolute '/vnc.html' would discard.
-  const parsed = new URL('vnc.html', routeUrl.endsWith('/') ? routeUrl : `${routeUrl}/`);
-  parsed.searchParams.set('token', token);
-  parsed.searchParams.set('autoconnect', '1');
-  return parsed.href;
-}
-
-function assertSafeRouteUrl(url: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new VercelProviderError('route', 'Vercel route URL is invalid');
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new VercelProviderError('route', 'Vercel route URL must use https', 2);
-  }
-  if (parsed.username || parsed.password) {
-    throw new VercelProviderError('route', 'Vercel route URL contains embedded credentials', 2);
-  }
-  if (parsed.search || parsed.hash) {
-    throw new VercelProviderError('route', 'Vercel route URL contains query or fragment data', 2);
-  }
-  return url;
 }
 
 function sandboxName(metadata: VercelBranchMetadata | null, branch: string): string {

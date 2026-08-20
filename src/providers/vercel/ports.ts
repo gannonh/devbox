@@ -39,12 +39,7 @@ export function assertSdkPorts(ports: number[]): number[] {
         `SDK ports input contains ${describe(port)}; every port must be an integer in 1..65535`,
       );
     }
-    if (port === DEVBOX_VNC_PORT) {
-      throw new VercelPortsError(`SDK ports input contains ${DEVBOX_VNC_PORT}; this port is forbidden/private`);
-    }
-    if (port === DEVBOX_NOVNC_INTERNAL_PORT) {
-      throw new VercelPortsError(`SDK ports input contains ${DEVBOX_NOVNC_INTERNAL_PORT}; this noVNC port is internal/private`);
-    }
+    assertPublicSandboxPort(port, `SDK ports input contains ${port}`);
     resolved.add(port);
   }
   resolved.add(DEVBOX_NOVNC_PROXY_PORT);
@@ -57,6 +52,16 @@ export function assertSdkPorts(ports: number[]): number[] {
     );
   }
   return result;
+}
+
+/** Refuse the private VNC / internal noVNC ports that must never be exposed. */
+export function assertPublicSandboxPort(port: number, prefix: string): void {
+  if (port === DEVBOX_VNC_PORT) {
+    throw new VercelPortsError(`${prefix}; this port is forbidden/private`);
+  }
+  if (port === DEVBOX_NOVNC_INTERNAL_PORT) {
+    throw new VercelPortsError(`${prefix}; this noVNC port is internal/private`);
+  }
 }
 
 export function normalizeContainerPort(value: unknown): number {

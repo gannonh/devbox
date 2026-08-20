@@ -120,6 +120,27 @@ describe('Vercel display credentials', () => {
     await expect(store.read()).resolves.toMatchObject({ displayCredentials: result.credentials });
   });
 
+  it('preserves stored app-port selection when generating display credentials', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-preserve-app-ports-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/display',
+    });
+    const appPorts = {
+      selected: [5173],
+      applied: [5173, 6080],
+      fingerprint: 'a'.repeat(64),
+      detectorVersion: 2,
+      revision: 'b'.repeat(40),
+    };
+    await store.write({ appPorts });
+
+    await getDisplayCredentials(store);
+
+    await expect(store.read()).resolves.toMatchObject({ appPorts });
+  });
+
   it('keeps a generated credential pending until display startup succeeds', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-pending-'));
     const store = createVercelBranchMetadataStore({
