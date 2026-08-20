@@ -27,11 +27,17 @@ provider.
 3. Upload runtime-only files with mode `0600`, authenticate `gh`, link the
    repository `.env`, start the display explicitly, and report setup as a
    separate background status.
-4. Expose only port `6080` and configured app ports. `5900` and the internal
-   noVNC listener remain private. The display proxy pairs a browser from the
-   access code on the printed link, exchanging it for an HttpOnly cookie and
+4. Expose port `6080`, the configured app ports, and any app ports the user
+   accepts from the bounded remote detector. `5900` and the internal noVNC
+   listener remain private. The display proxy pairs a browser from the access
+   code on the printed link, exchanging it for an HttpOnly cookie and
    redirecting the code out of the URL (ADR 0003).
-5. Stop, resume, and remove use terminal session proof plus snapshot relisting.
+5. Scan the remote checkout's root `package.json` for Vite/Next app ports,
+   confirm them once, and apply the full desired port list through
+   `Sandbox.update({ ports })` on the running Sandbox. The selection is bound to
+   the candidate fingerprint, detector version, and remote `HEAD`, and is
+   written pending-then-commit so an interrupted update is reconcilable.
+6. Stop, resume, and remove use terminal session proof plus snapshot relisting.
    Metadata is removed only after cloud cleanup converges; residual IDs remain
    in a mode-`0600` retry record after partial cleanup.
 
@@ -46,7 +52,11 @@ flowchart LR
   SDK --> Image[Public digest-pinned VCR image]
   SDK --> Runtime[Runtime secrets/display/setup]
   SDK --> TTY[Interactive terminal]
-  SDK --> Routes[6080 + explicit app ports]
+  Vercel --> Detect[Bounded Vite/Next detector]
+  Detect --> Confirm[Public-route confirmation]
+  Confirm --> Update[Sandbox.update ports]
+  SDK --> Routes[6080 + explicit + accepted app ports]
+  Update --> Routes
   Runtime --> Routes
 ```
 

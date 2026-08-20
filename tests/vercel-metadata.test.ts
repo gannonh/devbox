@@ -486,3 +486,156 @@ describe('Vercel metadata', () => {
     await expect(lock.release()).rejects.toBeInstanceOf(Error);
   });
 });
+
+describe('Vercel app port metadata', () => {
+  const FINGERPRINT = 'a'.repeat(64);
+  const REVISION = 'b'.repeat(40);
+
+  async function store() {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-app-ports-'));
+    return createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/ui',
+    });
+  }
+
+  it('round-trips a committed selection bound to the fingerprint, version, and revision', async () => {
+    const branch = await store();
+    const appPorts = {
+      selected: [5173],
+      applied: [5173, 6080],
+      fingerprint: FINGERPRINT,
+      detectorVersion: 1,
+      revision: REVISION,
+    };
+
+    await branch.write({ appPorts });
+
+    expect((await branch.read())?.appPorts).toEqual(appPorts);
+  });
+
+  it('round-trips a pending record with both the previous and desired sets', async () => {
+    const branch = await store();
+    const pendingAppPorts = {
+      previous: [6080],
+      desired: [5173, 6080],
+      selected: [5173],
+      fingerprint: FINGERPRINT,
+      detectorVersion: 1,
+      revision: REVISION,
+    };
+
+    await branch.write({ pendingAppPorts });
+
+    expect((await branch.read())?.pendingAppPorts).toEqual(pendingAppPorts);
+  });
+
+  it('stores an empty accepted set for a rejected candidate list', async () => {
+    const branch = await store();
+
+    await branch.write({
+      appPorts: {
+        selected: [],
+        applied: [6080],
+        fingerprint: FINGERPRINT,
+        detectorVersion: 1,
+        revision: REVISION,
+      },
+    });
+
+    expect((await branch.read())?.appPorts?.selected).toEqual([]);
+  });
+
+  it.each([
+    ['a non-integer port', { selected: [5173.5], applied: [6080] }, /integer port in 1\.\.65535/],
+    ['an out-of-range port', { selected: [70000], applied: [6080] }, /integer port in 1\.\.65535/],
+    ['a duplicate port', { selected: [5173, 5173], applied: [6080] }, /duplicates port 5173/],
+    ['a non-array selection', { selected: 5173, applied: [6080] }, /must be an array/],
+  ])('rejects %s', async (_label, overrides, message) => {
+    const branch = await store();
+
+    await expect(branch.write({
+      appPorts: {
+        fingerprint: FINGERPRINT,
+        detectorVersion: 1,
+        revision: REVISION,
+        ...overrides,
+      } as never,
+    })).rejects.toThrow(message);
+  });
+
+  it('rejects a fingerprint that is not a SHA-256 digest', async () => {
+    const branch = await store();
+
+    await expect(branch.write({
+      appPorts: {
+        selected: [5173],
+        applied: [5173, 6080],
+        fingerprint: 'not-a-digest',
+        detectorVersion: 1,
+        revision: REVISION,
+      },
+    })).rejects.toThrow(/SHA-256 hex digest/);
+  });
+
+  it('rejects a revision that is not a full commit SHA', async () => {
+    const branch = await store();
+
+    await expect(branch.write({
+      appPorts: {
+        selected: [5173],
+        applied: [5173, 6080],
+        fingerprint: FINGERPRINT,
+        detectorVersion: 1,
+        revision: 'HEAD',
+      },
+    })).rejects.toThrow(/40-character commit SHA/);
+  });
+
+  it('rejects a non-positive detector version', async () => {
+    const branch = await store();
+
+    await expect(branch.write({
+      appPorts: {
+        selected: [5173],
+        applied: [5173, 6080],
+        fingerprint: FINGERPRINT,
+        detectorVersion: 0,
+        revision: REVISION,
+      },
+    })).rejects.toThrow(/positive integer/);
+  });
+
+  it('rejects unknown app port fields', async () => {
+    const branch = await store();
+
+    await expect(branch.write({
+      appPorts: {
+        selected: [5173],
+        applied: [5173, 6080],
+        fingerprint: FINGERPRINT,
+        detectorVersion: 1,
+        revision: REVISION,
+        script: 'vite --port 5173',
+      } as never,
+    })).rejects.toThrow(/Unknown Vercel app port selection field\(s\): script/);
+  });
+
+  it('keeps the stored record free of any project text', async () => {
+    const branch = await store();
+
+    await branch.write({
+      appPorts: {
+        selected: [5173],
+        applied: [5173, 6080],
+        fingerprint: FINGERPRINT,
+        detectorVersion: 1,
+        revision: REVISION,
+      },
+    });
+
+    const raw = await readFile(branch.path, 'utf8');
+    expect(raw).not.toMatch(/vite|next|script/i);
+  });
+});

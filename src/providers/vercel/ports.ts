@@ -4,7 +4,18 @@ import { join } from 'node:path';
 export const DEVBOX_NOVNC_PROXY_PORT = 6080;
 export const DEVBOX_VNC_PORT = 5900;
 export const DEVBOX_NOVNC_INTERNAL_PORT = 6081;
-export const MAX_VERCEL_SANDBOX_PORTS = 15;
+/**
+ * Total ports a Sandbox can actually expose, verified against the live API.
+ *
+ * Three sources disagree, so this is the measured one. The installed 3.0.0
+ * declaration comments "up to 4 ports"; the request schema refuses more than
+ * 15 with a clean 400 ("`ports` should NOT have more than 15 items"); and an
+ * update carrying exactly 15 fails with an opaque 500 every time, with any
+ * port values. 14 is the largest set the service provisions, so devbox refuses
+ * a 15th here with an actionable message instead of surfacing that 500.
+ * See scripts/vercel/app-port-uat.mjs for the reproduction.
+ */
+export const MAX_VERCEL_SANDBOX_PORTS = 14;
 
 export interface ParsedDevcontainerPorts {
   ports: number[];
@@ -28,12 +39,7 @@ export function assertSdkPorts(ports: number[]): number[] {
         `SDK ports input contains ${describe(port)}; every port must be an integer in 1..65535`,
       );
     }
-    if (port === DEVBOX_VNC_PORT) {
-      throw new VercelPortsError(`SDK ports input contains ${DEVBOX_VNC_PORT}; this port is forbidden/private`);
-    }
-    if (port === DEVBOX_NOVNC_INTERNAL_PORT) {
-      throw new VercelPortsError(`SDK ports input contains ${DEVBOX_NOVNC_INTERNAL_PORT}; this noVNC port is internal/private`);
-    }
+    assertPublicSandboxPort(port, `SDK ports input contains ${port}`);
     resolved.add(port);
   }
   resolved.add(DEVBOX_NOVNC_PROXY_PORT);
@@ -41,11 +47,21 @@ export function assertSdkPorts(ports: number[]): number[] {
   if (result.length > MAX_VERCEL_SANDBOX_PORTS) {
     const overflow = result.filter((port) => port !== DEVBOX_NOVNC_PROXY_PORT).slice(MAX_VERCEL_SANDBOX_PORTS - 1);
     throw new VercelPortsError(
-      `SDK ports input resolves to ${result.length} ports; the maximum is ${MAX_VERCEL_SANDBOX_PORTS}; `
+      `SDK ports input resolves to ${result.length} ports; the verified service maximum is ${MAX_VERCEL_SANDBOX_PORTS}; `
       + `overflow ports: ${overflow.join(', ')}`,
     );
   }
   return result;
+}
+
+/** Refuse the private VNC / internal noVNC ports that must never be exposed. */
+export function assertPublicSandboxPort(port: number, prefix: string): void {
+  if (port === DEVBOX_VNC_PORT) {
+    throw new VercelPortsError(`${prefix}; this port is forbidden/private`);
+  }
+  if (port === DEVBOX_NOVNC_INTERNAL_PORT) {
+    throw new VercelPortsError(`${prefix}; this noVNC port is internal/private`);
+  }
 }
 
 export function normalizeContainerPort(value: unknown): number {
@@ -325,3 +341,84 @@ function describe(value: unknown): string {
   }
 }
 
+
+/** App ports available beside the always-reserved authenticated noVNC route. */
+export const MAX_VERCEL_SANDBOX_APP_PORTS = MAX_VERCEL_SANDBOX_PORTS - 1;
+
+/**
+ * Parse a `--expose-ports` value: a non-empty comma-separated list of decimal
+ * ports with optional surrounding whitespace.
+ *
+ * The flag is the non-interactive opt-in, so it validates rather than guesses:
+ * non-decimal entries, out-of-range ports, private ports, and duplicates are
+ * all refused before anything reaches the Sandbox.
+ */
+export function parseExposePortsList(value: string): number[] {
+  if (value.trim().length === 0) {
+    throw new VercelPortsError('--expose-ports requires a non-empty comma-separated list of ports');
+  }
+  const ports: number[] = [];
+  for (const entry of value.split(',')) {
+    const token = entry.trim();
+    if (token.length === 0) {
+      throw new VercelPortsError(`--expose-ports ${describe(value)} contains an empty port entry`);
+    }
+    if (!isDecimal(token)) {
+      throw new VercelPortsError(`--expose-ports entry ${describe(token)} is not a decimal port`);
+    }
+    const port = Number(token);
+    if (port < 1 || port > 65_535) {
+      throw new VercelPortsError(`--expose-ports entry ${describe(token)} is outside 1..65535`);
+    }
+    if (port === DEVBOX_VNC_PORT) {
+      throw new VercelPortsError(`--expose-ports entry ${DEVBOX_VNC_PORT} is reserved; the VNC port stays private`);
+    }
+    if (port === DEVBOX_NOVNC_INTERNAL_PORT) {
+      throw new VercelPortsError(
+        `--expose-ports entry ${DEVBOX_NOVNC_INTERNAL_PORT} is reserved; the internal noVNC port stays private`,
+      );
+    }
+    if (ports.includes(port)) {
+      throw new VercelPortsError(`--expose-ports entry ${port} is a duplicate`);
+    }
+    ports.push(port);
+  }
+  return ports;
+}
+
+/**
+ * Union the trusted configured ports with the accepted app ports.
+ *
+ * Configured ports are the explicit host-configuration path and are always
+ * retained; accepted candidates are additive. `assertSdkPorts` adds the
+ * reserved noVNC route exactly once and enforces the service maximum, so the
+ * whole desired set is validated before any route update is attempted.
+ */
+export function buildDesiredPortSet(
+  configured: readonly number[],
+  selected: readonly number[],
+): number[] {
+  try {
+    return assertSdkPorts([...configured, ...selected]);
+  } catch (error) {
+    if (!(error instanceof VercelPortsError)) throw error;
+    throw new VercelPortsError(
+      `app port selection is invalid: ${error.message}; `
+      + `at most ${MAX_VERCEL_SANDBOX_APP_PORTS} app ports fit beside the reserved noVNC port ${DEVBOX_NOVNC_PROXY_PORT}`,
+    );
+  }
+}
+
+/** Ports exposed beyond the reserved noVNC route, in ascending order. */
+export function appPortsOf(ports: readonly number[]): number[] {
+  return [...new Set(ports)]
+    .filter((port) => port !== DEVBOX_NOVNC_PROXY_PORT)
+    .sort((left, right) => left - right);
+}
+
+/** Stable equality for a full desired/actual port set. */
+export function samePortSet(left: readonly number[], right: readonly number[]): boolean {
+  const a = [...new Set(left)].sort((first, second) => first - second);
+  const b = [...new Set(right)].sort((first, second) => first - second);
+  return a.length === b.length && a.every((port, index) => port === b[index]);
+}

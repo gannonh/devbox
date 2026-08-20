@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createVercelProvider } from '../src/providers/vercel/provider.js';
+import type { VercelProviderOptions } from '../src/providers/vercel/provider.js';
 import type { VercelLifecycle } from '../src/providers/vercel/lifecycle.js';
 import type {
   VercelRunCommandRequest,
@@ -50,6 +51,7 @@ interface FixtureOptions {
   lifecycle?: Partial<VercelLifecycle>;
   client?: VercelSandboxClient;
   terminal?: VercelTerminalAdapter;
+  appPortPrompt?: VercelProviderOptions['appPortPrompt'];
 }
 
 async function fixture(
@@ -102,6 +104,7 @@ async function fixture(
     ...(options.opener === undefined ? {} : { opener: options.opener }),
     ...(options.client === undefined ? {} : { client: options.client }),
     ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
+    ...(options.appPortPrompt === undefined ? {} : { appPortPrompt: options.appPortPrompt }),
   });
   const stdout = new PassThrough();
   const stderr = new PassThrough();
@@ -344,5 +347,162 @@ describe('Vercel URL output', () => {
       NOVNC_LINE,
       '',
     ].join('\n'));
+  });
+});
+
+describe('Vercel zero-config app routes', () => {
+  const REVISION = 'd'.repeat(40);
+
+  function zeroConfigClient(state: { routes: { port: number; subdomain: string; url: string }[] }) {
+    const updates: number[][] = [];
+    const client = {
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, command: VercelRunCommandRequest) => {
+        if (command.cmd === '/usr/local/bin/devbox-status') {
+          return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
+        }
+        if (command.cmd === 'git') return { exitCode: 0, stdout: async () => `${REVISION}\n` };
+        if ((command.args ?? []).join(' ').includes('package.json')) {
+          const manifest = JSON.stringify({ scripts: { dev: 'vite' } });
+          return { exitCode: 0, stdout: async () => `./package.json\u001f${manifest}\u001e` };
+        }
+        return { exitCode: 0 };
+      }),
+      updatePorts: vi.fn(async (_sandbox: VercelSandboxHandle, ports: readonly number[]) => {
+        updates.push([...ports]);
+        state.routes = [...ports].sort((left, right) => left - right).map((port) => ({
+          port,
+          subdomain: 'sandbox',
+          url: `https://sandbox.example/${port}`,
+        }));
+      }),
+    } as unknown as VercelSandboxClient;
+    return { client, updates };
+  }
+
+  it('exposes an accepted Vite port as a labeled public route in the ready block', async () => {
+    const state = {
+      routes: [{ port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' }],
+    };
+    const handle = {
+      ...sandbox(),
+      get routes() { return state.routes; },
+    } as unknown as VercelSandboxHandle;
+    const { client, updates } = zeroConfigClient(state);
+    const appPortPrompt = vi.fn(async (options: { candidates: ReadonlyArray<{ port: number }> }) => ({
+      decision: 'accepted' as const,
+      selected: options.candidates.map(({ port }) => port),
+    }));
+    const test = await fixture([], {
+      devcontainerJson: JSON.stringify({}),
+      lifecycle: { up: vi.fn(async () => handle) } as Partial<VercelLifecycle>,
+      client,
+      terminal: {
+        attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+      },
+      appPortPrompt: appPortPrompt as never,
+    });
+    test.request.tty = true;
+
+    await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
+
+    expect(appPortPrompt).toHaveBeenCalledTimes(1);
+    expect(updates).toEqual([[5173, 6080]]);
+    const ready = test.errorOutput().slice(test.errorOutput().indexOf('Vercel devbox ready'));
+    expect(ready).toContain('5173: https://sandbox.example/5173  (vite — public)');
+    expect(ready).toContain(`${NOVNC_LINE}`);
+    expect(test.errorOutput()).not.toContain('scripts');
+  });
+
+  it('re-applies the confirmed route on attach without prompting again', async () => {
+    const state = {
+      routes: [{ port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' }],
+    };
+    const handle = {
+      ...sandbox(),
+      get routes() { return state.routes; },
+    } as unknown as VercelSandboxHandle;
+    const { client, updates } = zeroConfigClient(state);
+    const appPortPrompt = vi.fn(async (options: { candidates: ReadonlyArray<{ port: number }> }) => ({
+      decision: 'accepted' as const,
+      selected: options.candidates.map(({ port }) => port),
+    }));
+    const test = await fixture([], {
+      devcontainerJson: JSON.stringify({}),
+      lifecycle: {
+        up: vi.fn(async () => handle),
+        attach: vi.fn(async () => handle),
+      } as Partial<VercelLifecycle>,
+      client,
+      terminal: {
+        attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+      },
+      appPortPrompt: appPortPrompt as never,
+    });
+    test.request.tty = true;
+
+    await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
+    await expect(test.provider.attach(test.request)).resolves.toEqual({ exitCode: 0 });
+
+    // Attaching must say so before anything that can prompt, or a port question
+    // reads as a fresh boot.
+    expect(test.errorOutput()).toContain('Attaching to the existing Vercel sandbox for feature/ui');
+    expect(appPortPrompt).toHaveBeenCalledTimes(1);
+    expect(updates).toEqual([[5173, 6080]]);
+    const resumed = test.errorOutput().slice(test.errorOutput().lastIndexOf('Vercel devbox resumed'));
+    expect(resumed).toContain('5173: https://sandbox.example/5173  (vite — public)');
+  });
+
+  it('reports the exact opt-in syntax instead of exposing anything without a TTY', async () => {
+    const state = {
+      routes: [{ port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' }],
+    };
+    const handle = {
+      ...sandbox(),
+      get routes() { return state.routes; },
+    } as unknown as VercelSandboxHandle;
+    const { client, updates } = zeroConfigClient(state);
+    const appPortPrompt = vi.fn();
+    const test = await fixture([], {
+      devcontainerJson: JSON.stringify({}),
+      lifecycle: { up: vi.fn(async () => handle) } as Partial<VercelLifecycle>,
+      client,
+      terminal: {
+        attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+      },
+      appPortPrompt: appPortPrompt as never,
+    });
+
+    await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
+
+    expect(appPortPrompt).not.toHaveBeenCalled();
+    expect(updates).toEqual([]);
+    expect(test.errorOutput()).toContain('--expose-ports 5173');
+  });
+
+  it('applies --expose-ports without a TTY and labels the route public', async () => {
+    const state = {
+      routes: [{ port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' }],
+    };
+    const handle = {
+      ...sandbox(),
+      get routes() { return state.routes; },
+    } as unknown as VercelSandboxHandle;
+    const { client, updates } = zeroConfigClient(state);
+    const test = await fixture([], {
+      devcontainerJson: JSON.stringify({}),
+      lifecycle: { up: vi.fn(async () => handle) } as Partial<VercelLifecycle>,
+      client,
+      terminal: {
+        attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+      },
+    });
+    test.request.exposePorts = [4173];
+
+    await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
+
+    expect(updates).toEqual([[4173, 6080]]);
+    const ready = test.errorOutput().slice(test.errorOutput().indexOf('Vercel devbox ready'));
+    expect(ready).toContain('4173: https://sandbox.example/4173  (public)');
   });
 });

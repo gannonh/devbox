@@ -65,6 +65,40 @@ export interface VercelScopeMetadata extends VercelScopeMetadataInput {
   repoKeyHash: string;
 }
 
+/**
+ * A committed app-port selection.
+ *
+ * Bound to the exact remote revision, the candidate fingerprint, and the
+ * detector version so a resume can re-apply the same public routes without
+ * prompting, and a changed project re-prompts instead of silently reusing a
+ * selection that no longer describes the checkout.
+ */
+export interface VercelAppPortSelection {
+  /** App ports the user accepted; empty means the candidates were rejected. */
+  selected: number[];
+  /** The full port set applied to the Sandbox, including reserved noVNC. */
+  applied: number[];
+  fingerprint: string;
+  detectorVersion: number;
+  revision: string;
+}
+
+/**
+ * A route update that has been decided but not yet confirmed committed.
+ *
+ * Written before the update call and cleared after it, so a crash between the
+ * two always leaves the actual Sandbox route set reconcilable against a
+ * recorded `previous`/`desired` pair rather than untracked.
+ */
+export interface VercelPendingAppPorts {
+  previous: number[];
+  desired: number[];
+  selected: number[];
+  fingerprint: string;
+  detectorVersion: number;
+  revision: string;
+}
+
 export interface VercelBranchMetadataInput {
   identity?: VercelMetadataIdentity;
   sandboxId?: string;
@@ -72,6 +106,8 @@ export interface VercelBranchMetadataInput {
   residual?: VercelResidualMetadata;
   configuration?: VercelCreateConfiguration;
   displayCredentials?: VercelDisplayCredentials;
+  appPorts?: VercelAppPortSelection;
+  pendingAppPorts?: VercelPendingAppPorts;
 }
 
 export interface VercelBranchMetadata extends VercelBranchMetadataInput {
@@ -79,6 +115,49 @@ export interface VercelBranchMetadata extends VercelBranchMetadataInput {
   metadataKind: 'branch';
   provider: string;
   repoKeyHash: string;
+}
+
+/**
+ * Copy every optional branch field into a write input.
+ *
+ * Metadata `write` replaces the whole document; omitting a field clears it.
+ * Features that patch one concern (display credentials, app ports) must start
+ * from this helper so they cannot wipe another feature's durable state.
+ */
+export function toBranchMetadataInput(metadata: VercelBranchMetadata): VercelBranchMetadataInput {
+  return {
+    ...(metadata.identity === undefined ? {} : { identity: metadata.identity }),
+    ...(metadata.sandboxId === undefined ? {} : { sandboxId: metadata.sandboxId }),
+    ...(metadata.snapshotIds === undefined ? {} : { snapshotIds: metadata.snapshotIds }),
+    ...(metadata.residual === undefined ? {} : { residual: metadata.residual }),
+    ...(metadata.configuration === undefined ? {} : { configuration: metadata.configuration }),
+    ...(metadata.displayCredentials === undefined ? {} : { displayCredentials: metadata.displayCredentials }),
+    ...(metadata.appPorts === undefined ? {} : { appPorts: metadata.appPorts }),
+    ...(metadata.pendingAppPorts === undefined ? {} : { pendingAppPorts: metadata.pendingAppPorts }),
+  };
+}
+
+/**
+ * Rebuild a branch write with explicit app-port fields.
+ *
+ * `undefined` clears that field (omit-on-write). Other branch fields are
+ * preserved from `metadata` when present.
+ */
+export function withAppPortFields(
+  metadata: VercelBranchMetadata | null,
+  appPorts: VercelAppPortSelection | undefined,
+  pendingAppPorts: VercelPendingAppPorts | undefined,
+): VercelBranchMetadataInput {
+  const rest: VercelBranchMetadataInput = metadata === null
+    ? {}
+    : { ...toBranchMetadataInput(metadata) };
+  delete rest.appPorts;
+  delete rest.pendingAppPorts;
+  return {
+    ...rest,
+    ...(appPorts === undefined ? {} : { appPorts }),
+    ...(pendingAppPorts === undefined ? {} : { pendingAppPorts }),
+  };
 }
 
 const INPUT_FIELDS = [
@@ -172,6 +251,23 @@ const BRANCH_INPUT_FIELDS = [
   'residual',
   'configuration',
   'displayCredentials',
+  'appPorts',
+  'pendingAppPorts',
+] as const;
+const APP_PORT_SELECTION_FIELDS = [
+  'selected',
+  'applied',
+  'fingerprint',
+  'detectorVersion',
+  'revision',
+] as const;
+const PENDING_APP_PORT_FIELDS = [
+  'previous',
+  'desired',
+  'selected',
+  'fingerprint',
+  'detectorVersion',
+  'revision',
 ] as const;
 const BRANCH_STORED_FIELDS = ['schemaVersion', 'metadataKind', 'provider', 'repoKeyHash', ...BRANCH_INPUT_FIELDS] as const;
 
@@ -226,6 +322,8 @@ export function validateBranchMetadataInput(value: unknown): VercelBranchMetadat
     ...(input.residual === undefined ? {} : { residual: parseResidual(input.residual) }),
     ...(input.configuration === undefined ? {} : { configuration: parseConfiguration(input.configuration) }),
     ...(input.displayCredentials === undefined ? {} : { displayCredentials: parseDisplayCredentials(input.displayCredentials) }),
+    ...(input.appPorts === undefined ? {} : { appPorts: parseAppPortSelection(input.appPorts) }),
+    ...(input.pendingAppPorts === undefined ? {} : { pendingAppPorts: parsePendingAppPorts(input.pendingAppPorts) }),
   };
 }
 
@@ -324,6 +422,77 @@ function parseDisplayCredentials(value: unknown): VercelDisplayCredentials {
     password,
     ...(credentials.rotating === undefined ? {} : { rotating: credentials.rotating }),
   };
+}
+
+function parseAppPortSelection(value: unknown): VercelAppPortSelection {
+  const selection = expectRecord(value, 'Vercel app port selection');
+  assertExactKeys(
+    selection,
+    APP_PORT_SELECTION_FIELDS,
+    APP_PORT_SELECTION_FIELDS,
+    'Vercel app port selection',
+  );
+  return {
+    selected: parsePortArray(selection.selected, 'appPorts.selected'),
+    applied: parsePortArray(selection.applied, 'appPorts.applied'),
+    fingerprint: parseFingerprint(selection.fingerprint, 'appPorts.fingerprint'),
+    detectorVersion: parseDetectorVersion(selection.detectorVersion, 'appPorts.detectorVersion'),
+    revision: parseRevision(selection.revision, 'appPorts.revision'),
+  };
+}
+
+function parsePendingAppPorts(value: unknown): VercelPendingAppPorts {
+  const pending = expectRecord(value, 'Vercel pending app ports');
+  assertExactKeys(
+    pending,
+    PENDING_APP_PORT_FIELDS,
+    PENDING_APP_PORT_FIELDS,
+    'Vercel pending app ports',
+  );
+  return {
+    previous: parsePortArray(pending.previous, 'pendingAppPorts.previous'),
+    desired: parsePortArray(pending.desired, 'pendingAppPorts.desired'),
+    selected: parsePortArray(pending.selected, 'pendingAppPorts.selected'),
+    fingerprint: parseFingerprint(pending.fingerprint, 'pendingAppPorts.fingerprint'),
+    detectorVersion: parseDetectorVersion(pending.detectorVersion, 'pendingAppPorts.detectorVersion'),
+    revision: parseRevision(pending.revision, 'pendingAppPorts.revision'),
+  };
+}
+
+function parsePortArray(value: unknown, field: string): number[] {
+  if (!Array.isArray(value)) throw new Error(`Metadata ${field} must be an array`);
+  const ports: number[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (typeof entry !== 'number' || !Number.isInteger(entry) || entry < 1 || entry > 65_535) {
+      throw new Error(`Metadata ${field}[${index}] must be an integer port in 1..65535`);
+    }
+    if (ports.includes(entry)) throw new Error(`Metadata ${field}[${index}] duplicates port ${entry}`);
+    ports.push(entry);
+  }
+  return ports;
+}
+
+function parseFingerprint(value: unknown, field: string): string {
+  const fingerprint = requireString(value, field);
+  if (!/^[0-9a-f]{64}$/.test(fingerprint)) {
+    throw new Error(`Metadata ${field} must be a SHA-256 hex digest`);
+  }
+  return fingerprint;
+}
+
+function parseDetectorVersion(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error(`Metadata ${field} must be a positive integer`);
+  }
+  return value;
+}
+
+function parseRevision(value: unknown, field: string): string {
+  const revision = requireString(value, field);
+  if (!/^[0-9a-f]{40}$/.test(revision)) {
+    throw new Error(`Metadata ${field} must be a 40-character commit SHA`);
+  }
+  return revision;
 }
 
 function parseResidual(value: unknown): VercelResidualMetadata {

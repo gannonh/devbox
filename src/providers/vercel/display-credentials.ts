@@ -1,9 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import type { VercelBranchMetadataStore } from './metadata-store.js';
-import type {
-  VercelBranchMetadata,
-  VercelBranchMetadataInput,
-  VercelDisplayCredentials,
+import {
+  toBranchMetadataInput,
+  type VercelDisplayCredentials,
 } from './metadata-schema.js';
 
 export const DISPLAY_USERNAME = 'devbox' as const;
@@ -96,14 +95,4 @@ export async function clearDisplayCredentialRotation(
       },
     });
   });
-}
-
-function toBranchMetadataInput(metadata: VercelBranchMetadata): VercelBranchMetadataInput {
-  return {
-    identity: metadata.identity,
-    sandboxId: metadata.sandboxId,
-    snapshotIds: metadata.snapshotIds,
-    residual: metadata.residual,
-    configuration: metadata.configuration,
-  };
 }

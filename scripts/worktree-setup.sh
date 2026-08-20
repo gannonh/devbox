@@ -14,6 +14,7 @@ set -euo pipefail
 # Resolve the worktree root from the script location so it works regardless of
 # the caller's CWD within the worktree.
 worktree_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
 cd "$worktree_root"
 npm install
 npm run build

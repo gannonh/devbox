@@ -19,7 +19,6 @@ import {
 } from './auth.js';
 import {
   createVercelSandboxClient,
-  type SandboxRoute,
   type VercelSandboxClient,
   type VercelSandboxHandle,
 } from './client.js';
@@ -39,7 +38,7 @@ import {
   type VercelScopeMetadata,
   type VercelScopeMetadataStore,
 } from './metadata.js';
-import { mapVercelError, VercelProviderError } from './errors.js';
+import { mapVercelError } from './errors.js';
 import { createVercelBranchTag } from './identity.js';
 import {
   normalizeRequestedSourceBranch,
@@ -62,9 +61,20 @@ import {
   type VercelTerminalStreams,
 } from './terminal.js';
 import { prepareSandboxRuntime, RUNTIME_PREPARATION_TIMEOUT_MS } from './runtime.js';
-import { renderSetupNotice, type VercelSetupStatus } from './setup.js';
-import { addSecrets } from './redaction.js';
-import { DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts, VercelPortsError } from './ports.js';
+import { addSecrets, redactSecrets } from './redaction.js';
+import { DEVBOX_NOVNC_PROXY_PORT } from './ports.js';
+import {
+  applyAppPorts,
+  type AppPortFlowMode,
+  type AppPortFlowResult,
+  type AppPortPrompt,
+} from './app-port-flow.js';
+import {
+  renderVercelAttachNotice,
+  renderVercelReadyBlock,
+  renderVercelRoutes,
+  resolveRouteLabels,
+} from './provider-routes.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -90,6 +100,8 @@ export interface VercelProviderOptions {
   client?: VercelSandboxClient;
   credentialOptions?: Omit<CredentialResolutionOptions, 'repoRoot' | 'env'>;
   signalSource?: EventEmitter;
+  /** Injection seam for the public app-port confirmation prompt. */
+  appPortPrompt?: AppPortPrompt;
 }
 
 interface PreparedOperation {
@@ -102,6 +114,8 @@ interface PreparedOperation {
   source?: GitHubSourcePlan;
   recovery?: VercelRecoveryInput;
   alreadyAbsent: boolean;
+  /** Same-branch sandboxes in another Vercel scope, which are never touched. */
+  foreignScope: string[];
 }
 
 interface PreparedUp {
@@ -179,7 +193,22 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
-      await renderVercelReadyBlock(request, sandbox, setupStatus, await displayToken(prepared.branchStore, secrets));
+      const appPorts = await resolveAppPorts(
+        request,
+        options,
+        client,
+        sandbox,
+        prepared.branchStore,
+        prepared.source.remote.repository,
+        secrets,
+      );
+      await renderVercelReadyBlock(
+        request,
+        sandbox,
+        setupStatus,
+        await displayToken(prepared.branchStore, secrets),
+        appPorts,
+      );
       return terminalResult(
         request,
         terminal,
@@ -195,6 +224,11 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       const sandbox = await prepared.lifecycle.attach();
       const repository = prepared.source?.remote.repository;
       if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
+      // Say this before anything that can prompt. Runtime sync and the app-port
+      // question both come first, and a boot-shaped prompt with no preceding
+      // context reads as "it is creating a new sandbox" -- which attach cannot
+      // do: it fails when there is no record and no live box to resume.
+      request.stderr.write(`Attaching to the existing Vercel sandbox for ${request.branch}\n`);
       const setupStatus = await prepareSandboxRuntime({
         repoRoot: request.repoRoot,
         repository,
@@ -208,11 +242,22 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
+      const appPorts = await resolveAppPorts(
+        request,
+        options,
+        client,
+        sandbox,
+        prepared.branchStore!,
+        repository,
+        secrets,
+        'resume',
+      );
       await renderVercelAttachNotice(
         request,
         sandbox,
         setupStatus,
         await displayToken(prepared.branchStore, secrets),
+        appPorts,
       );
       return terminalResult(
         request,
@@ -241,6 +286,21 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         // Removal stays idempotent, but must not report a deletion it did not
         // perform: "cleanup verified" here is indistinguishable from having
         // actually removed a box, which hides a mistyped branch.
+        //
+        // Nor may it claim nothing exists while --list is showing one. A
+        // same-branch box in another Vercel team/project is deliberately left
+        // alone, but saying so is the difference between an honest no-op and a
+        // command that appears broken.
+        if (prepared.foreignScope.length > 0) {
+          request.stderr.write(
+            `No Vercel sandbox for ${request.branch} in this team/project.\n`
+            + `  ${prepared.foreignScope.length} sandbox(es) for this branch belong to another Vercel `
+            + 'team/project and were not touched:\n'
+            + prepared.foreignScope.map((name) => `    ${name}\n`).join('')
+            + '  set VERCEL_TEAM_ID/VERCEL_PROJECT_ID to that scope and retry to remove them\n',
+          );
+          return { exitCode: 0 };
+        }
         request.stderr.write(
           `No Vercel sandbox exists for ${request.branch}; nothing to remove.\n`
           + '  run devbox --provider vercel --list to see existing boxes\n',
@@ -371,7 +431,16 @@ async function prepareStored(
       true,
       origin.canonical,
     );
-    return { lifecycle, scopeStore, scopeMetadata, metadata: null, credentials, source: undefined, alreadyAbsent: false };
+    return {
+      lifecycle,
+      scopeStore,
+      scopeMetadata,
+      metadata: null,
+      credentials,
+      source: undefined,
+      alreadyAbsent: false,
+      foreignScope: [],
+    };
   }
   const branch = normalizeRequestedSourceBranch((request as ProviderBranchRequest).branch);
   const branchStore = createBranchStore(origin, branch, options);
@@ -392,14 +461,16 @@ async function prepareStored(
   }
   let recovery: VercelRecoveryInput | undefined;
   let alreadyAbsent = false;
+  let foreignScope: string[] = [];
   if (action === 'remove' && !metadata) {
-    const recovered = await recoverMissingBranchSandbox(client, origin, branch, credentials);
-    if (!recovered) {
+    const result = await recoverMissingBranchSandbox(client, origin, branch, credentials);
+    foreignScope = result.foreignScope;
+    if (!result.recovered) {
       alreadyAbsent = true;
     } else {
       recovery = {
-        identity: recovered.identity,
-        ...(recovered.snapshotIds === undefined ? {} : { snapshotIds: recovered.snapshotIds }),
+        identity: result.recovered.identity,
+        ...(result.recovered.snapshotIds === undefined ? {} : { snapshotIds: result.recovered.snapshotIds }),
       };
     }
   }
@@ -427,6 +498,7 @@ async function prepareStored(
     source,
     recovery,
     alreadyAbsent,
+    foreignScope,
   };
 }
 
@@ -710,20 +782,55 @@ function renderList(
     const branch = branchFromTag(branchTag) ?? branchTag ?? 'unknown';
     request.stderr.write(`  ${record.name} ${record.status} branch=${branch} identity=${identity}\n`);
   }
+  // Rows are not marked with the scope that owns them. The identity tag hashes
+  // the team and project, and recomputing it needs the exact branch string --
+  // which the branch tag cannot yield back for any branch containing a slash
+  // (`feature/ui` sanitizes to `feature-ui` but hashes the original). A marker
+  // that silently never fires for the commonest branch shape would read as
+  // "every row is yours", so the listing stays neutral and `--rm` explains the
+  // scope it declined to touch. Distinguishing them here needs a scope tag on
+  // the sandbox itself.
 }
 
-interface RenderedVercelRoute {
-  route: SandboxRoute;
-  url: string;
-  line: string;
-}
-
-async function renderedRoutesForSandbox(
+/**
+ * Detect, confirm, and apply public app routes for the remote checkout.
+ *
+ * The Sandbox is already usable at this point, so a detector or route-update
+ * failure is reported and the box still comes up with noVNC and the explicit
+ * configured ports.
+ */
+async function resolveAppPorts(
+  request: ProviderBranchRequest,
+  options: VercelProviderOptions,
+  client: VercelSandboxClient,
   sandbox: VercelSandboxHandle,
-  repoRoot: string,
-  token: string,
-): Promise<RenderedVercelRoute[]> {
-  return renderVercelRoutes(sandbox.routes ?? [], await resolveRouteLabels(repoRoot), token);
+  branchStore: VercelBranchMetadataStore,
+  repository: string,
+  secrets: readonly string[],
+  mode: AppPortFlowMode = 'boot',
+): Promise<AppPortFlowResult | undefined> {
+  try {
+    return await applyAppPorts({
+      mode,
+      sandbox,
+      client,
+      branchStore,
+      repoRoot: request.repoRoot,
+      workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
+      branch: request.branch,
+      tty: request.tty,
+      stdin: request.stdin,
+      stderr: request.stderr,
+      ...(request.exposePorts === undefined ? {} : { exposePorts: request.exposePorts }),
+      secrets,
+      ...(options.appPortPrompt === undefined ? {} : { prompt: options.appPortPrompt }),
+    });
+  } catch (error) {
+    request.stderr.write(
+      `app ports: ${redactSecrets(error, secrets)}; continuing with configured routes only\n`,
+    );
+    return undefined;
+  }
 }
 
 async function displayToken(
@@ -734,65 +841,6 @@ async function displayToken(
   const token = (await resolveDisplayCredentials(store)).credentials.password;
   addSecrets(secrets, token);
   return token;
-}
-
-// Labels are cosmetic enrichment on read surfaces. A malformed
-// devcontainer.json must not break --url or a resume the way it cannot
-// break stop/remove/list (see the up()-only ports resolution in the
-// lifecycle); `up` fails hard on it when the ports actually matter.
-async function resolveRouteLabels(repoRoot: string): Promise<Record<number, string>> {
-  try {
-    return (await resolveDevcontainerPorts(repoRoot)).labels;
-  } catch (error) {
-    if (!(error instanceof VercelPortsError)) throw error;
-    return {};
-  }
-}
-
-/**
- * One block for both boot and resume.
- *
- * Resume used to collapse everything onto a single line, which buried a long
- * display URL and gave no way to stop or remove the box you had just attached
- * to. The access code is listed on its own line because it is short enough to
- * type into the pairing form when a link is stale or you are opening the
- * display on another device.
- */
-async function renderVercelBlock(
-  request: ProviderBranchRequest,
-  sandbox: VercelSandboxHandle,
-  setupStatus: VercelSetupStatus | null,
-  token: string,
-  headline: string,
-): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
-  request.stderr.write(`${headline}\n`);
-  for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
-  if (routes.some(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT)) {
-    request.stderr.write(`  access code: ${token}\n`);
-  }
-  request.stderr.write(`  stop: devbox ${request.branch} --provider vercel --stop\n`);
-  request.stderr.write(`  remove: devbox ${request.branch} --provider vercel --rm\n`);
-  const setupNotice = renderSetupNotice(setupStatus);
-  if (setupNotice) request.stderr.write(`${setupNotice}\n`);
-}
-
-async function renderVercelReadyBlock(
-  request: ProviderBranchRequest,
-  sandbox: VercelSandboxHandle,
-  setupStatus: VercelSetupStatus | null,
-  token: string,
-): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox ready');
-}
-
-async function renderVercelAttachNotice(
-  request: ProviderBranchRequest,
-  sandbox: VercelSandboxHandle,
-  setupStatus: VercelSetupStatus | null,
-  token: string,
-): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed');
 }
 
 /**
@@ -809,60 +857,6 @@ function branchFromTag(tag: string | undefined): string | undefined {
   const candidate = tag.replace(/-[a-f0-9]{16}$/, '');
   if (candidate === tag) return undefined;
   return createVercelBranchTag(candidate) === tag ? candidate : undefined;
-}
-
-function renderVercelRoutes(
-  routes: readonly SandboxRoute[],
-  labels: Record<number, string>,
-  token: string,
-): RenderedVercelRoute[] {
-  return [...routes]
-    .sort((left, right) => left.port - right.port)
-    .map((route) => {
-      const safe = assertSafeRouteUrl(route.url);
-      const url = route.port === DEVBOX_NOVNC_PROXY_PORT
-        ? novncPairingUrl(safe, token)
-        : safe;
-      const description = route.port === DEVBOX_NOVNC_PROXY_PORT
-        ? 'noVNC display'
-        : labels[route.port] ? `${labels[route.port]} — public` : 'public';
-      return {
-        route,
-        url,
-        line: `${route.port}: ${url}  (${description})`,
-      };
-    });
-}
-
-// The display link carries the branch access code so a click pairs the browser.
-// The proxy exchanges it for an HttpOnly cookie and redirects the code out of
-// the address bar; see images/vercel/novnc-proxy.mjs.
-function novncPairingUrl(routeUrl: string, token: string): string {
-  // Resolve relatively: a Vercel route may carry a path prefix that an
-  // absolute '/vnc.html' would discard.
-  const parsed = new URL('vnc.html', routeUrl.endsWith('/') ? routeUrl : `${routeUrl}/`);
-  parsed.searchParams.set('token', token);
-  parsed.searchParams.set('autoconnect', '1');
-  return parsed.href;
-}
-
-function assertSafeRouteUrl(url: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new VercelProviderError('route', 'Vercel route URL is invalid');
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new VercelProviderError('route', 'Vercel route URL must use https', 2);
-  }
-  if (parsed.username || parsed.password) {
-    throw new VercelProviderError('route', 'Vercel route URL contains embedded credentials', 2);
-  }
-  if (parsed.search || parsed.hash) {
-    throw new VercelProviderError('route', 'Vercel route URL contains query or fragment data', 2);
-  }
-  return url;
 }
 
 function sandboxName(metadata: VercelBranchMetadata | null, branch: string): string {

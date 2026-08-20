@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "plan-build-verify": {
+      "source": "gannonh/skills",
+      "sourceType": "github",
+      "skillPath": "plan-build-verify/SKILL.md",
+      "computedHash": "57c705b7350a8a6cb2b36ea8ca36b71b13c3ee7092f8e53bb7fed3c769b4b124"
+    }
+  }
+}

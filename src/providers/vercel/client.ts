@@ -91,8 +91,18 @@ export interface VercelSandboxHandle {
   delete(params?: { signal?: AbortSignal }): Promise<void>;
   writeFiles(files: VercelWriteFile[], options?: { signal?: AbortSignal }): Promise<void>;
   runCommand(params: VercelRunCommandRequest): Promise<VercelCommandResult>;
+  update(params: VercelSandboxUpdateRequest, options?: { signal?: AbortSignal }): Promise<void>;
   domain(port: number): string;
 }
+
+/**
+ * The subset of `Sandbox.update` this client uses.
+ *
+ * `ports` is the complete desired list: the service deregisters any currently
+ * exposed port that the array omits, so callers must always send the full set
+ * rather than the delta they want to add.
+ */
+export type VercelSandboxUpdateRequest = Pick<Parameters<Sandbox['update']>[0], 'ports'>;
 
 export interface VercelSnapshotHandle {
   readonly snapshotId: string;
@@ -193,6 +203,17 @@ export interface VercelSandboxClient {
     sandbox: VercelSandboxHandle,
     params: VercelRunCommandRequest,
   ): Promise<VercelCommandResult>;
+  /**
+   * Replace the Sandbox's exposed ports with `ports` on the running Sandbox.
+   *
+   * This never recreates the Sandbox: it is the only supported way to add an
+   * app route to a box that is already up.
+   */
+  updatePorts(
+    sandbox: VercelSandboxHandle,
+    ports: readonly number[],
+    options?: { signal?: AbortSignal },
+  ): Promise<void>;
   listSnapshots(request: {
     credentials: VercelCredentials;
     name: string;
@@ -359,6 +380,14 @@ export function createVercelSandboxClient(
       [],
       () => sandbox.runCommand(params),
     ),
+    updatePorts: async (sandbox, ports, updateOptions) => call(
+      'Sandbox.update',
+      [],
+      () => sandbox.update(
+        { ports: [...ports] },
+        updateOptions === undefined ? undefined : updateOptions,
+      ),
+    ),
     listSnapshots: async (request) => {
       const { credentials, ...listRequest } = request;
       return call('Snapshot.list', [credentials.token], async () => {
@@ -465,6 +494,13 @@ function wrapSandboxHandle(
           'Sandbox.runCommand',
           secrets,
           () => target.runCommand(params),
+        );
+      }
+      if (property === 'update') {
+        return (params: VercelSandboxUpdateRequest, options?: { signal?: AbortSignal }) => callWithSecrets(
+          'Sandbox.update',
+          secrets,
+          () => target.update(params, options),
         );
       }
       return Reflect.get(target, property, receiver);

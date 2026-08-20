@@ -1,0 +1,282 @@
+import { describe, expect, it, vi } from 'vitest';
+import { scanRemoteAppPorts } from '../src/providers/vercel/app-port-scan.js';
+import {
+  MAX_PACKAGE_JSON_BYTES,
+  MAX_WORKSPACE_MANIFESTS,
+  VITE_DEFAULT_PORT,
+} from '../src/providers/vercel/app-ports.js';
+import type {
+  VercelCommandResult,
+  VercelRunCommandRequest,
+  VercelSandboxClient,
+  VercelSandboxHandle,
+} from '../src/providers/vercel/client.js';
+
+const REVISION = 'a'.repeat(40);
+
+const US = '\u001f';
+/** A separator written into JSON content, which must stay escaped. */
+const UNIT_ESCAPE = '\u001f';
+const RS = '\u001e';
+
+/** Build the scanner's `path<US>contents<RS>` wire format. */
+function emitted(files: Record<string, string>): string {
+  return Object.entries(files).map(([path, content]) => `${path}${US}${content}${RS}`).join('');
+}
+
+interface ScanScript {
+  revision?: { exitCode: number; stdout?: string } | Error;
+  packageJson?: { exitCode: number; stdout?: string } | Error;
+  /** Second sh call: workspace member manifests. */
+  members?: { exitCode: number; stdout?: string } | Error;
+}
+
+function scanClient(script: ScanScript) {
+  const requests: VercelRunCommandRequest[] = [];
+  const client = {
+    runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
+      requests.push(request);
+      const isMemberRead = (request.args ?? []).join(' ').includes('for f in');
+      const step = request.cmd === 'git'
+        ? script.revision
+        : isMemberRead ? script.members : script.packageJson;
+      if (step instanceof Error) throw step;
+      const resolved = step ?? { exitCode: 0, stdout: '' };
+      return {
+        exitCode: resolved.exitCode,
+        stdout: async () => resolved.stdout ?? '',
+      } as unknown as VercelCommandResult;
+    }),
+  } as unknown as VercelSandboxClient;
+  return { client, requests };
+}
+
+function sandbox(): VercelSandboxHandle {
+  return { name: 'devbox-test' } as unknown as VercelSandboxHandle;
+}
+
+async function scan(script: ScanScript) {
+  const { client, requests } = scanClient(script);
+  const result = await scanRemoteAppPorts({
+    sandbox: sandbox(),
+    client,
+    workspace: '/vercel/sandbox/repo',
+  });
+  return { ...result, requests };
+}
+
+describe('remote app port scan', () => {
+  it('reads the remote revision and root package.json from the checkout only', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: `${REVISION}\n` },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': JSON.stringify({ scripts: { dev: 'vite' } }) }) },
+    });
+
+    expect(result.revision).toBe(REVISION);
+    expect(result.detection.candidates).toEqual([
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: '.' },
+    ]);
+    expect(result.warnings).toEqual([]);
+    expect(result.requests).toHaveLength(2);
+    expect(result.requests[0]).toMatchObject({
+      cmd: 'git',
+      args: ['rev-parse', 'HEAD'],
+      cwd: '/vercel/sandbox/repo',
+    });
+    expect(result.requests[1]).toMatchObject({ cmd: 'sh', cwd: '/vercel/sandbox/repo' });
+    expect(result.requests[1].args?.join(' ')).toContain(`head -c ${MAX_PACKAGE_JSON_BYTES} ./package.json`);
+  });
+
+  it('treats a missing root package.json as no inferred ports', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: '' },
+    });
+
+    expect(result.revision).toBe(REVISION);
+    expect(result.detection.candidates).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('surfaces a malformed root package.json as a bounded warning without failing', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': '{"scripts": {"dev": "vite --port 4321"' }) },
+    });
+
+    expect(result.detection.candidates).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('not valid JSON');
+    expect(result.warnings.join('\n')).not.toContain('4321');
+  });
+
+  it('reports a read failure without echoing repository content', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: new Error('read failed'),
+    });
+
+    expect(result.detection.candidates).toEqual([]);
+    expect(result.warnings[0]).toContain('remote root package.json could not be read');
+  });
+
+  it('infers nothing when the checkout revision cannot be resolved', async () => {
+    const result = await scan({ revision: { exitCode: 128, stdout: '' } });
+
+    expect(result.revision).toBeUndefined();
+    expect(result.detection.candidates).toEqual([]);
+    expect(result.warnings).toEqual([
+      'remote checkout revision could not be resolved; no app ports were inferred',
+    ]);
+    expect(result.requests).toHaveLength(1);
+  });
+
+  it('rejects a revision that is not a full commit SHA', async () => {
+    const result = await scan({ revision: { exitCode: 0, stdout: 'HEAD -> main\n' } });
+
+    expect(result.revision).toBeUndefined();
+    expect(result.requests).toHaveLength(1);
+  });
+
+  it('redacts secrets out of a scan transport failure', async () => {
+    const { client } = scanClient({ revision: new Error('connect failed for token vercel-secret') });
+
+    const result = await scanRemoteAppPorts({
+      sandbox: sandbox(),
+      client,
+      workspace: '/vercel/sandbox/repo',
+      secrets: ['vercel-secret'],
+    });
+
+    expect(result.warnings[0]).toContain('[REDACTED]');
+    expect(result.warnings[0]).not.toContain('vercel-secret');
+    expect(result.detection.candidates).toEqual([]);
+  });
+
+  it('bounds the scan with an abort signal on both commands', async () => {
+    const { client, requests } = scanClient({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': '{}' }) },
+    });
+    const controller = new AbortController();
+
+    await scanRemoteAppPorts({
+      sandbox: sandbox(),
+      client,
+      workspace: '/vercel/sandbox/repo',
+      signal: controller.signal,
+    });
+
+    expect(requests.every((request) => request.signal === controller.signal)).toBe(true);
+  });
+});
+
+
+describe('workspace manifest scanning', () => {
+  const TURBO_ROOT = JSON.stringify({
+    scripts: { dev: 'turbo dev' },
+    devDependencies: { turbo: '^2.0.0' },
+  });
+
+  it('reads members declared only in pnpm-workspace.yaml and finds the app there', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: {
+        exitCode: 0,
+        stdout: emitted({
+          './package.json': TURBO_ROOT,
+          './pnpm-workspace.yaml': 'packages:\n  - "apps/*"\n  - "packages/*"\n',
+        }),
+      },
+      members: {
+        exitCode: 0,
+        stdout: emitted({
+          './apps/web/package.json': JSON.stringify({ scripts: { dev: 'vite' }, devDependencies: { vite: '^8' } }),
+          './packages/ui/package.json': JSON.stringify({ name: 'ui' }),
+        }),
+      },
+    });
+
+    expect(result.detection.candidates).toEqual([
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: 'apps/web' },
+    ]);
+    expect(result.workspaces).toEqual(['apps/web', 'packages/ui']);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('expands only the declared patterns', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: {
+        exitCode: 0,
+        stdout: emitted({
+          './package.json': JSON.stringify({ workspaces: ['apps/*'], scripts: { dev: 'turbo dev' } }),
+        }),
+      },
+      members: { exitCode: 0, stdout: '' },
+    });
+
+    expect(result.requests).toHaveLength(3);
+    const members = result.requests[2].args?.join(' ') ?? '';
+    expect(members).toContain('./apps/*/package.json');
+    expect(members).not.toContain('packages');
+  });
+
+  it('does not run a member read when no workspaces are declared', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': JSON.stringify({ scripts: { dev: 'vite' } }) }) },
+    });
+
+    expect(result.requests).toHaveLength(2);
+    expect(result.workspaces).toEqual([]);
+  });
+
+  it('survives a member read failure with the root result intact', async () => {
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: {
+        exitCode: 0,
+        stdout: emitted({ './package.json': JSON.stringify({ workspaces: ['apps/*'], devDependencies: { vite: '^8' } }) }),
+      },
+      members: new Error('member read failed'),
+    });
+
+    expect(result.detection.candidates).toEqual([
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: '.' },
+    ]);
+    expect(result.warnings[0]).toContain('workspace manifests could not be read');
+  });
+
+  it('caps how many member manifests it will take', async () => {
+    const many: Record<string, string> = {};
+    for (let index = 0; index < MAX_WORKSPACE_MANIFESTS + 5; index += 1) {
+      many[`./apps/app${index}/package.json`] = JSON.stringify({ name: `app${index}` });
+    }
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': JSON.stringify({ workspaces: ['apps/*'] }) }) },
+      members: { exitCode: 0, stdout: emitted(many) },
+    });
+
+    expect(result.workspaces).toHaveLength(MAX_WORKSPACE_MANIFESTS);
+    expect(result.warnings.some((warning) => warning.includes('the rest were skipped'))).toBe(true);
+  });
+
+  it('cannot have a record boundary forged by manifest content', async () => {
+    // Valid JSON cannot carry a raw separator, so an escaped one in a string
+    // value stays inside its own record instead of inventing a new file.
+    const hostile = JSON.stringify({
+      name: `x${UNIT_ESCAPE}./evil/package.json`,
+      devDependencies: { vite: '^8' },
+    });
+    const result = await scan({
+      revision: { exitCode: 0, stdout: REVISION },
+      packageJson: { exitCode: 0, stdout: emitted({ './package.json': hostile }) },
+    });
+
+    expect(result.detection.candidates).toEqual([
+      { port: VITE_DEFAULT_PORT, framework: 'vite', source: 'framework-default', workspace: '.' },
+    ]);
+  });
+});

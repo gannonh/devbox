@@ -1163,9 +1163,22 @@ describe('Vercel provider', () => {
     } as unknown as VercelSandboxClient;
     const provider = createVercelProvider({ runner: runner(), stateHome, client, resolveImage: resolveTestImage });
 
-    await expect(provider.remove(request({ branch: 'feature/recover', env, tty: false }))).resolves.toEqual({ exitCode: 0 });
+    const stderr = new PassThrough();
+    const output: string[] = [];
+    stderr.on('data', (chunk) => output.push(chunk.toString()));
+
+    await expect(provider.remove(request({ branch: 'feature/recover', env, stderr, tty: false })))
+      .resolves.toEqual({ exitCode: 0 });
     expect(client.get).not.toHaveBeenCalled();
     expect(client.deleteSandbox).not.toHaveBeenCalled();
+
+    // Declining to delete another scope's box is right; claiming none exists
+    // while --list shows one is not.
+    const text = output.join('');
+    expect(text).not.toContain('nothing to remove');
+    expect(text).toContain('another Vercel team/project and were not touched');
+    expect(text).toContain(foreign.name);
+    expect(text).toContain('VERCEL_TEAM_ID/VERCEL_PROJECT_ID');
   });
 
   it('recovers the scoped sandbox and ignores a foreign-scope record for the same branch', async () => {

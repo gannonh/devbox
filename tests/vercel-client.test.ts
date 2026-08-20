@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { Sandbox as MockSandbox, Snapshot as MockSnapshot } from '@vercel/sandbox-mock';
 import {
   buildVercelSandboxCreateRequest,
@@ -6,6 +7,7 @@ import {
   isVercelNotFound,
   isVercelStale,
   VercelSdkError,
+  type VercelSandboxHandle,
 } from '../src/providers/vercel/client.js';
 import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
@@ -735,3 +737,103 @@ describe('Vercel Sandbox client adapter', () => {
     expect(JSON.stringify(request)).not.toContain('vercel-token');
   });
 });
+
+describe('Vercel Sandbox port update contract', () => {
+  it('pins the exact @vercel/sandbox version the client boundary was written against', async () => {
+    const root = new URL('../', import.meta.url);
+    const manifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    const lock = JSON.parse(await readFile(new URL('package-lock.json', root), 'utf8')) as {
+      packages: Record<string, { version?: string; dependencies?: Record<string, string> }>;
+    };
+    const installed = JSON.parse(
+      await readFile(new URL('node_modules/@vercel/sandbox/package.json', root), 'utf8'),
+    ) as { version: string };
+
+    expect(manifest.dependencies['@vercel/sandbox']).toBe('3.0.0');
+    expect(lock.packages['']?.dependencies?.['@vercel/sandbox']).toBe('3.0.0');
+    expect(lock.packages['node_modules/@vercel/sandbox']?.version).toBe('3.0.0');
+    expect(installed.version).toBe('3.0.0');
+  });
+
+  it('sends the complete desired port list as a single update request', async () => {
+    const handle = {
+      update: vi.fn(async () => {}),
+    } as unknown as VercelSandboxHandle;
+    const client = createVercelSandboxClient();
+
+    await client.updatePorts(handle, [4000, 5173, 6080]);
+
+    expect(handle.update).toHaveBeenCalledTimes(1);
+    expect(handle.update).toHaveBeenCalledWith({ ports: [4000, 5173, 6080] }, undefined);
+    expect(Object.keys((handle.update as ReturnType<typeof vi.fn>).mock.calls[0][0])).toEqual(['ports']);
+  });
+
+  it('forwards an abort signal without changing the request shape', async () => {
+    const handle = { update: vi.fn(async () => {}) } as unknown as VercelSandboxHandle;
+    const client = createVercelSandboxClient();
+    const controller = new AbortController();
+
+    await client.updatePorts(handle, [6080], { signal: controller.signal });
+
+    expect(handle.update).toHaveBeenCalledWith({ ports: [6080] }, { signal: controller.signal });
+  });
+
+  it('redacts secrets out of a failed port update', async () => {
+    const handle = {
+      update: vi.fn(async () => {
+        throw new Error('update rejected for vercel-token-secret');
+      }),
+    } as unknown as VercelSandboxHandle;
+    const client = createVercelSandboxClient();
+
+    await expect(client.updatePorts(handle, [6080])).rejects.toThrow(VercelSdkError);
+    await expect(client.updatePorts(handle, [6080])).rejects.toThrow(/update rejected/);
+  });
+
+  it('replaces the full route set on the running sandbox rather than recreating it', async () => {
+    const client = createVercelSandboxClient({
+      sandbox: MockSandbox as never,
+      snapshot: MockSnapshot as never,
+    });
+    const created = await client.getOrCreate({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      name: `mock-port-update-${Date.now()}`,
+      image: TEST_IMAGE_REFERENCE,
+      ports: [4000, 6080],
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        revision: 'main',
+        username: 'x-access-token',
+        password: 'github-token',
+      },
+      timeout: 10_000,
+      persistent: true,
+      keepLastSnapshots: { count: 1 },
+      tags: {
+        provider: 'vercel',
+        repository: 'repo',
+        branch: 'main',
+        version: 'v',
+        identity: 'ports',
+      },
+    });
+    const sandboxId = created.id;
+    expect(portsOf(created)).toEqual([4000, 6080]);
+
+    await client.updatePorts(created, [4000, 5173, 6080]);
+    expect(portsOf(created)).toEqual([4000, 5173, 6080]);
+    expect(created.id).toBe(sandboxId);
+
+    // The list is the whole desired set: an omitted port is deregistered.
+    await client.updatePorts(created, [5173, 6080]);
+    expect(portsOf(created)).toEqual([5173, 6080]);
+    expect(created.id).toBe(sandboxId);
+  });
+});
+
+function portsOf(handle: VercelSandboxHandle): number[] {
+  return [...(handle.routes ?? [])].map((route) => route.port).sort((left, right) => left - right);
+}

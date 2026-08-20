@@ -4,10 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  appPortsOf,
   assertSdkPorts,
+  buildDesiredPortSet,
   DEVBOX_NOVNC_INTERNAL_PORT,
+  DEVBOX_NOVNC_PROXY_PORT,
+  DEVBOX_VNC_PORT,
+  MAX_VERCEL_SANDBOX_APP_PORTS,
+  MAX_VERCEL_SANDBOX_PORTS,
   parseDevcontainerPorts,
+  parseExposePortsList,
   resolveDevcontainerPorts,
+  samePortSet,
 } from '../src/providers/vercel/ports.js';
 import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
@@ -138,16 +146,16 @@ describe('Vercel devcontainer ports', () => {
       .toEqual([6080]);
   });
 
-  it('limits the final SDK port array to 15 including noVNC', () => {
-    const appPorts = Array.from({ length: 14 }, (_, index) => 3_000 + index);
+  it('limits the final SDK port array to the verified service maximum including noVNC', () => {
+    const appPorts = Array.from({ length: 13 }, (_, index) => 3_000 + index);
     expect(parseDevcontainerPorts(JSON.stringify({ forwardPorts: appPorts }))).toEqual({
       ports: [...appPorts, 6080].sort((left, right) => left - right),
       labels: {},
     });
 
-    const overflowingPorts = [...appPorts, 3_014];
+    const overflowingPorts = [...appPorts, 3_013];
     expect(() => parseDevcontainerPorts(JSON.stringify({ forwardPorts: overflowingPorts }), '/repo/devcontainer.json'))
-      .toThrow(/\/repo\/devcontainer\.json.*maximum is 15.*overflow ports: 3014/);
+      .toThrow(/\/repo\/devcontainer\.json.*verified service maximum is 14.*overflow ports: 3013/);
   });
 
   it('accepts labels only for normalized ports present in the resolved SDK array', () => {
@@ -285,5 +293,71 @@ describe('Vercel devcontainer ports', () => {
       ports: [DEVBOX_NOVNC_INTERNAL_PORT],
     });
     await expect(invalidInternalLifecycle.up()).rejects.toThrow(/6081.*(?:internal|private)/);
+  });
+});
+
+describe('--expose-ports parsing and desired port sets', () => {
+  it('accepts a comma-separated list with surrounding whitespace', () => {
+    expect(parseExposePortsList(' 5173 , 3000,4000 ')).toEqual([5173, 3000, 4000]);
+  });
+
+  it('accepts a single port', () => {
+    expect(parseExposePortsList('5173')).toEqual([5173]);
+  });
+
+  it.each([
+    ['an empty value', '   ', /non-empty comma-separated list/],
+    ['an empty entry', '5173,,3000', /empty port entry/],
+    ['a trailing separator', '5173,', /empty port entry/],
+    ['a non-decimal entry', '5173,web', /not a decimal port/],
+    ['a hex entry', '0x1000', /not a decimal port/],
+    ['a negative entry', '-1', /not a decimal port/],
+    ['a zero entry', '0', /outside 1\.\.65535/],
+    ['an out-of-range entry', '70000', /outside 1\.\.65535/],
+    ['a duplicate entry', '5173,5173', /duplicate/],
+    ['the private VNC port', '5900', /reserved; the VNC port stays private/],
+    ['the internal noVNC port', '6081', /reserved; the internal noVNC port stays private/],
+  ])('rejects %s', (_label, value, message) => {
+    expect(() => parseExposePortsList(value)).toThrow(message);
+  });
+
+  it('permits the reserved noVNC port and keeps it once in the desired set', () => {
+    expect(parseExposePortsList('6080')).toEqual([DEVBOX_NOVNC_PROXY_PORT]);
+    expect(buildDesiredPortSet([DEVBOX_NOVNC_PROXY_PORT], [DEVBOX_NOVNC_PROXY_PORT]))
+      .toEqual([DEVBOX_NOVNC_PROXY_PORT]);
+  });
+
+  it('unions configured and selected ports with the reserved noVNC port', () => {
+    expect(buildDesiredPortSet([4000], [5173])).toEqual([4000, 5173, DEVBOX_NOVNC_PROXY_PORT]);
+    expect(buildDesiredPortSet([], [])).toEqual([DEVBOX_NOVNC_PROXY_PORT]);
+  });
+
+  it('accepts the verified maximum total port count and rejects one more', () => {
+    const maximum = Array.from(
+      { length: MAX_VERCEL_SANDBOX_APP_PORTS },
+      (_value, index) => 4000 + index,
+    );
+    expect(buildDesiredPortSet(maximum, [])).toHaveLength(MAX_VERCEL_SANDBOX_PORTS);
+    expect(MAX_VERCEL_SANDBOX_PORTS).toBe(14);
+    expect(MAX_VERCEL_SANDBOX_APP_PORTS).toBe(13);
+
+    expect(() => buildDesiredPortSet(maximum, [5173]))
+      .toThrow(/app port selection is invalid.*verified service maximum is 14.*at most 13 app ports/s);
+  });
+
+  it('reports a private port in the selection before any update', () => {
+    expect(() => buildDesiredPortSet([4000], [DEVBOX_VNC_PORT])).toThrow(/forbidden\/private/);
+    expect(() => buildDesiredPortSet([4000], [DEVBOX_NOVNC_INTERNAL_PORT])).toThrow(/internal\/private/);
+  });
+
+  it('separates app ports from the reserved noVNC port', () => {
+    expect(appPortsOf([DEVBOX_NOVNC_PROXY_PORT, 5173, 4000, 5173])).toEqual([4000, 5173]);
+    expect(appPortsOf([DEVBOX_NOVNC_PROXY_PORT])).toEqual([]);
+  });
+
+  it('compares port sets by content rather than order', () => {
+    expect(samePortSet([5173, DEVBOX_NOVNC_PROXY_PORT], [DEVBOX_NOVNC_PROXY_PORT, 5173])).toBe(true);
+    expect(samePortSet([5173], [5173, 4000])).toBe(false);
+    expect(samePortSet([], [])).toBe(true);
   });
 });
