@@ -60,9 +60,10 @@ as a build output.
   gate adapt automatically.
 - An agent update is a single PR whose body records the declared → candidate
   versions, the validated candidate digest, and the smoke evidence URLs.
-- Rollback is a revert of the merged version PR (Nightly rebuilds the previous
-  versions) or a Release naming an earlier known-good nightly — no image
-  rebuild and no source digest edit.
+- Rollback is a revert of the merged version PR — the next scheduled Nightly
+  rebuilds the previous declared versions — or a Release naming an earlier
+  known-good nightly, which reuses that nightly's existing image and source
+  digest without rebuilding.
 - The scheduled refresh opens at most one open promotion PR at a time and
   skips rebuilds when that PR already carries the exact current drift.
 - Daily cadence (04:00 UTC) bounds the detection-to-merge lag; manual dispatch

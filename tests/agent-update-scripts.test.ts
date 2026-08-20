@@ -38,13 +38,27 @@ function runCli(args: string[], env: Record<string, string> = {}): { status: num
   }
 }
 
+// Fixture versions must stay above the checked-in manifest pins; derive them
+// from the manifest so the suite survives the daily refresh that bumps it.
+function bumpPatch(version: string): string {
+  const [major, minor, patch] = version.split('.').map(Number);
+  return `${major}.${minor}.${patch + 1}`;
+}
+
 describe('agent update detection and manifest contract CLIs', () => {
   it('detects available agent updates through the real CLI path', async () => {
+    const manifest = await readAgentManifest();
+    const latestByAgent = {
+      pi: bumpPatch(manifest.agents.pi.version),
+      claude: bumpPatch(manifest.agents.claude.version),
+      codex: bumpPatch(manifest.agents.codex.version),
+      opencode: bumpPatch(manifest.agents.opencode.version),
+    };
     const fakeLatest = {
-      '@earendil-works/pi-coding-agent': '0.84.2',
-      '@anthropic-ai/claude-code': '2.1.237',
-      '@openai/codex': '0.148.0',
-      'opencode-ai': '1.18.19',
+      '@earendil-works/pi-coding-agent': latestByAgent.pi,
+      '@anthropic-ai/claude-code': latestByAgent.claude,
+      '@openai/codex': latestByAgent.codex,
+      'opencode-ai': latestByAgent.opencode,
     };
     const work = mkdtempSync(join(tmpdir(), 'agent-update-test-'));
     try {
@@ -56,13 +70,6 @@ describe('agent update detection and manifest contract CLIs', () => {
       );
       expect(result.status).toBe(0);
       const report = JSON.parse(readFileSync(out, 'utf8'));
-      const manifest = await readAgentManifest();
-      const latestByAgent = {
-        pi: fakeLatest['@earendil-works/pi-coding-agent'],
-        claude: fakeLatest['@anthropic-ai/claude-code'],
-        codex: fakeLatest['@openai/codex'],
-        opencode: fakeLatest['opencode-ai'],
-      };
       const expected = buildUpdateReport(manifest, latestByAgent);
       expect(report.agents).toEqual(expected.agents);
       expect(report.updates).toEqual(expected.updates);
@@ -76,11 +83,12 @@ describe('agent update detection and manifest contract CLIs', () => {
   });
 
   it('limits detection to the requested agents', async () => {
+    const manifest = await readAgentManifest();
     const fakeLatest = {
-      '@earendil-works/pi-coding-agent': '0.84.2',
-      '@anthropic-ai/claude-code': '2.1.237',
-      '@openai/codex': '0.148.0',
-      'opencode-ai': '1.18.19',
+      '@earendil-works/pi-coding-agent': bumpPatch(manifest.agents.pi.version),
+      '@anthropic-ai/claude-code': bumpPatch(manifest.agents.claude.version),
+      '@openai/codex': bumpPatch(manifest.agents.codex.version),
+      'opencode-ai': bumpPatch(manifest.agents.opencode.version),
     };
     const work = mkdtempSync(join(tmpdir(), 'agent-update-test-'));
     try {
@@ -137,7 +145,7 @@ describe('agent update detection and manifest contract CLIs', () => {
     const work = mkdtempSync(join(tmpdir(), 'agent-update-test-'));
     try {
       const manifest = JSON.parse(readFileSync(agentManifestPath, 'utf8'));
-      manifest.agents.opencode.version = '1.18.19';
+      manifest.agents.opencode.version = bumpPatch(manifest.agents.opencode.version);
       const bumped = join(work, 'agents.json');
       writeFileSync(bumped, JSON.stringify(manifest, null, 2));
       const result = runCli([
@@ -150,6 +158,7 @@ describe('agent update detection and manifest contract CLIs', () => {
       rmSync(work, { recursive: true, force: true });
     }
   });
+});
 
 describe('apply agent updates', () => {
   it('bumps the declared versions and syncs the reviewed provenance', async () => {
@@ -157,10 +166,10 @@ describe('apply agent updates', () => {
     const manifest = JSON.parse(readFileSync(agentManifestPath, 'utf8'));
     const provenance = JSON.parse(readFileSync(provenancePath0, 'utf8'));
     const updates = [
-      { name: 'pi', latest: '0.84.2' },
-      { name: 'claude', latest: '2.1.238' },
-      { name: 'codex', latest: '0.148.0' },
-      { name: 'opencode', latest: '1.18.19' },
+      { name: 'pi', latest: bumpPatch(manifest.agents.pi.version) },
+      { name: 'claude', latest: bumpPatch(manifest.agents.claude.version) },
+      { name: 'codex', latest: bumpPatch(manifest.agents.codex.version) },
+      { name: 'opencode', latest: bumpPatch(manifest.agents.opencode.version) },
     ];
     const { manifest: next, provenance: nextProvenance } = applyAgentUpdates(manifest, provenance, updates);
     for (const { name, latest } of updates) {
@@ -195,18 +204,54 @@ describe('apply agent updates', () => {
       .toThrow(/version/);
   });
 
+  it('refuses updates when provenance lacks the required records', async () => {
+    const { applyAgentUpdates } = await import('../scripts/vercel/apply-agent-updates.mjs');
+    const manifest = JSON.parse(readFileSync(agentManifestPath, 'utf8'));
+    const provenance = JSON.parse(readFileSync(provenancePath0, 'utf8'));
+    delete provenance.runtimePackages;
+    expect(() => applyAgentUpdates(manifest, provenance, [{ name: 'pi', latest: bumpPatch(manifest.agents.pi.version) }]))
+      .toThrow(/provenance/);
+  });
+
+  it('dry-runs without writing the canonical files', async () => {
+    const manifest = JSON.parse(readFileSync(agentManifestPath, 'utf8'));
+    const latest = bumpPatch(manifest.agents.pi.version);
+    const report = {
+      checkedAt: '2026-08-20T00:00:00.000Z',
+      agents: [{ name: 'pi', package: '@earendil-works/pi-coding-agent', declared: manifest.agents.pi.version, latest, status: 'update-available' }],
+      updates: ['pi'],
+      summary: '1 of 4 agents have updates',
+    };
+    const work = mkdtempSync(join(tmpdir(), 'agent-update-test-'));
+    try {
+      const reportPath = join(work, 'drift.json');
+      writeFileSync(reportPath, JSON.stringify(report));
+      const before = readFileSync(agentManifestPath, 'utf8');
+      const result = runCli([
+        join(scriptDir, 'apply-agent-updates.mjs'),
+        '--report', reportPath,
+        '--dry-run',
+      ]);
+      expect(result.status).toBe(0);
+      const out = JSON.parse(result.stdout);
+      expect(out.manifest.agents.pi.version).toBe(latest);
+      // Canonical files are untouched.
+      expect(readFileSync(agentManifestPath, 'utf8')).toBe(before);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
   it('applies a drift report through the real CLI path', async () => {
     const work = mkdtempSync(join(tmpdir(), 'agent-update-test-'));
     try {
       const manifest = JSON.parse(readFileSync(agentManifestPath, 'utf8'));
       const provenance = JSON.parse(readFileSync(provenancePath0, 'utf8'));
-      manifest.agents.pi.version = '0.84.2';
-      provenance.observedManagedVmi.versions.pi = '0.84.2';
-      provenance.runtimePackages.pi = '0.84.2';
+      const latest = bumpPatch(manifest.agents.pi.version);
       const report = {
         checkedAt: '2026-08-20T00:00:00.000Z',
         agents: [
-          { name: 'pi', package: '@earendil-works/pi-coding-agent', declared: '0.84.1', latest: '0.84.2', status: 'update-available' },
+          { name: 'pi', package: '@earendil-works/pi-coding-agent', declared: manifest.agents.pi.version, latest, status: 'update-available' },
         ],
         updates: ['pi'],
         summary: '1 of 4 agents have updates',
@@ -227,8 +272,8 @@ describe('apply agent updates', () => {
       expect(result.status).toBe(0);
       const nextManifest = JSON.parse(readFileSync(agentsPath, 'utf8'));
       const nextProvenance = JSON.parse(readFileSync(provenancePath, 'utf8'));
-      expect(nextManifest.agents.pi.version).toBe('0.84.2');
-      expect(nextProvenance.runtimePackages.pi).toBe('0.84.2');
+      expect(nextManifest.agents.pi.version).toBe(latest);
+      expect(nextProvenance.runtimePackages.pi).toBe(latest);
       expect(nextProvenance.runtimePackages.claude).toBe(provenance.runtimePackages.claude);
       // The CLI round-trips through the contract check.
       const contract = runCli([join(scriptDir, 'assert-agent-manifest.mjs'), '--agents-file', agentsPath, '--provenance-file', provenancePath]);
@@ -266,34 +311,4 @@ describe('agent refresh PR body', () => {
     expect(body).toContain('Merging this pull request promotes');
     expect(body).toContain('nightly');
   });
-});
-
-
-  it('dry-runs without writing the canonical files', async () => {
-    const report = {
-      checkedAt: '2026-08-20T00:00:00.000Z',
-      agents: [{ name: 'pi', package: '@earendil-works/pi-coding-agent', declared: '0.84.1', latest: '0.84.2', status: 'update-available' }],
-      updates: ['pi'],
-      summary: '1 of 4 agents have updates',
-    };
-    const work = mkdtempSync(join(tmpdir(), 'agent-update-test-'));
-    try {
-      const reportPath = join(work, 'drift.json');
-      writeFileSync(reportPath, JSON.stringify(report));
-      const before = readFileSync(agentManifestPath, 'utf8');
-      const result = runCli([
-        join(scriptDir, 'apply-agent-updates.mjs'),
-        '--report', reportPath,
-        '--dry-run',
-      ]);
-      expect(result.status).toBe(0);
-      const out = JSON.parse(result.stdout);
-      expect(out.manifest.agents.pi.version).toBe('0.84.2');
-      // Canonical files are untouched.
-      expect(readFileSync(agentManifestPath, 'utf8')).toBe(before);
-    } finally {
-      rmSync(work, { recursive: true, force: true });
-    }
-  });
-
 });

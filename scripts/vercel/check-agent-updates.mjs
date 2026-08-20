@@ -27,12 +27,12 @@ for (let index = 2; index < process.argv.length; index += 2) {
   args.set(key.slice(2), process.argv[index + 1]);
 }
 
-function resolveLatestVersion(packageName) {
+function resolveLatestVersion(packageName, installSource) {
   let output;
   try {
-    output = execFileSync('npm', ['view', packageName, 'version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    output = execFileSync('npm', ['view', packageName, 'version', '--registry', installSource], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch {
-    throw new Error(`could not resolve the latest ${packageName} version from ${packageName}'s registry`);
+    throw new Error(`could not resolve the latest ${packageName} version from ${installSource}`);
   }
   const latest = output.trim().split(/\s+/).at(-1) ?? '';
   if (!VERSION_PATTERN.test(latest)) {
@@ -48,7 +48,7 @@ const filter = (args.get('agents') ?? '')
   .filter(Boolean);
 const latestByAgent = {};
 for (const [name, agent] of Object.entries(manifest.agents)) {
-  latestByAgent[name] = resolveLatestVersion(agent.package);
+  latestByAgent[name] = resolveLatestVersion(agent.package, manifest.installSource);
 }
 const report = buildUpdateReport(manifest, latestByAgent, { agents: filter });
 const serialized = `${JSON.stringify(report, null, 2)}\n`;

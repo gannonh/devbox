@@ -23,17 +23,42 @@ export const FLAG_PATTERN = /^--?[a-z-]+$/;
  * Loose exact-semver compare for the version policy. These packages publish
  * stable x.y.z releases; prerelease segments sort below the same release.
  */
-export function compareVersions(a, b) {
-  const segment = (value) => value.split('-')[0].split('.').map(Number);
-  const aSegments = segment(a);
-  const bSegments = segment(b);
-  for (let index = 0; index < 3; index += 1) {
-    if (aSegments[index] !== bSegments[index]) return aSegments[index] < bSegments[index] ? -1 : 1;
+function comparePrerelease(a, b) {
+  if (a === undefined && b === undefined) return 0;
+  if (a === undefined) return 1; // a release follows the same version's prerelease
+  if (b === undefined) return -1;
+  const aIds = a.split('.');
+  const bIds = b.split('.');
+  const length = Math.max(aIds.length, bIds.length);
+  for (let index = 0; index < length; index += 1) {
+    const aId = aIds[index];
+    const bId = bIds[index];
+    if (aId === undefined) return -1; // fewer identifiers sorts below more
+    if (bId === undefined) return 1;
+    const aNumeric = /^\d+$/.test(aId);
+    const bNumeric = /^\d+$/.test(bId);
+    if (aNumeric && bNumeric) {
+      if (Number(aId) !== Number(bId)) return Number(aId) < Number(bId) ? -1 : 1;
+    } else if (aNumeric !== bNumeric) {
+      return aNumeric ? -1 : 1; // numeric identifiers sort before non-numeric
+    } else if (aId !== bId) {
+      return aId < bId ? -1 : 1;
+    }
   }
-  const aPre = a.includes('-');
-  const bPre = b.includes('-');
-  if (aPre !== bPre) return aPre ? -1 : 1;
   return 0;
+}
+
+export function compareVersions(a, b) {
+  const parse = (value) => {
+    const [core, ...rest] = value.split('-');
+    return { core: core.split('.').map(Number), pre: rest.length ? rest.join('-') : undefined };
+  };
+  const aVersion = parse(a);
+  const bVersion = parse(b);
+  for (let index = 0; index < 3; index += 1) {
+    if (aVersion.core[index] !== bVersion.core[index]) return aVersion.core[index] < bVersion.core[index] ? -1 : 1;
+  }
+  return comparePrerelease(aVersion.pre, bVersion.pre);
 }
 
 export function validateAgentManifest(value) {
@@ -121,6 +146,13 @@ export function assertManifestMatchesProvenance(manifest, provenance) {
   for (const name of Object.keys(runtime)) {
     if (name in manifest.agents || nonAgentRuntimes.has(name)) continue;
     throw new Error(`provenance runtimePackages.${name} is not a declared agent or runtime`);
+  }
+  // observedManagedVmi.versions additionally records the base inventory
+  // (user, node, bun); any other undeclared observed version must not pass.
+  const nonAgentObserved = new Set(['user', 'node', 'bun']);
+  for (const name of Object.keys(observed)) {
+    if (name in manifest.agents || nonAgentRuntimes.has(name) || nonAgentObserved.has(name)) continue;
+    throw new Error(`provenance observedManagedVmi.versions.${name} is not a declared agent or runtime`);
   }
   return manifest;
 }

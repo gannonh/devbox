@@ -6,7 +6,7 @@
  * prints token/password values and always attempts to stop/delete the Sandbox,
  * verify terminal VM sessions, then clean up matching snapshots.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import net from 'node:net';
@@ -16,6 +16,7 @@ import {
   parseFullyQualifiedVcrReference,
   REQUIRED_SMOKE_CHECKS,
 } from './smoke-contract.mjs';
+import { readAgentManifest } from './agent-manifest.mjs';
 import { fetchWithTimeout } from './http-probe.mjs';
 import { TERMINAL_SESSION_STATES, verifySandboxDeleted, boundedCall } from './sandbox-cleanup.mjs';
 import {
@@ -435,15 +436,20 @@ try {
   // Candidate validation: every agent declared in images/vercel/agents.json
   // must be installed at its exact pinned version inside the Sandbox. A stale
   // or partially updated image fails here, before any promotion can occur.
-  const agentManifest = JSON.parse(await readFile('images/vercel/agents.json', 'utf8'));
+  const agentManifest = await readAgentManifest();
   let agentChecksPassed = true;
   for (const [name, agent] of Object.entries(agentManifest.agents)) {
     try {
       const probe = await command(agent.binary, [agent.versionFlag]);
       const output = `${probe.stdout}\n${probe.stderr}`.trim();
+      // The pinned version must match as a whole token: a prefix match would
+      // let 0.84.11 satisfy a 0.84.1 pin and promote the wrong image.
+      const exactVersion = new RegExp(
+        `(?<![\\w.-])${agent.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.-])`,
+      );
       agentChecksPassed = recordCheck(
         `agent ${name} version`,
-        probe.exitCode === 0 && output.includes(agent.version),
+        probe.exitCode === 0 && exactVersion.test(output),
         output,
       ) && agentChecksPassed;
     } catch (error) {

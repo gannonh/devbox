@@ -23,12 +23,15 @@ export function renderAgentPrBody({ report, candidateDigest, runUrl }) {
     '',
     `- Candidate digest: \`${candidateDigest}\``,
     `- Validation: publisher and consumer Sandbox smoke gates passed against the exact digest (${runUrl}), plus the manifest contract, zstd manifest, and VCR readiness checks.`,
-    '- Rollback: revert this PR (or dispatch **Release** naming an earlier known-good nightly) to move back to the previous digest without rebuilding.',
+    '- Rollback: revert this PR (the scheduled Nightly then rebuilds the previous declared versions), or dispatch **Release** naming an earlier known-good nightly, which reuses its existing digest without rebuilding.',
     '',
   ].join('\n');
 }
 
-if (process.argv[1]?.endsWith('/render-agent-pr-body.mjs')) {
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   const args = new Map();
   for (let index = 2; index < process.argv.length; index += 2) {
     const key = process.argv[index];

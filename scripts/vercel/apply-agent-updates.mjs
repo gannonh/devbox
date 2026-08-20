@@ -9,10 +9,11 @@
  * the complete update. Nothing else in the image content changes, and a
  * report that is not a strict upgrade is refused.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  assertManifestMatchesProvenance,
   compareVersions,
   readAgentManifest,
   validateAgentManifest,
@@ -30,6 +31,14 @@ function deepCopy(value) {
  */
 export function applyAgentUpdates(manifest, provenance, updates) {
   const nextManifest = validateAgentManifest(deepCopy(manifest));
+  if (
+    !provenance?.observedManagedVmi?.versions
+    || typeof provenance.observedManagedVmi.versions !== 'object'
+    || !provenance.runtimePackages
+    || typeof provenance.runtimePackages !== 'object'
+  ) {
+    throw new Error('provenance must carry observedManagedVmi.versions and runtimePackages');
+  }
   const nextProvenance = deepCopy(provenance);
   for (const { name, latest } of updates) {
     const agent = nextManifest.agents[name];
@@ -41,13 +50,10 @@ export function applyAgentUpdates(manifest, provenance, updates) {
       throw new Error(`refusing to apply ${name} ${agent.version} -> ${latest}: not a strict upgrade`);
     }
     agent.version = latest;
-    if (nextProvenance.observedManagedVmi?.versions) {
-      nextProvenance.observedManagedVmi.versions[name] = latest;
-    }
-    if (nextProvenance.runtimePackages) {
-      nextProvenance.runtimePackages[name] = latest;
-    }
+    nextProvenance.observedManagedVmi.versions[name] = latest;
+    nextProvenance.runtimePackages[name] = latest;
   }
+  assertManifestMatchesProvenance(nextManifest, nextProvenance);
   return { manifest: nextManifest, provenance: nextProvenance };
 }
 
@@ -118,9 +124,13 @@ async function main() {
     ? args.get('provenance-file')
     : fileURLToPath(new URL('../../images/vercel/provenance.json', import.meta.url));
   await Promise.all([
-    mkdir(dirname(manifestOut), { recursive: true }).then(() => writeFile(manifestOut, serialize(nextManifest), 'utf8')),
-    mkdir(dirname(provenanceOut), { recursive: true }).then(() => writeFile(provenanceOut, serialize(nextProvenance), 'utf8')),
+    mkdir(dirname(manifestOut), { recursive: true }).then(() => writeFile(`${manifestOut}.tmp`, serialize(nextManifest), 'utf8')),
+    mkdir(dirname(provenanceOut), { recursive: true }).then(() => writeFile(`${provenanceOut}.tmp`, serialize(nextProvenance), 'utf8')),
   ]);
+  // Both temp files are complete before either rename, so a failure never
+  // leaves a half-written contract file behind.
+  await rename(`${manifestOut}.tmp`, manifestOut);
+  await rename(`${provenanceOut}.tmp`, provenanceOut);
   for (const { name, latest } of updates) {
     console.log(`applied ${name} ${manifest.agents[name].version} -> ${latest}`);
   }

@@ -51,6 +51,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -63,11 +65,13 @@ jobs:
 
       - name: Check declared agents against the registry
         id: check
+        env:
+          AGENT_FILTER: ${{ inputs.agents }}
         run: |
           set -euo pipefail
           report="${RUNNER_TEMP}/agent-drift.json"
-          if [[ -n "${{ inputs.agents }}" ]]; then
-            node scripts/vercel/check-agent-updates.mjs --out "${report}" --agents "${{ inputs.agents }}"
+          if [[ -n "${AGENT_FILTER:-}" ]]; then
+            node scripts/vercel/check-agent-updates.mjs --out "${report}" --agents "${AGENT_FILTER}"
           else
             node scripts/vercel/check-agent-updates.mjs --out "${report}"
           fi
@@ -261,10 +265,14 @@ jobs:
       # PR current in place. A manually filtered run never touches an open
       # PR: a subset rebuild would revert the broader updates it carries.
       - name: Skip when the open promotion PR is already current
+        id: skip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISPATCH_AGENT_FILTER: ${{ inputs.agents }}
         run: |
           set -euo pipefail
-          open_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --head agent-update/agents --json number --jq '.[0].number // ""' 2>/dev/null || true)"
-          if [[ -n "${open_pr}" && -n "${{ inputs.agents }}" ]]; then
+          open_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --head agent-update/agents --json number --jq '.[0].number // ""')"
+          if [[ -n "${open_pr}" && -n "${DISPATCH_AGENT_FILTER:-}" ]]; then
             echo "::notice::Open promotion PR #${open_pr} already covers this refresh; skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -296,7 +304,6 @@ jobs:
         run: |
           set -euo pipefail
           candidate_tree="$(git add -A images/vercel && git write-tree)"
-          upstream_short="${UPSTREAM_COMMIT:0:12}"
           ubuntu_digest="${UBUNTU_BASE_REFERENCE##*@}"
           ubuntu_short="${ubuntu_digest#sha256:}"
           ubuntu_short="${ubuntu_short:0:12}"
@@ -499,6 +506,7 @@ jobs:
       - name: Create or update the promotion PR
         if: steps.skip.outputs.skip != 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           CANDIDATE_DIGEST: ${{ steps.manifest.outputs.digest }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

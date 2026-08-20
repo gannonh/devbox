@@ -12,7 +12,7 @@ describe('agent refresh workflow', () => {
     expect(workflow).toContain("cron: '0 4 * * *'");
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain("description: 'Comma-separated agent names to refresh (default: all declared agents)'");
-    expect(workflow).toContain('--agents "${{ inputs.agents }}"');
+    expect(workflow).toContain('--agents "${AGENT_FILTER}"');
   });
 
   it('serializes refreshes and gates manual dispatches to the repository owner', async () => {
@@ -66,8 +66,27 @@ describe('agent refresh workflow', () => {
     // A manually filtered run must never clobber a broader open PR; a full
     // run falls through to the content comparison and updates the PR in place.
     expect(workflow).toContain('already covers this refresh');
-    expect(workflow).toContain('[[ -n "${open_pr}" && -n "${{ inputs.agents }}" ]]');
+    expect(workflow).toContain('[[ -n "${open_pr}" && -n "${DISPATCH_AGENT_FILTER:-}" ]]');
     expect(workflow).toContain('--base "${{ github.event.repository.default_branch }}"');
+    // The skip gate is only meaningful if the producing step declares the id
+    // and every steps.<id>.outputs reference resolves to a declared step id.
+    const skipStep = workflow.slice(
+      workflow.indexOf('Skip when the open promotion PR is already current'),
+      workflow.indexOf('Prepare immutable candidate reference'),
+    );
+    expect(skipStep).toContain('id: skip');
+    const referencedStepIds = [...workflow.matchAll(/steps\.([a-zA-Z_][a-zA-Z0-9_]*)\.outputs/g)]
+      .map((match) => match[1]);
+    expect(referencedStepIds.length).toBeGreaterThan(0);
+    for (const stepId of referencedStepIds) {
+      expect(workflow).toMatch(new RegExp(`id: ${stepId}\\b`));
+    }
+    // gh steps carry the job token explicitly; the skip-step listing must
+    // fail visibly instead of falling back to building.
+    expect(workflow).toContain('GH_TOKEN: ${{ github.token }}');
+    const ghListing = skipStep.slice(skipStep.indexOf('gh pr list'), skipStep.indexOf('\n'));
+    expect(ghListing).not.toContain('2>/dev/null');
+    expect(ghListing).not.toContain('|| true');
   });
 
   it('runs both exact-digest smoke gates before the promotion PR exists', async () => {

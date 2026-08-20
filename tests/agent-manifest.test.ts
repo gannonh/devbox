@@ -71,6 +71,12 @@ describe('agent version manifest', () => {
     extraAgent.runtimePackages.extra = '9.9.9';
     extraAgent.observedManagedVmi.versions.extra = '9.9.9';
     expect(() => assertManifestMatchesProvenance(manifest, extraAgent)).toThrow(/extra/);
+
+    // The observed inventory must be validated too: an undeclared version
+    // passes only if no runtimePackages entry matches, so reject it directly.
+    const extraObserved = clone();
+    extraObserved.observedManagedVmi.versions.extra = '9.9.9';
+    expect(() => assertManifestMatchesProvenance(manifest, extraObserved)).toThrow(/extra/);
   });
 
   it('compares exact semver versions', () => {
@@ -80,6 +86,26 @@ describe('agent version manifest', () => {
     expect(compareVersions('1.9.0', '1.10.0')).toBe(-1);
     expect(compareVersions('1.0.0-beta', '1.0.0')).toBeLessThan(0);
     expect(compareVersions('1.0.0', '1.0.0-beta.1')).toBeGreaterThan(0);
+  });
+
+  it('orders prerelease identifiers by SemVer rules', () => {
+    // Numeric identifiers compare numerically, not lexically.
+    expect(compareVersions('1.0.0-beta.2', '1.0.0-beta.11')).toBe(-1);
+    expect(compareVersions('1.0.0-beta.11', '1.0.0-beta.2')).toBe(1);
+    // Lexical identifiers compare by ASCII order.
+    expect(compareVersions('1.0.0-alpha', '1.0.0-beta')).toBe(-1);
+    expect(compareVersions('1.0.0-beta', '1.0.0-rc.1')).toBeLessThan(0);
+    // Numeric identifiers sort before non-numeric ones.
+    expect(compareVersions('1.0.0-1', '1.0.0-alpha')).toBe(-1);
+    expect(compareVersions('1.0.0-alpha', '1.0.0-1')).toBe(1);
+    // A longer identifier list sorts after its prefix.
+    expect(compareVersions('1.0.0-beta.1', '1.0.0-beta.1.1')).toBe(-1);
+    // Hyphenated identifiers compare as single identifiers.
+    expect(compareVersions('1.0.0-rc-1', '1.0.0-rc-2')).toBe(-1);
+    // Equal prereleases compare equal.
+    expect(compareVersions('1.0.0-rc.1', '1.0.0-rc.1')).toBe(0);
+    // The core version still dominates any prerelease.
+    expect(compareVersions('1.0.0-alpha', '1.0.1-alpha')).toBe(-1);
   });
 
   it('classifies each agent against the registry latest', async () => {

@@ -127,7 +127,8 @@ RUN set -eux; \
     rm -rf /root/.cache/pip /var/lib/apt/lists/*; \
     git lfs install --system; \
     agent_version() { jq -r --arg agent "$1" '.agents[$agent].version' /usr/local/share/devbox/agents.json; }; \
-    npm install -g \
+    install_source="$(jq -r '.installSource' /usr/local/share/devbox/agents.json)"; \
+    npm install -g --registry "${install_source}" \
       npm@11.17.0 \
       pnpm@11.20.0 \
       "opencode-ai@$(agent_version opencode)" \

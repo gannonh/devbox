@@ -91,14 +91,15 @@ image without a passing candidate smoke and a human merge.
 
 ## Rollback
 
-Two paths, both without rebuilding the image:
+Two paths, with different rebuild behavior:
 
 1. **Revert the promotion PR** (`git revert` of the merged commit). The next
    scheduled Nightly builds the previous declared versions and moves the
-   `nightly` channel back to that digest.
-2. **Release an earlier nightly**: dispatch **Release** naming a known-good
-   older nightly prerelease. It re-resolves that pin and moves `stable` back
-   to the digest it already proved.
+   `nightly` channel back to that digest — a rebuild of the old versions.
+2. **Release an earlier nightly without rebuilding**: dispatch **Release**
+   naming a known-good older nightly prerelease. It reuses that nightly's
+   existing image and source digest and moves `stable` back to the digest it
+   already proved.
 
 For an immediate stop without waiting for gates, repoint the npm dist-tag
 (`npm dist-tag add @gannonh/devbox@<previous-good-version> latest`) and follow
