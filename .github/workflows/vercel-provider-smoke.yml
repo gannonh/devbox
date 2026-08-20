@@ -193,6 +193,7 @@ jobs:
           DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
           DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
           DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+          DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
           SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/provider-smoke.json
         run: node scripts/vercel/provider-smoke.mjs
 

@@ -385,6 +385,7 @@ describe('Vercel provider smoke configuration', () => {
     for (const secret of PROVIDER_SMOKE_SECRETS) {
       expect(smokeEnv[PROVIDER_SMOKE_SECRET_TO_ENV[secret]]).toBe('${{ secrets.' + secret + ' }}');
     }
+    expect(smokeEnv.DEVBOX_VERCEL_IMAGE).toBe('${{ inputs.image_reference }}');
     expect(smokeEnv.SMOKE_REPORT).toBe('${{ env.ARTIFACT_DIR }}/provider-smoke.json');
     const upload = steps.find((s) => s.name === 'Upload redacted provider smoke evidence') as Record<string, unknown>;
     expect((upload.with as Record<string, string>).path).toBe('${{ env.ARTIFACT_DIR }}');
@@ -422,7 +423,7 @@ describe('Vercel provider smoke configuration', () => {
     expect(workflow).toContain('cancel-in-progress: false');
     expect(workflow).toContain('if: always()');
     expect(workflow).toContain('scripts/vercel/redact-artifacts.mjs');
-    expect(workflow).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
+    expect(workflow).toContain('actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
     for (const line of workflow.split('\n').filter((value) => value.trim().startsWith('uses: '))) {
       expect(line).toMatch(/uses: [^@]+@[a-f0-9]{40}(?:\s+#.*)?$/);
     }
