@@ -147,6 +147,12 @@ function recordCheck(target, name, ok, detail = '') {
   if (!ok) throw new Error(`${name} failed${detail ? `: ${redactText(detail)}` : ''}`);
 }
 
+function validStopSnapshot(snapshot) {
+  return snapshot === undefined
+    || (typeof snapshot.id === 'string' && snapshot.id.length > 0
+      && ['created', 'deleted'].includes(snapshot.status));
+}
+
 function recordTiming(target, stage, started, outcome, error) {
   const finished = Date.now();
   target.timings ??= {};
@@ -743,7 +749,9 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
     }
 
     const initialStop = await timed(pathReport, 'stop-initial', (requestSignal) => client.stopSandbox(sandbox, { signal: requestSignal }), signal, operationTimeoutMs);
-    recordCheck(pathReport, 'initial stop snapshot', Boolean(initialStop.snapshot?.id) && ['created', 'deleted'].includes(initialStop.snapshot.status), `snapshot status=${initialStop.snapshot?.status ?? 'missing'}`);
+    // A persistent stop may omit a snapshot when there is no filesystem delta;
+    // the subsequent resume is the durable behavior this gate must prove.
+    recordCheck(pathReport, 'initial stop snapshot metadata', validStopSnapshot(initialStop.snapshot), `snapshot status=${initialStop.snapshot?.status ?? 'not-created'}`);
     const afterInitialStop = await client.listSessions(sandbox, { signal });
     pathReport.sessions.push({ phase: 'after-initial-stop', states: afterInitialStop.map(sessionState) });
 
@@ -784,7 +792,7 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
     }
 
     const finalStop = await timed(pathReport, 'stop-final', (requestSignal) => client.stopSandbox(resumed, { signal: requestSignal }), signal, operationTimeoutMs);
-    recordCheck(pathReport, 'final stop snapshot', Boolean(finalStop.snapshot?.id) && ['created', 'deleted'].includes(finalStop.snapshot.status), `snapshot status=${finalStop.snapshot?.status ?? 'missing'}`);
+    recordCheck(pathReport, 'final stop snapshot metadata', validStopSnapshot(finalStop.snapshot), `snapshot status=${finalStop.snapshot?.status ?? 'not-created'}`);
     const finalSessions = await client.listSessions(resumed, { signal });
     pathReport.sessions.push({ phase: 'after-final-stop', states: finalSessions.map(sessionState) });
     pathReport.cleanup.finalSessionStatesTerminal = finalSessions.length > 0 && finalSessions.every((session) => ['stopped', 'aborted'].includes(session.status));

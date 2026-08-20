@@ -231,6 +231,9 @@ describe('Vercel provider smoke configuration', () => {
       'cleanupVercelSandbox',
       'recoverOwnedResources',
       'deleteListedSnapshot',
+      'validStopSnapshot',
+      'snapshot === undefined',
+      "'resume/reconnect attach'",
       'SMOKE_TOTAL_TIMEOUT_MS',
       'finally',
     ]) {
