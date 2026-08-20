@@ -392,12 +392,31 @@ describe('Vercel image and release workflows', () => {
     expect(runbook).toContain('CLI version');
   });
 
-  it('pins every credentialed-workflow action to a full commit SHA', async () => {
-    const ci = await readFile('.github/workflows/ci.yml', 'utf8');
-    const workflow = await workflowText();
-    for (const text of [ci, workflow]) {
+  it('pins Node 24-backed actions while project commands use Node 22', async () => {
+    const workflows = await Promise.all([
+      'ci.yml',
+      'nightly.yml',
+      'release.yml',
+      'vercel-benchmark.yml',
+      'vercel-provider-smoke.yml',
+      'vercel-provider-uat.yml',
+    ].map((name) => readFile(`.github/workflows/${name}`, 'utf8')));
+    const node24Pins = new Map([
+      ['actions/checkout', '3d3c42e5aac5ba805825da76410c181273ba90b1'],
+      ['actions/setup-node', '820762786026740c76f36085b0efc47a31fe5020'],
+      ['actions/upload-artifact', '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'],
+      ['actions/download-artifact', '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'],
+      ['docker/setup-buildx-action', '37fe631027851001ddb9b187196cc803df7f5f0e'],
+    ]);
+
+    for (const text of workflows) {
       for (const line of text.split('\n').filter((value) => value.trim().startsWith('uses: ') && !value.includes('./.github/'))) {
         expect(line).toMatch(/uses: [^@]+@[a-f0-9]{40}(?:\s+#.*)?$/);
+        const action = line.match(/uses: ([^@]+)@/)?.[1];
+        if (action && node24Pins.has(action)) expect(line).toContain(`@${node24Pins.get(action)}`);
+      }
+      for (const line of text.split('\n').filter((value) => value.includes('node-version:'))) {
+        expect(line.trim()).toBe("node-version: '22'");
       }
     }
   });
