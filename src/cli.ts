@@ -7,6 +7,7 @@
  * their own lifecycle behavior and formatting behind that boundary.
  */
 import { realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { init } from './commands/init.js';
 import { findRepoRoot, repoName } from './lib/repo.js';
@@ -29,6 +30,8 @@ import type {
   ProviderUrlRequest,
 } from './providers/types.js';
 
+const PACKAGE_VERSION = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
+
 const USAGE = `devbox — one-command isolated worktree dev containers
 
 USAGE
@@ -40,6 +43,7 @@ USAGE
   devbox [--provider local|vercel] <branch> --password         print the display access code (when supported)
   devbox [--provider local|vercel] --list|-l                  list provider devboxes
   devbox --provider local|vercel                               set the provider for this repo
+  devbox --version                                             show the installed version
   devbox --help|-h                                             show this help
 
 OPTIONS
@@ -251,6 +255,7 @@ export type ParsedCommand =
     exposePorts?: number[];
   }
   | { kind: 'help'; scope: 'global' | 'init' | 'list' | 'branch'; branch?: string; action?: BranchAction }
+  | { kind: 'version' }
   | { kind: 'error'; message: string; exitCode: number };
 
 function usageError(message: string): ParsedCommand {
@@ -451,6 +456,10 @@ export function parseCliArgs(args: string[]): ParsedCommand {
 
   const [first, ...rest] = args;
   if (first === '--help' || first === '-h') return parseGlobalHelp(rest);
+  if (first === '--version') {
+    if (rest.length > 0) return usageError(`unexpected argument after --version: ${rest[0]}`);
+    return { kind: 'version' };
+  }
 
   if (first === 'init') {
     let force = false;
@@ -590,6 +599,10 @@ export async function dispatch(
   }
   if (parsed.kind === 'help') {
     io.stdout.write(`${helpText(parsed)}\n`);
+    return 0;
+  }
+  if (parsed.kind === 'version') {
+    io.stdout.write(`${PACKAGE_VERSION}\n`);
     return 0;
   }
   if (parsed.kind === 'init') {

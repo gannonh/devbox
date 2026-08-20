@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { dispatch, parseCliArgs, resolveBranchAction } from '../src/cli.js';
 import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+const PACKAGE_VERSION = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
 
 async function run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const stdin = new PassThrough();
@@ -31,6 +34,15 @@ describe('cli dispatch', () => {
     expect(output).toContain('--url');
     expect(output).toContain('--provider local|vercel');
     expect(output).toContain('--password');
+    expect(output).toContain('--version');
+  });
+
+  it('--version prints the installed package version and exits 0', async () => {
+    const { code, stdout, stderr } = await run(['--version']);
+
+    expect(code).toBe(0);
+    expect(stdout).toBe(`${PACKAGE_VERSION}\n`);
+    expect(stderr).toBe('');
   });
 
   it('-h alias also prints help and exits 0', async () => {
