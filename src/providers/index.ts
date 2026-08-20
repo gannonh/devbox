@@ -55,6 +55,8 @@ export {
 export type {
   MetadataLock,
   MetadataLockOptions,
+  VercelAppPortSelection,
+  VercelPendingAppPorts,
   VercelBranchMetadata,
   VercelBranchMetadataInput,
   VercelBranchMetadataStore,

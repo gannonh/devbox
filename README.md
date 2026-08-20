@@ -139,10 +139,45 @@ boundary are in the [provider architecture](docs/architecture/vercel-provider.md
 
 #### What is exposed publicly
 
-Only the app ports listed in your `devcontainer.json` `forwardPorts`, plus the
-authenticated noVNC port `6080`. VNC `5900` and the internal noVNC listener are
-never exposed. Dependency install and the post-create hook run in the
-background; their status and retry script live in `/vercel/.devbox/runtime/`.
+The app ports listed in your `devcontainer.json` `forwardPorts`, the
+authenticated noVNC port `6080`, and any app port you accept at the prompt
+described below. VNC `5900` and the internal noVNC listener are never exposed.
+Dependency install and the post-create hook run in the background; their status
+and retry script live in `/vercel/.devbox/runtime/`.
+
+#### Zero-config app ports
+
+A normal Vite or Next repository needs no devbox-specific port configuration.
+After the remote checkout lands, devbox reads that checkout's root
+`package.json` — dependencies and the root `dev` script only, as data, never
+executed — and offers the conventional `5173`/`3000` port, or a literal port the
+dev script names:
+
+```text
+Detected app ports in the remote checkout:
+  candidate: 5173 (vite default)
+  accepted app routes are PUBLIC: anyone with the URL can reach them
+Expose the detected app port(s)? [Y/n/e=edit]
+```
+
+Enter accepts, `n` declines, and `e` edits the inferred list; configured
+`forwardPorts` are always retained either way. The accepted ports are added to
+the running Sandbox without recreating it, and the ready banner prints the
+public URL. Outside a TTY nothing new is exposed unless you ask explicitly:
+
+```bash
+devbox my-feature --provider vercel --expose-ports 5173
+```
+
+The choice is remembered per branch and re-applied on `--attach` without asking
+again.
+
+devbox exposes the port; serving on it is your app's job, exactly as behind any
+tunnel. Bind externally (`npm run dev -- --host 0.0.0.0 --strictPort`), and on
+Vite 5.4.12+ also allow the generated host with
+`server.allowedHosts: ['.vercel.run']` in `vite.config.*` — otherwise Vite
+answers with `Blocked request. This host (…) is not allowed`. Next.js needs
+nothing extra.
 
 #### Why the runtime image is digest-pinned
 

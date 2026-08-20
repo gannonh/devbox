@@ -16,6 +16,7 @@ okf_version: "0.1"
 * [Vercel provider convergence](/adrs/0002-vercel-provider-convergence.md) - direct SDK lifecycle, digest pin, and evidence-gated release.
 * [noVNC access-code pairing](/adrs/0003-novnc-access-code-pairing.md) - the printed display link pairs the browser on click.
 * [Image pin as a build output](/adrs/0004-image-pin-as-build-output.md) - three channels, zero CI-authored pull requests.
+* [Zero-configuration public app ports](/adrs/0005-zero-config-public-app-ports.md) - detect from remote metadata, confirm once, update in place.
 
 ## Architecture and references
 

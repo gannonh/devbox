@@ -41,7 +41,7 @@ npx @gannonh/devbox init
 init prints a customization guide pointing at the repo-specific surfaces. The templates are mostly generic; only a few files are meant for per-repo edits:
 
 - **`.devbox/post-create.sh`** — the repo-specific hook. Add migrations, native builds, seed data, extra tool installs here. No-op by default.
-- **`.devcontainer/devcontainer.json`** — `forwardPorts`/`portsAttributes` default to Vite (5173), RPC (9100), noVNC (6080). Adjust to the repo's dev servers. Add Features or `containerEnv` here too.
+- **`.devcontainer/devcontainer.json`** — `forwardPorts`/`portsAttributes` default to Vite (5173), RPC (9100), noVNC (6080). Adjust to the repo's dev servers. Add Features or `containerEnv` here too. On the Vercel provider these stay the explicit, always-retained path, but they are no longer required: devbox reads the remote checkout's root `package.json` and offers the Vite/Next port as a **public** route once, and `--expose-ports` is the non-interactive opt-in. Serving on that route is still the app's job — bind with `--host 0.0.0.0`, and on Vite 5.4.12+ add `server.allowedHosts: ['.vercel.run']`.
 - **`.env`** (repo root) — provision.sh links it into the box as `/home/node/.env`. Put secrets here (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.).
 - **`.devbox/provision.sh`** — agent switching only (see below). Otherwise generic; don't edit for repo setup.
 - **`.devbox/Dockerfile`** — extra apt packages, rarely needed.
@@ -78,6 +78,7 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 | `devbox <branch> --stop` | Stop the box (keeps worktree + container on disk). |
 | `devbox <branch> --rm` | Remove container, worktree, and branch. Uncommitted worktree work is lost. |
 | `devbox <branch> --url` | Print the noVNC URL. Add `--open` `-o` to launch a browser. |
+| `devbox <branch> --provider vercel --expose-ports <list>` | Vercel only, on boot or `--attach`: expose these comma-separated app ports as public routes without the interactive prompt. |
 | `devbox --list` `-l` | List all devbox containers for this repo with state + noVNC URLs. |
 | `devbox --help` `-h` | Show usage. |
 

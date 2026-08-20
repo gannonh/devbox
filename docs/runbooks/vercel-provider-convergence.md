@@ -73,6 +73,51 @@ fixture token, Vercel token, display access code (`token=` or
 `devbox_novnc=`), `.env` values, URLs with
 credentials, port `5900`, and residual resource IDs. Any match fails the run.
 
+## Zero-config app-port UAT
+
+`scripts/vercel/app-port-uat.mjs` proves the public app-route path from
+[#13](https://github.com/gannonh/devbox/issues/13) against real infrastructure.
+It drives production CLI dispatch — real credentials, source, image, lifecycle,
+runtime sync, detector, prompt, port update, and metadata — and injects only the
+terminal adapter, so the run needs no PTY.
+
+It expects two disposable branches in a throwaway remote repository: one whose
+root `package.json` has `"dev": "vite"`, one whose root has `"dev": "next dev"`,
+each with a single page carrying a known marker string, no
+`.devcontainer/devcontainer.json`, and no secrets. The Vite branch also sets
+`server.allowedHosts` — Vite 5.4.12+ rejects the generated sandbox host, which
+is the app's own reverse-proxy setting and not a devbox concern.
+
+```bash
+(set -a; . "$PWD/.env"; set +a; \
+  VERCEL_TOKEN="$VERCEL_CONSUMER_TOKEN" \
+  VERCEL_TEAM_ID="$VERCEL_CONSUMER_TEAM_ID" \
+  VERCEL_PROJECT_ID="$VERCEL_CONSUMER_PROJECT_ID" \
+  DEVBOX_UAT_REPO_ROOT=<clone of the fixture repo> \
+  DEVBOX_UAT_REPORT=<path>.json \
+  node scripts/vercel/app-port-uat.mjs)
+```
+
+`DEVBOX_UAT_ONLY=vite|next` runs one scenario. Each phase asserts before it
+records, so a green run is proof rather than a transcript: the candidate is
+offered, the route set changes without the Sandbox identity changing, the public
+route returns the fixture marker, `--url` labels the app route public and `6080`
+as noVNC, a resume neither re-prompts nor re-updates, the injected
+metadata-commit failure leaves a reconcilable pending record that the next run
+commits, and removal leaves no Sandbox, no non-deleted snapshot, and no local
+metadata.
+
+The `port-limit-boundary` phase measures the service maximum rather than
+trusting a declaration. Reproduce it alone if the API changes: it should accept
+14 total ports, fail 15 with a 500, and reject 16 with
+`` `ports` should NOT have more than 15 items ``.
+
+Two environment notes. Git's system config may pin a GUI credential helper,
+which blocks forever without a desktop session; the script disables the helper
+for its own child processes because the provider supplies the token through
+`GIT_ASKPASS`. And a port update regenerates every route subdomain, so re-read
+routes after an update rather than reusing a URL captured before it.
+
 ## Incident cleanup
 
 If a run fails, first inspect the redacted report and list only resources with

@@ -15,6 +15,8 @@ export type {
 } from './metadata-lock.js';
 export type {
   VercelIdentityTags,
+  VercelAppPortSelection,
+  VercelPendingAppPorts,
   VercelCreateConfiguration,
   VercelMetadata,
   VercelMetadataIdentity,

@@ -414,6 +414,12 @@ describe('Vercel runtime sync', () => {
     expect(fake.commands).toEqual([]);
   });
 
+  function isAppPortScan(request: VercelRunCommandRequest): boolean {
+    const args = (request.args ?? []).join(' ');
+    return (request.cmd === 'git' && args === 'rev-parse HEAD')
+      || args.includes('package.json');
+  }
+
   it('runs runtime sync on up before terminal readiness', async () => {
     const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-provider-up-'));
     const envPath = join(hostEnv, '.env');
@@ -439,7 +445,9 @@ describe('Vercel runtime sync', () => {
         events.push('runtime-upload');
       }),
       runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
-        if (request.signal) runtimeSignals.push(request.signal);
+        // The app-port scan runs after runtime sync under its own, shorter
+        // deadline, so it is excluded from the shared-signal assertion.
+        if (request.signal && !isAppPortScan(request)) runtimeSignals.push(request.signal);
         events.push('runtime-command');
         if (request.cmd === '/usr/local/bin/devbox-status') {
           return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };

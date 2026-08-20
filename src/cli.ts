@@ -16,6 +16,7 @@ import {
   type ProviderRegistry,
 } from './providers/registry.js';
 import { describeProviderChoice, resolveProviderChoice } from './providers/preference.js';
+import { parseExposePortsList, VercelPortsError } from './providers/vercel/ports.js';
 import type {
   DevboxProvider,
   DisplayCredentialsResult,
@@ -44,6 +45,9 @@ USAGE
 OPTIONS
   --provider local|vercel   select a provider; the choice sticks to this
                             repository until you pass --provider again
+  --expose-ports <list>     Vercel only, with a boot or --attach: expose these
+                            comma-separated app ports as public routes without
+                            the interactive prompt
 
 EXAMPLES
   devbox init                        # set up .devbox/ in the current repo
@@ -60,8 +64,10 @@ NOTE
   detaches without stopping the sandbox. App routes are plain HTTPS; the noVNC
   link carries a one-use access code that pairs the browser on click and is then
   dropped from the URL. --password prints that code for the pairing form.
-  Vercel exposes only configured app ports and paired noVNC 6080; VNC 5900 and
-  internal 6081 stay private. Setup
+  Vercel detects Vite/Next app ports in the remote checkout and asks once before
+  exposing them as public routes; --expose-ports is the non-interactive opt-in.
+  Configured devcontainer forwardPorts are always retained, paired noVNC 6080 is
+  always exposed, and VNC 5900 and internal 6081 stay private. Setup
   status/retry lives under /vercel/.devbox/runtime/. Cleanup retains retry
   metadata until Sandbox sessions and snapshots are verified absent. Review
   Vercel pricing and limits before choosing ports or timeouts.`;
@@ -94,6 +100,8 @@ ACTIONS
 FLAGS
   --provider local|vercel   select a provider; the choice sticks to this
                             repository until you pass --provider again
+  --expose-ports <list>     Vercel only: expose these comma-separated app ports
+                            as public routes instead of prompting
 
 EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box
@@ -108,6 +116,9 @@ VERCEL CORE
   Without a complete credential triad, OIDC token, or cached Vercel auth, device
   auth prints the verification URL and user code. Ctrl-C is sent to the remote process.
   Ctrl-] detaches without stopping it.
+  App ports detected in the remote checkout (Vite/Next) are offered once as
+  public routes; --expose-ports <list> selects them without a prompt and is
+  required for any new exposure outside a TTY.
   --url prints labeled routes; the noVNC link pairs the browser on click and
   --open opens it. --password prints the Vercel display access code for the
   pairing form; the local provider reports this action as unsupported. Setup status/retry is under
@@ -140,7 +151,8 @@ DESCRIPTION
   Re-enters a running box for the branch. If the box is stopped, starts it
   and re-brings the display stack up, then drops into a shell in /workspace.
   For Vercel, Ctrl-C reaches the remote process and Ctrl-] detaches without
-  stopping the sandbox.
+  stopping the sandbox, and confirmed app routes are re-applied without a new
+  prompt; --expose-ports <list> changes the exposed app ports.
 
 EXAMPLES
   devbox ${branch} --attach
@@ -231,7 +243,13 @@ export type ParsedCommand =
   | { kind: 'init'; force: boolean }
   | { kind: 'list'; provider?: ProviderName }
   | { kind: 'set-provider'; provider: ProviderName }
-  | { kind: 'branch'; branch: string; provider?: ProviderName; action: BranchAction }
+  | {
+    kind: 'branch';
+    branch: string;
+    provider?: ProviderName;
+    action: BranchAction;
+    exposePorts?: number[];
+  }
   | { kind: 'help'; scope: 'global' | 'init' | 'list' | 'branch'; branch?: string; action?: BranchAction }
   | { kind: 'error'; message: string; exitCode: number };
 
@@ -255,6 +273,26 @@ function readProvider(args: string[], index: number): { provider: ProviderName; 
     throw new CliUsageError('missing provider value after --provider');
   }
   return { provider: providerName(value), next: index + 2 };
+}
+
+/**
+ * Read the `--expose-ports` value.
+ *
+ * The flag is the deliberate, non-interactive way to make an app port public,
+ * so its value is validated here rather than being handed to a provider as an
+ * unchecked string.
+ */
+function readExposePorts(args: string[], index: number): { ports: number[]; next: number } {
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) {
+    throw new CliUsageError('missing comma-separated port list after --expose-ports');
+  }
+  try {
+    return { ports: parseExposePortsList(value), next: index + 2 };
+  } catch (error) {
+    if (error instanceof VercelPortsError) throw new CliUsageError(error.message);
+    throw error;
+  }
 }
 
 function formatBranchUsage(branch: string, action: BranchAction): string {
@@ -325,6 +363,9 @@ function parseList(rest: string[], initialProvider?: ProviderName): ParsedComman
       continue;
     }
     if (flag === '--list' || flag === '-l') return usageError('duplicate --list flag');
+    if (flag === '--expose-ports') {
+      return usageError('--expose-ports is only valid when booting or attaching a branch');
+    }
     return usageError(`misplaced or unknown flag for --list: ${flag}`);
   }
   if (help) return { kind: 'help', scope: 'list' };
@@ -334,12 +375,25 @@ function parseList(rest: string[], initialProvider?: ProviderName): ParsedComman
 function parseBranch(branch: string, rest: string[], initialProvider?: ProviderName): ParsedCommand {
   let provider = initialProvider;
   const actionFlags: string[] = [];
+  let exposePorts: number[] | undefined;
   let help = false;
 
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     if (flag === '--help' || flag === '-h') {
       help = true;
+      continue;
+    }
+    if (flag === '--expose-ports') {
+      try {
+        const parsed = readExposePorts(rest, index);
+        if (exposePorts) return usageError('duplicate --expose-ports flag');
+        exposePorts = parsed.ports;
+        index = parsed.next - 1;
+      } catch (error) {
+        if (error instanceof CliUsageError) return usageError(error.message);
+        throw error;
+      }
       continue;
     }
     if (flag === '--provider') {
@@ -368,7 +422,12 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
   try {
     const action = resolveBranchAction(actionFlags);
     if (help) return { kind: 'help', scope: 'branch', branch, action };
-    return { kind: 'branch', branch, provider, action };
+    // Exposing a public route only makes sense while a box is being brought up
+    // or re-entered; every other action is read-only or destructive.
+    if (exposePorts && action.action !== 'up' && action.action !== 'attach') {
+      return usageError(`--expose-ports is not valid with --${action.action}`);
+    }
+    return { kind: 'branch', branch, provider, action, ...(exposePorts === undefined ? {} : { exposePorts }) };
   } catch (error) {
     if (error instanceof CliUsageError) return usageError(error.message);
     throw error;
@@ -583,7 +642,15 @@ export async function dispatch(
     return runProviderOperation(() => provider.list(request), io);
   }
 
-  const request: ProviderBranchRequest = { ...context, branch: parsed.branch };
+  if (parsed.exposePorts && choice.provider !== 'vercel') {
+    io.stderr.write(`[devbox] --expose-ports is not supported by the ${choice.provider} provider\n`);
+    return 2;
+  }
+  const request: ProviderBranchRequest = {
+    ...context,
+    branch: parsed.branch,
+    ...(parsed.exposePorts === undefined ? {} : { exposePorts: parsed.exposePorts }),
+  };
   switch (parsed.action.action) {
     case 'up':
       return runProviderOperation(() => provider.up(request), io);

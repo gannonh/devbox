@@ -31,6 +31,11 @@ export interface ProviderRequestContext {
 
 export interface ProviderBranchRequest extends ProviderRequestContext {
   branch: string;
+  /**
+   * Validated `--expose-ports` opt-in. Present only for boot/attach, and only
+   * for providers that expose public app routes.
+   */
+  exposePorts?: number[];
 }
 
 export type ProviderListRequest = ProviderRequestContext;

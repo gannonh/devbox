@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dispatch, resolveBranchAction } from '../src/cli.js';
+import { dispatch, parseCliArgs, resolveBranchAction } from '../src/cli.js';
 import { PassThrough } from 'node:stream';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -162,5 +162,86 @@ describe('resolveBranchAction', () => {
 
   it('returns { action: "password" } for --password', () => {
     expect(resolveBranchAction(['--password'])).toEqual({ action: 'password' });
+  });
+});
+
+describe('--expose-ports parsing', () => {
+  it('parses a comma-separated list for a boot', () => {
+    expect(parseCliArgs(['feature/ui', '--provider', 'vercel', '--expose-ports', '5173, 3000']))
+      .toEqual({
+        kind: 'branch',
+        branch: 'feature/ui',
+        provider: 'vercel',
+        action: { action: 'up' },
+        exposePorts: [5173, 3000],
+      });
+  });
+
+  it('parses the flag for --attach', () => {
+    expect(parseCliArgs(['feature/ui', '--attach', '--expose-ports', '5173']))
+      .toMatchObject({ action: { action: 'attach' }, exposePorts: [5173] });
+  });
+
+  it.each([
+    ['--url', /--expose-ports is not valid with --url/],
+    ['--open', /--expose-ports is not valid with --url/],
+    ['--stop', /--expose-ports is not valid with --stop/],
+    ['--rm', /--expose-ports is not valid with --rm/],
+    ['--password', /--expose-ports is not valid with --password/],
+  ])('rejects the flag with %s', (flag, message) => {
+    const parsed = parseCliArgs(['feature/ui', flag, '--expose-ports', '5173']);
+    expect(parsed.kind).toBe('error');
+    expect(parsed).toMatchObject({ exitCode: 2 });
+    expect((parsed as { message: string }).message).toMatch(message);
+  });
+
+  it('rejects the flag on --list', () => {
+    const parsed = parseCliArgs(['--list', '--expose-ports', '5173']);
+    expect(parsed).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((parsed as { message: string }).message)
+      .toMatch(/only valid when booting or attaching a branch/);
+  });
+
+  it.each([
+    ['a missing value', ['feature/ui', '--expose-ports'], /missing comma-separated port list/],
+    ['a flag as the value', ['feature/ui', '--expose-ports', '--attach'], /missing comma-separated port list/],
+    ['a non-decimal entry', ['feature/ui', '--expose-ports', 'web'], /not a decimal port/],
+    ['a duplicate entry', ['feature/ui', '--expose-ports', '5173,5173'], /duplicate/],
+    ['the private VNC port', ['feature/ui', '--expose-ports', '5900'], /VNC port stays private/],
+    ['the internal noVNC port', ['feature/ui', '--expose-ports', '6081'], /internal noVNC port stays private/],
+    ['a duplicate flag', ['feature/ui', '--expose-ports', '5173', '--expose-ports', '3000'], /duplicate --expose-ports/],
+  ])('rejects %s', (_label, args, message) => {
+    const parsed = parseCliArgs(args);
+    expect(parsed).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((parsed as { message: string }).message).toMatch(message);
+  });
+
+  it('reports the flag as unsupported for the local provider', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-expose-ports-cli-'));
+    try {
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      let err = '';
+      stderr.on('data', (chunk) => (err += chunk.toString()));
+      const code = await dispatch(
+        ['feature/ui', '--provider', 'local', '--expose-ports', '5173'],
+        { stdin, stdout, stderr },
+        { repoRoot: process.cwd(), stateHome, env: {}, tty: false },
+      );
+
+      expect(code).toBe(2);
+      expect(err).toContain('--expose-ports is not supported by the local provider');
+    } finally {
+      await rm(stateHome, { recursive: true, force: true });
+    }
+  });
+
+  it('documents the flag in the boot and global help', async () => {
+    const global = await run(['--help']);
+    const boot = await run(['feature/ui', '--help']);
+
+    expect(global.stdout + global.stderr).toContain('--expose-ports <list>');
+    expect(boot.stdout + boot.stderr).toContain('--expose-ports <list>');
   });
 });

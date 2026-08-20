@@ -65,6 +65,7 @@ import { prepareSandboxRuntime, RUNTIME_PREPARATION_TIMEOUT_MS } from './runtime
 import { renderSetupNotice, type VercelSetupStatus } from './setup.js';
 import { addSecrets } from './redaction.js';
 import { DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts, VercelPortsError } from './ports.js';
+import { applyAppPorts, type AppPortFlowResult, type AppPortPrompt } from './app-port-flow.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -90,6 +91,8 @@ export interface VercelProviderOptions {
   client?: VercelSandboxClient;
   credentialOptions?: Omit<CredentialResolutionOptions, 'repoRoot' | 'env'>;
   signalSource?: EventEmitter;
+  /** Injection seam for the public app-port confirmation prompt. */
+  appPortPrompt?: AppPortPrompt;
 }
 
 interface PreparedOperation {
@@ -179,7 +182,22 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
-      await renderVercelReadyBlock(request, sandbox, setupStatus, await displayToken(prepared.branchStore, secrets));
+      const appPorts = await resolveAppPorts(
+        request,
+        options,
+        client,
+        sandbox,
+        prepared.branchStore,
+        prepared.source.remote.repository,
+        secrets,
+      );
+      await renderVercelReadyBlock(
+        request,
+        sandbox,
+        setupStatus,
+        await displayToken(prepared.branchStore, secrets),
+        appPorts,
+      );
       return terminalResult(
         request,
         terminal,
@@ -208,11 +226,21 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       });
+      const appPorts = await resolveAppPorts(
+        request,
+        options,
+        client,
+        sandbox,
+        prepared.branchStore!,
+        repository,
+        secrets,
+      );
       await renderVercelAttachNotice(
         request,
         sandbox,
         setupStatus,
         await displayToken(prepared.branchStore, secrets),
+        appPorts,
       );
       return terminalResult(
         request,
@@ -722,8 +750,45 @@ async function renderedRoutesForSandbox(
   sandbox: VercelSandboxHandle,
   repoRoot: string,
   token: string,
+  extraLabels: Record<number, string> = {},
 ): Promise<RenderedVercelRoute[]> {
-  return renderVercelRoutes(sandbox.routes ?? [], await resolveRouteLabels(repoRoot), token);
+  return renderVercelRoutes(
+    sandbox.routes ?? [],
+    { ...await resolveRouteLabels(repoRoot), ...extraLabels },
+    token,
+  );
+}
+
+/**
+ * Detect, confirm, and apply public app routes for the remote checkout.
+ *
+ * The Sandbox is already usable at this point, so a detector or route-update
+ * failure is reported and the box still comes up with noVNC and the explicit
+ * configured ports.
+ */
+async function resolveAppPorts(
+  request: ProviderBranchRequest,
+  options: VercelProviderOptions,
+  client: VercelSandboxClient,
+  sandbox: VercelSandboxHandle,
+  branchStore: VercelBranchMetadataStore,
+  repository: string,
+  secrets: readonly string[],
+): Promise<AppPortFlowResult> {
+  return applyAppPorts({
+    sandbox,
+    client,
+    branchStore,
+    repoRoot: request.repoRoot,
+    workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
+    branch: request.branch,
+    tty: request.tty,
+    stdin: request.stdin,
+    stderr: request.stderr,
+    ...(request.exposePorts === undefined ? {} : { exposePorts: request.exposePorts }),
+    secrets,
+    ...(options.appPortPrompt === undefined ? {} : { prompt: options.appPortPrompt }),
+  });
 }
 
 async function displayToken(
@@ -764,8 +829,14 @@ async function renderVercelBlock(
   setupStatus: VercelSetupStatus | null,
   token: string,
   headline: string,
+  appPorts?: AppPortFlowResult,
 ): Promise<void> {
-  const routes = await renderedRoutesForSandbox(sandbox, request.repoRoot, token);
+  const routes = await renderedRoutesForSandbox(
+    sandbox,
+    request.repoRoot,
+    token,
+    appPorts?.labels ?? {},
+  );
   request.stderr.write(`${headline}\n`);
   for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
   if (routes.some(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT)) {
@@ -782,8 +853,9 @@ async function renderVercelReadyBlock(
   sandbox: VercelSandboxHandle,
   setupStatus: VercelSetupStatus | null,
   token: string,
+  appPorts?: AppPortFlowResult,
 ): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox ready');
+  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox ready', appPorts);
 }
 
 async function renderVercelAttachNotice(
@@ -791,8 +863,9 @@ async function renderVercelAttachNotice(
   sandbox: VercelSandboxHandle,
   setupStatus: VercelSetupStatus | null,
   token: string,
+  appPorts?: AppPortFlowResult,
 ): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed');
+  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed', appPorts);
 }
 
 /**
