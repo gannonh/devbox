@@ -1,7 +1,8 @@
 # Release workflow for @gannonh/devbox.
 #
 # Single trigger: manual dispatch (workflow_dispatch) with:
-#   version:  full semver (e.g. "1.2.0"), or empty for patch bump from last tag
+#   version:  full semver (e.g. "1.2.0"), or empty for the current nightly's
+#             stable base version
 #   dry_run:  boolean, default false — run everything except npm publish and
 #             the tag/release creation
 #
@@ -10,11 +11,10 @@
 # so there is no "release" pointing at an unpublished version.
 #
 # Version resolution:
+#   - Resolve the current npm nightly prerelease that supplies the proven pin.
 #   - If version input is provided, use it verbatim (strip leading 'v').
-#   - If empty, resolve the last tag via `git tag --list 'v*' --sort=-v:refname | head -1`
-#     and patch-bump it.
-#   - If no prior tag exists and version is empty, error (first release needs an
-#     explicit version).
+#   - If empty, strip the nightly suffix (for example, 1.2.0-nightly.41 becomes
+#     stable version 1.2.0).
 #
 # Tag is the source of truth. CI syncs package.json + package-lock.json version
 # to the tag/target, not the other way around. Both manifests are committed so
@@ -28,11 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Full semver (e.g. 1.2.0). Empty = patch bump from last stable tag.'
-        required: false
-        type: string
-      nightly_version:
-        description: 'Nightly prerelease to promote (e.g. 1.2.0-nightly.41). Empty = current @nightly dist-tag.'
+        description: 'Full semver override (e.g. 1.2.0). Empty = stable version of current @nightly.'
         required: false
         type: string
       dry_run:
@@ -55,6 +51,7 @@ jobs:
       contents: read
     outputs:
       image_reference: ${{ steps.pin.outputs.image_reference }}
+      stable_version: ${{ steps.pin.outputs.stable_version }}
     steps:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -68,20 +65,24 @@ jobs:
         id: pin
         run: |
           set -euo pipefail
-          version='${{ github.event.inputs.nightly_version }}'
-          [[ -n "${version}" ]] || version="$(npm view @gannonh/devbox dist-tags.nightly)"
-          [[ -n "${version}" ]] || { echo 'no nightly prerelease is available to promote' >&2; exit 1; }
-          echo "Promoting nightly ${version}"
+          nightly_version="$(npm view @gannonh/devbox dist-tags.nightly)"
+          [[ -n "${nightly_version}" ]] || { echo 'no nightly prerelease is available to promote' >&2; exit 1; }
+          [[ "${nightly_version}" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-nightly\.[0-9]+$ ]] || {
+            echo "current nightly version is malformed: ${nightly_version}" >&2
+            exit 1
+          }
+          stable_version="${BASH_REMATCH[1]}"
+          echo "Promoting nightly ${nightly_version} to stable ${stable_version}"
           work="${RUNNER_TEMP}/nightly"
           mkdir -p "${work}"
-          ( cd "${work}" && npm pack "@gannonh/devbox@${version}" >/dev/null && tar -xzf ./*.tgz )
+          ( cd "${work}" && npm pack "@gannonh/devbox@${nightly_version}" >/dev/null && tar -xzf ./*.tgz )
           pin="${work}/package/dist/vercel-image-pin.json"
-          [[ -f "${pin}" ]] || { echo "nightly ${version} carries no image pin" >&2; exit 1; }
+          [[ -f "${pin}" ]] || { echo "nightly ${nightly_version} carries no image pin" >&2; exit 1; }
           mkdir -p "${RUNNER_TEMP}/pin"
           cp "${pin}" "${RUNNER_TEMP}/pin/vercel-image-pin.json"
           reference="$(node -p "require('${pin}').reference")"
           echo "image_reference=${reference}" >> "${GITHUB_OUTPUT}"
-          echo "nightly_version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "stable_version=${stable_version}" >> "${GITHUB_OUTPUT}"
 
       - name: Move the proven digest to the stable channel
         env:
@@ -168,8 +169,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0  # need full history + tags for version resolution
 
       - name: Setup Node 22
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -182,33 +181,24 @@ jobs:
 
       - name: Resolve target version
         id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          DEFAULT_VERSION: ${{ needs.promote-image.outputs.stable_version }}
         run: |
           set -euo pipefail
-          INPUT_VERSION="${{ github.event.inputs.version }}"
-
-          if [ -n "$INPUT_VERSION" ]; then
-            # Explicit version: strip leading 'v' if present.
+          if [[ -n "${INPUT_VERSION}" ]]; then
             TARGET_VERSION="${INPUT_VERSION#v}"
-            echo "Manual dispatch with explicit version: $TARGET_VERSION"
+            echo "Manual dispatch with explicit version: ${TARGET_VERSION}"
           else
-            # Empty version: patch-bump from last tag.
-            LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1)
-            if [ -z "$LAST_TAG" ]; then
-              echo "::error::No prior tag found. Provide an explicit version for the first release."
-              exit 1
-            fi
-            LAST_VERSION="${LAST_TAG#v}"
-            echo "Last tag: $LAST_TAG (version $LAST_VERSION)"
-
-            # Patch bump: increment the last numeric segment.
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$LAST_VERSION"
-            PATCH=$((PATCH + 1))
-            TARGET_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-            echo "Patch-bumped to: $TARGET_VERSION"
+            TARGET_VERSION="${DEFAULT_VERSION}"
+            echo "Stable version from current nightly: ${TARGET_VERSION}"
           fi
-
-          echo "target_version=$TARGET_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Target version: $TARGET_VERSION"
+          [[ "${TARGET_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Stable version must be a full semver such as 1.2.0"
+            exit 1
+          }
+          echo "target_version=${TARGET_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Target version: ${TARGET_VERSION}"
 
       - name: Sync version in package.json + package-lock.json
         run: |

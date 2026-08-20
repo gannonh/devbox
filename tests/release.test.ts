@@ -63,6 +63,25 @@ describe('release workflow contract', () => {
     expect(dryRun).toBeDefined();
     expect(dryRun.type).toBe('boolean');
     expect(dryRun.default).toBe(false);
+    expect(Object.keys(inputs).sort()).toEqual(['dry_run', 'version']);
+  });
+
+  it('defaults the stable version from the current nightly prerelease', async () => {
+    const wf = await loadWorkflow();
+    const jobs = wf.jobs as Record<string, Record<string, unknown>>;
+    const promote = jobs['promote-image'] as { steps: Array<Record<string, unknown>> };
+    const pin = promote.steps.find((step) => step.name === 'Take the pin from the nightly prerelease');
+    const resolve = stepByName(wf, 'Resolve target version');
+
+    expect(String(pin?.run)).toContain('npm view @gannonh/devbox dist-tags.nightly');
+    expect(String(pin?.run)).not.toContain('github.event.inputs.nightly_version');
+    expect(String(pin?.run)).toContain('-nightly\\.[0-9]+');
+    expect(String(pin?.run)).toContain('stable_version="${BASH_REMATCH[1]}"');
+    expect(resolve.env).toMatchObject({
+      DEFAULT_VERSION: '${{ needs.promote-image.outputs.stable_version }}',
+    });
+    expect(String(resolve.run)).toContain('TARGET_VERSION="${DEFAULT_VERSION}"');
+    expect(String(resolve.run)).not.toContain('git tag --list');
   });
 
   it('runs on ubuntu-latest', async () => {
