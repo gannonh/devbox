@@ -21,3 +21,10 @@
 - For local linked-project Sandbox UAT, reuse the disposable linked fixture when present at `/Volumes/EVO/dev/uat-runs/devbox/5-core-vercel`: source its `.env.local` in the same child shell before invoking the CLI/SDK, keep `.vercel/project.json` local, and clean up the Sandbox/snapshots after the run. Do not pass `--token` in argv.
 - Name new disposable Vercel test projects with the `uat_` prefix (for example, `uat_devbox`) so cleanup can find them as a group. Keep the verified legacy consumer project name unchanged until its replacement is fully re-verified; do not rename it speculatively.
 
+## UAT Repo
+
+A simple vite app exists as a private repo for testing: `gannonh/uat-devbox`.
+
+Available locally and linked to a vercel project at `../uat-runs/devbox/uat-devbox/`
+
+Clean-up by deleting remnant sandboxes when finished.
