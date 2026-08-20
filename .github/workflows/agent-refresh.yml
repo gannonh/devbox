@@ -439,7 +439,7 @@ jobs:
       # This is the independent cross-project public-consumption gate; it is
       # intentionally separate from the publisher Sandbox credentials.
       - name: Independent consumer Sandbox smoke gate
-        if: steps.skip.outputs.skip != 'true'
+        if: ${{ success() && steps.skip.outputs.skip != 'true' }}
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
