@@ -14,6 +14,10 @@ concurrency:
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: 'Base semver (e.g. 0.1.3). Empty = next patch after package.json.'
+        required: false
+        type: string
       publish:
         description: 'Also publish to npm under a nightly/dev dist-tag (scheduled runs always publish)'
         required: false
@@ -654,12 +658,18 @@ jobs:
             --out dist/vercel-image-pin.json
           npm run validate:release
 
-      # Version and dist-tag are derived from the ref, never from `latest`.
+      # The base version is explicit or the next patch; the ref selects nightly vs dev.
       - name: Resolve prerelease version and dist-tag
         id: channel
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          base="$(node -p "require('./package.json').version.split('-')[0]")"
+          base="${RELEASE_VERSION}"
+          if [[ -z "${base}" ]]; then
+            base="$(node -p "const [major, minor, patch] = require('./package.json').version.split('-')[0].split('.').map(Number); [major, minor, patch + 1].join('.')")"
+          fi
+          [[ "${base}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'version must be a full stable semver such as 0.1.3' >&2; exit 1; }
           if [[ "${GITHUB_REF_NAME}" == "${{ github.event.repository.default_branch }}" ]]; then
             version="${base}-nightly.${GITHUB_RUN_NUMBER}"
             tag='nightly'

@@ -167,6 +167,16 @@ describe('Vercel image and release workflows', () => {
     expect(ci).toContain('npm run test');
   });
 
+  it('defaults nightlies to the next patch and allows an explicit base version', async () => {
+    const workflow = await workflowText();
+
+    expect(workflow).toContain("description: 'Base semver (e.g. 0.1.3). Empty = next patch after package.json.'");
+    expect(workflow).toContain('RELEASE_VERSION: ${{ inputs.version }}');
+    expect(workflow).toContain('[major, minor, patch + 1]');
+    expect(workflow).toContain("version must be a full stable semver such as 0.1.3");
+    expect(workflow).toContain('version="${base}-nightly.${GITHUB_RUN_NUMBER}"');
+  });
+
   it('runs on a schedule or dispatch and never opens a pull request', async () => {
     const workflow = await workflowText();
     expect(workflow).toContain('workflow_dispatch:');
