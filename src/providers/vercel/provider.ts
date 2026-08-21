@@ -61,6 +61,7 @@ import {
   type VercelTerminalStreams,
 } from './terminal.js';
 import { prepareSandboxRuntime, RUNTIME_PREPARATION_TIMEOUT_MS } from './runtime.js';
+import { assertSafeEnvironmentKeys } from '../local/env.js';
 import { addSecrets, redactSecrets } from './redaction.js';
 import { DEVBOX_NOVNC_PROXY_PORT } from './ports.js';
 import {
@@ -140,16 +141,19 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
   const injectedLifecycle = options.lifecycle && typeof options.lifecycle !== 'function'
     ? options.lifecycle
     : undefined;
-  const providerErrors = (
+  const providerErrors = async (
     request: ProviderRequestContext,
     action: string,
     operation: (secrets: string[]) => Promise<ProviderActionResult>,
-  ) => withProviderErrors(
-    request,
-    action,
-    operation,
-    secretsFor(request.env, request.runtimeEnvironment),
-  );
+  ) => {
+    assertSafeEnvironmentKeys(request.runtimeEnvironment ?? {});
+    return withProviderErrors(
+      request,
+      action,
+      operation,
+      secretsFor(request.env, request.runtimeEnvironment),
+    );
+  };
 
   const provider: DevboxProvider = {
     name: 'vercel',

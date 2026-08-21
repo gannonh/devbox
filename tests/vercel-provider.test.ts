@@ -1308,6 +1308,30 @@ describe('Vercel provider', () => {
     expect(confirmation).not.toHaveBeenCalled();
   });
 
+  it('rejects unsafe runtime environment keys before any sandbox work', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-up-unsafe-keys-'));
+    await seedBranchMetadata(stateHome);
+    const currentLifecycle = lifecycle();
+    const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
+      runner: runner(),
+      stateHome,
+      lifecycle: currentLifecycle,
+      terminal: { attach: vi.fn() } as unknown as VercelTerminalAdapter,
+      confirmation: vi.fn(async () => true),
+    });
+
+    await expect(provider.up(request({
+      runtimeEnvironment: { 'BAD$(id)': 'dummy' },
+    }))).rejects.toThrow('invalid variable name');
+    expect(currentLifecycle.up).not.toHaveBeenCalled();
+
+    await expect(provider.attach(request({
+      runtimeEnvironment: { BASH_ENV: 'dummy' },
+    }))).rejects.toThrow('invalid variable name');
+    expect(currentLifecycle.attach).not.toHaveBeenCalled();
+  });
+
   it('confirms first-use scope before creating and attaches a terminal in sandbox cwd', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-first-use-'));
     await seedBranchMetadata(stateHome);
