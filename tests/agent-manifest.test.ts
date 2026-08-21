@@ -12,6 +12,13 @@ async function readJson(path: string): Promise<Record<string, any>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, any>;
 }
 
+// Registry-latest fixtures must stay above the checked-in manifest pins;
+// derive them so the suite survives the daily refresh that bumps the manifest.
+function bumpPatch(version: string): string {
+  const [major, minor, patch] = version.split('.').map(Number);
+  return `${major}.${minor}.${patch + 1}`;
+}
+
 describe('agent version manifest', () => {
   it('declares the four supported coding agents with install sources and an exact-pin policy', async () => {
     const manifest = await readAgentManifest();
@@ -110,24 +117,25 @@ describe('agent version manifest', () => {
 
   it('classifies each agent against the registry latest', async () => {
     const manifest = await readAgentManifest();
+    const latest = (name: string) => bumpPatch(manifest.agents[name].version);
     const report = buildUpdateReport(manifest, {
-      pi: '0.84.2',
-      claude: '2.1.224',
-      codex: '0.147.0',
-      opencode: '1.18.15',
+      pi: latest('pi'),
+      claude: manifest.agents.claude.version,
+      codex: manifest.agents.codex.version,
+      opencode: manifest.agents.opencode.version,
     });
     expect(report.updates).toEqual(['pi']);
     const byName = Object.fromEntries(report.agents.map((entry) => [entry.name, entry]));
     expect(byName.pi.status).toBe('update-available');
-    expect(byName.pi.declared).toBe('0.84.1');
-    expect(byName.pi.latest).toBe('0.84.2');
+    expect(byName.pi.declared).toBe(manifest.agents.pi.version);
+    expect(byName.pi.latest).toBe(latest('pi'));
     expect(byName.claude.status).toBe('up-to-date');
     expect(byName.opencode.status).toBe('up-to-date');
   });
 
   it('flags a declared version that is newer than the registry latest', async () => {
     const manifest = await readAgentManifest();
-    const report = buildUpdateReport(manifest, { pi: '0.80.0', claude: '2.0.0', codex: '0.147.0', opencode: '1.18.15' });
+    const report = buildUpdateReport(manifest, { pi: '0.80.0', claude: '2.0.0', codex: manifest.agents.codex.version, opencode: manifest.agents.opencode.version });
     expect(report.updates).toEqual([]);
     const byName = Object.fromEntries(report.agents.map((entry) => [entry.name, entry]));
     expect(byName.pi.status).toBe('declared-newer');
@@ -137,10 +145,10 @@ describe('agent version manifest', () => {
   it('limits updates to the requested agents without hiding the full report', async () => {
     const manifest = await readAgentManifest();
     const report = buildUpdateReport(manifest, {
-      pi: '0.84.2',
-      claude: '2.1.237',
-      codex: '0.147.0',
-      opencode: '1.18.15',
+      pi: bumpPatch(manifest.agents.pi.version),
+      claude: bumpPatch(manifest.agents.claude.version),
+      codex: manifest.agents.codex.version,
+      opencode: manifest.agents.opencode.version,
     }, { agents: ['pi'] });
     expect(report.agents.map((entry) => entry.name)).toEqual(['pi', 'claude', 'codex', 'opencode']);
     const byName = Object.fromEntries(report.agents.map((entry) => [entry.name, entry]));

@@ -31,11 +31,11 @@ describe('Vercel Universal mirror provenance', () => {
           python: '3.14.4',
           pip: '25.1.1',
           uv: '0.12.2',
-          gh: '2.98.0',
-          pi: '0.84.1',
-          claude: '2.1.224',
-          codex: '0.147.0',
-          opencode: '1.18.15',
+          gh: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+          pi: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+          claude: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+          codex: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+          opencode: expect.stringMatching(/^\d+\.\d+\.\d+$/),
         },
       },
       baseImages: {
@@ -60,13 +60,20 @@ describe('Vercel Universal mirror provenance', () => {
         python: '3.14.4',
         pip: '25.1.1',
         uv: '0.12.2',
-        gh: '2.98.0',
-        pi: '0.84.1',
-        claude: '2.1.224',
-        codex: '0.147.0',
-        opencode: '1.18.15',
+        gh: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+        pi: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+        claude: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+        codex: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+        opencode: expect.stringMatching(/^\d+\.\d+\.\d+$/),
       },
     });
+
+    // gh and the four agents drift with the refresh loop; exact agreement
+    // with agents.json is enforced by the manifest contract test, so here we
+    // assert shape and that both inventories record the same values.
+    for (const name of ['gh', 'pi', 'claude', 'codex', 'opencode']) {
+      expect(provenance.observedManagedVmi.versions[name]).toBe(provenance.runtimePackages[name]);
+    }
   });
 
   it('builds from the pinned mirror inputs with exact runtime packages', async () => {

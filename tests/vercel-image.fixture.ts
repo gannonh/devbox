@@ -27,7 +27,7 @@ const provenanceRaw = readFileSync(
 /** A pin shaped exactly as scripts/vercel/emit-image-pin.mjs emits one. */
 export const TEST_IMAGE_PIN: VercelImagePin = {
   reference: TEST_IMAGE_REFERENCE,
-  provenance: VERCEL_IMAGE_PROVENANCE,
+  provenance: JSON.parse(provenanceRaw) as typeof VERCEL_IMAGE_PROVENANCE,
   provenanceDigest: `sha256:${createHash('sha256').update(provenanceRaw).digest('hex')}`,
   sourceCommit: '8077cb4e51680c25a7d8fa2c0db5a67d141f4588',
   publisherSmokeUrl: 'https://github.com/gannonh/devbox/actions/runs/32197069706#publisher-smoke',
