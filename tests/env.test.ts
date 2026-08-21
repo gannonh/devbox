@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readEnvironmentFile, resolveGhToken } from '../src/providers/local/env.js';
+import { assertSafeEnvironmentKeys, readEnvironmentFile, resolveGhToken } from '../src/providers/local/env.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {
@@ -44,6 +44,13 @@ describe('readEnvironmentFile', () => {
       }
     }
     await rm(root, { recursive: true, force: true });
+  });
+
+  it('rejects reserved shell-startup keys', () => {
+    for (const key of ['BASH_ENV', 'ENV', 'PROMPT_COMMAND']) {
+      expect(() => assertSafeEnvironmentKeys({ [key]: 'dummy' })).toThrow('invalid variable name');
+    }
+    expect(() => assertSafeEnvironmentKeys({ OK_KEY: 'dummy' })).not.toThrow();
   });
 });
 

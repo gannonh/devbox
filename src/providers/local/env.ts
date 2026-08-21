@@ -14,6 +14,18 @@ export class EnvironmentFileError extends Error {
   }
 }
 
+/** Keys with shell-startup or loader semantics; never allow them from a dotenv file. */
+const RESERVED_ENV_KEYS = new Set(['BASH_ENV', 'ENV', 'PROMPT_COMMAND']);
+
+/** Reject keys that could break out of generated shell scripts. */
+export function assertSafeEnvironmentKeys(values: Record<string, string>): void {
+  for (const key of Object.keys(values)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || RESERVED_ENV_KEYS.has(key)) {
+      throw new EnvironmentFileError(`environment has an invalid variable name`);
+    }
+  }
+}
+
 /** Read a dotenv file without exposing its contents in errors or output. */
 export async function readEnvironmentFile(path: string): Promise<Record<string, string>> {
   let content: string;
@@ -27,11 +39,7 @@ export async function readEnvironmentFile(path: string): Promise<Record<string, 
   const parsed = Object.fromEntries(
     Object.entries(parseEnv(content)).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   );
-  for (const key of Object.keys(parsed)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      throw new EnvironmentFileError(`env file ${path} has an invalid variable name`);
-    }
-  }
+  assertSafeEnvironmentKeys(parsed);
   return parsed;
 }
 

@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { containerFor, containerForAll, containerName } from './docker.js';
 import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch, ensureWorktreeConfig, resolveWorktreeStartPoint } from './worktree.js';
-import { readEnvironmentFile, resolveGhToken } from './env.js';
+import { assertSafeEnvironmentKeys, readEnvironmentFile, resolveGhToken } from './env.js';
 import { hyperlink } from '../../lib/display.js';
 import { info, warn } from '../../lib/log.js';
 import { localFailure } from './errors.js';
@@ -188,9 +188,9 @@ export function execIntoShell(runner: import('../../lib/shell.js').ShellRunner, 
 }
 
 export async function requestedEnvironment(ctx: LauncherContext): Promise<Record<string, string>> {
-  if (ctx.runtimeEnvironment !== undefined) return ctx.runtimeEnvironment;
-  if (ctx.envPath !== undefined) return readEnvironmentFile(ctx.envPath);
-  return {};
+  const values = ctx.runtimeEnvironment ?? (ctx.envPath === undefined ? {} : await readEnvironmentFile(ctx.envPath));
+  assertSafeEnvironmentKeys(values);
+  return values;
 }
 
 export async function syncLocalEnvironment(
@@ -198,6 +198,7 @@ export async function syncLocalEnvironment(
   cid: string,
   values: Record<string, string>,
 ): Promise<void> {
+  assertSafeEnvironmentKeys(values);
   const exports = Object.entries(values)
     .map(([key, value]) => `export ${key}=${escapeShellSingleQuote(value)}`)
     .join('\n');

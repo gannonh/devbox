@@ -687,6 +687,7 @@ function lifecycleSecrets(
     context.env.VERCEL_TOKEN,
     context.env.VERCEL_OIDC_TOKEN,
     metadata?.displayCredentials?.password,
+    ...(context.runtimeEnvironment === undefined ? [] : Object.values(context.runtimeEnvironment)),
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 

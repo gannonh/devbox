@@ -870,6 +870,65 @@ describe('Vercel lifecycle', () => {
     expect(branchMetadataStore.withLock).toHaveBeenCalledOnce();
   });
 
+  it('redacts selected dotenv values from cleanup failures and residual metadata', async () => {
+    const dotenvValue = 'abc12';
+    const recoveredIdentity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+    });
+    const handle = {
+      ...sandbox(),
+      name: recoveredIdentity.name,
+      status: 'stopped' as const,
+      tags: { ...recoveredIdentity.tags },
+    };
+    const branchMetadataStore = {
+      path: '/unavailable/branch.json',
+      lockPath: '/unavailable/branch.lock',
+      repoKey: source.remote.canonical,
+      branch: source.requestedBranch,
+      read: vi.fn(async () => { throw new Error('metadata read unavailable'); }),
+      write: vi.fn(async () => { throw new Error('metadata write unavailable'); }),
+      remove: vi.fn(async () => {}),
+      acquireLock: vi.fn(),
+      withLock: vi.fn(async (operation: () => Promise<unknown>) => operation()),
+    } as unknown as VercelBranchMetadataStore;
+    const client = {
+      get: vi.fn(async () => handle),
+      listSessions: vi.fn(async () => []),
+      listSnapshots: vi.fn(async () => []),
+      deleteSandbox: vi.fn(async () => { throw new Error(`sandbox delete failed with ${dotenvValue}`); }),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      credentials,
+      runtimeEnvironment: { SHORT: dotenvValue },
+      source,
+      branchMetadataStore,
+      recovery: {
+        identity: {
+          name: recoveredIdentity.name,
+          repository: recoveredIdentity.canonicalRepository,
+          branch: recoveredIdentity.branch,
+          packageVersion: recoveredIdentity.packageVersion,
+          tags: { ...recoveredIdentity.tags },
+        },
+      },
+      client,
+      cleanup: { maxAttempts: 1, sleep: async () => {} },
+    });
+
+    const caught = await lifecycle.remove().catch((error: unknown) => error);
+    expect(caught).toMatchObject({ code: 'cleanup_incomplete' });
+    expect((caught as Error).message).not.toContain(dotenvValue);
+    for (const write of branchMetadataStore.write.mock.calls) {
+      expect(JSON.stringify(write)).not.toContain(dotenvValue);
+    }
+  });
+
   it('resumes an existing named sandbox without rerunning branch setup', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
