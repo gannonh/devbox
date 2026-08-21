@@ -47,7 +47,7 @@ box, and you drop into a shell as the non-root `node` user.
 | File | Purpose |
 |------|---------|
 | `.devbox/Dockerfile` | The container image: TypeScript-Node base + bun, gh, ripgrep/fd/fzf/tmux, display stack (Xvfb/x11vnc/noVNC/fluxbox), Chromium, and the Pi agent. Built locally per repo. |
-| `.devbox/provision.sh` | Runs once at container create: installs repo deps (auto-detects bun/pnpm/npm from lockfile), links `.env`, sets up the agent (Pi by default), and starts the display. |
+| `.devbox/provision.sh` | Runs once at container create: installs repo deps (auto-detects bun/pnpm/npm from lockfile), sets up the agent (Pi by default), and starts the display. |
 | `.devbox/start-display.sh` | Starts Xvfb, fluxbox, x11vnc, and noVNC. Runs on every container start via `postStartCommand`. Idempotent. |
 | `.devbox/post-create.sh` | Repo-specific hook. Add custom setup here (migrations, native builds, etc.). Runs after provision.sh. No-op by default. |
 | `.devcontainer/devcontainer.json` | Standard devcontainer config read by `@devcontainers/cli`, Codespaces, and Cursor. Defines mounts, env vars, lifecycle hooks, and ports. |
@@ -68,14 +68,13 @@ Code** or **Codex**:
 ### Claude Code
 
 - Package: `@anthropic-ai/claude-code` (installed via `npm install -g`)
-- Auth: set `ANTHROPIC_API_KEY` in your `.env` file or
-  `devcontainer.json` `containerEnv`
+- Auth: pass `ANTHROPIC_API_KEY` with `devbox <branch> --env PATH`
 - No config-dir copy needed — Claude Code reads the env var directly
 
 ### Codex
 
 - Package: `@openai/codex` (installed via `npm install -g`)
-- Auth: set `OPENAI_API_KEY` in your `.env`, or run `codex --login` inside
+- Auth: pass `OPENAI_API_KEY` with `devbox <branch> --env PATH`, or run `codex --login` inside
   the box (opens Chromium via the display stack)
 
 ## Vercel provider
@@ -108,7 +107,7 @@ username: devbox
 password: <generated-secret>
 ```
 
-Runtime `.env`, GitHub auth, and Pi configuration are synchronized after
+Explicit `--env` values, GitHub auth, and Pi configuration are synchronized after
 creation. Dependency installation and `post-create.sh` run in the background;
 inspect `/vercel/.devbox/runtime/setup.status` and `setup.log`, then retry with
 `bash /vercel/.devbox/runtime/setup.sh` if setup fails. Stop waits for the

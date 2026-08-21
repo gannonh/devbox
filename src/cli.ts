@@ -8,6 +8,7 @@
  */
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { init } from './commands/init.js';
 import { findRepoRoot, repoName } from './lib/repo.js';
@@ -18,6 +19,7 @@ import {
 } from './providers/registry.js';
 import { describeProviderChoice, resolveProviderChoice } from './providers/preference.js';
 import { parseExposePortsList, VercelPortsError } from './providers/ports.js';
+import { readEnvironmentFile } from './providers/local/env.js';
 import type {
   DevboxProvider,
   DisplayCredentialsResult,
@@ -49,6 +51,8 @@ USAGE
 OPTIONS
   --provider local|vercel   select a provider; the choice sticks to this
                             repository until you pass --provider again
+  --env <path>              with a boot or --attach: inject values from this
+                            dotenv file into the box
   --expose-ports <list>     Vercel only, with a boot or --attach: expose these
                             comma-separated app ports as public routes without
                             the interactive prompt
@@ -104,6 +108,8 @@ ACTIONS
 FLAGS
   --provider local|vercel   select a provider; the choice sticks to this
                             repository until you pass --provider again
+  --env <path>              inject values from this dotenv file; no file is
+                            copied into the box or host worktree
   --expose-ports <list>     Vercel only: expose these comma-separated app ports
                             as public routes instead of prompting
 
@@ -123,6 +129,7 @@ VERCEL CORE
   App ports detected in the remote checkout (Vite/Next) are offered once as
   public routes; --expose-ports <list> selects them without a prompt and is
   required for any new exposure outside a TTY.
+  --env <path> injects dotenv values; omit it to start without project secrets.
   --url prints labeled routes; the noVNC link pairs the browser on click and
   --open opens it. --password prints the Vercel display access code for the
   pairing form; the local provider reports this action as unsupported. Setup status/retry is under
@@ -252,6 +259,7 @@ export type ParsedCommand =
     branch: string;
     provider?: ProviderName;
     action: BranchAction;
+    envPath?: string;
     exposePorts?: number[];
   }
   | { kind: 'help'; scope: 'global' | 'init' | 'list' | 'branch'; branch?: string; action?: BranchAction }
@@ -298,6 +306,14 @@ function readExposePorts(args: string[], index: number): { ports: number[]; next
     if (error instanceof VercelPortsError) throw new CliUsageError(error.message);
     throw error;
   }
+}
+
+function readEnvPath(args: string[], index: number): { path: string; next: number } {
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) {
+    throw new CliUsageError('missing env file path after --env');
+  }
+  return { path: value, next: index + 2 };
 }
 
 function formatBranchUsage(branch: string, action: BranchAction): string {
@@ -368,8 +384,8 @@ function parseList(rest: string[], initialProvider?: ProviderName): ParsedComman
       continue;
     }
     if (flag === '--list' || flag === '-l') return usageError('duplicate --list flag');
-    if (flag === '--expose-ports') {
-      return usageError('--expose-ports is only valid when booting or attaching a branch');
+    if (flag === '--expose-ports' || flag === '--env') {
+      return usageError(`${flag} is only valid when booting or attaching a branch`);
     }
     return usageError(`misplaced or unknown flag for --list: ${flag}`);
   }
@@ -380,6 +396,7 @@ function parseList(rest: string[], initialProvider?: ProviderName): ParsedComman
 function parseBranch(branch: string, rest: string[], initialProvider?: ProviderName): ParsedCommand {
   let provider = initialProvider;
   const actionFlags: string[] = [];
+  let envPath: string | undefined;
   let exposePorts: number[] | undefined;
   let help = false;
 
@@ -387,6 +404,18 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
     const flag = rest[index];
     if (flag === '--help' || flag === '-h') {
       help = true;
+      continue;
+    }
+    if (flag === '--env') {
+      try {
+        const parsed = readEnvPath(rest, index);
+        if (envPath !== undefined) return usageError('duplicate --env flag');
+        envPath = parsed.path;
+        index = parsed.next - 1;
+      } catch (error) {
+        if (error instanceof CliUsageError) return usageError(error.message);
+        throw error;
+      }
       continue;
     }
     if (flag === '--expose-ports') {
@@ -432,7 +461,17 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
     if (exposePorts && action.action !== 'up' && action.action !== 'attach') {
       return usageError(`--expose-ports is not valid with --${action.action}`);
     }
-    return { kind: 'branch', branch, provider, action, ...(exposePorts === undefined ? {} : { exposePorts }) };
+    if (envPath !== undefined && action.action !== 'up' && action.action !== 'attach') {
+      return usageError(`--env is not valid with --${action.action}`);
+    }
+    return {
+      kind: 'branch',
+      branch,
+      provider,
+      action,
+      ...(envPath === undefined ? {} : { envPath }),
+      ...(exposePorts === undefined ? {} : { exposePorts }),
+    };
   } catch (error) {
     if (error instanceof CliUsageError) return usageError(error.message);
     throw error;
@@ -640,10 +679,24 @@ export async function dispatch(
     return 0;
   }
 
+  let envPath: string | undefined;
+  let runtimeEnvironment: Record<string, string> = {};
+  if (parsed.kind === 'branch' && parsed.envPath !== undefined) {
+    envPath = resolve(parsed.envPath);
+    try {
+      runtimeEnvironment = await readEnvironmentFile(envPath);
+    } catch (error) {
+      io.stderr.write(`[devbox] ${error instanceof Error ? error.message : String(error)}\n`);
+      return 2;
+    }
+  }
+
   const context = {
     repoRoot: root,
     repoName: repoName(root),
     env: options.env ?? { ...process.env },
+    ...(envPath === undefined ? {} : { envPath }),
+    ...(parsed.kind === 'branch' && envPath !== undefined ? { runtimeEnvironment } : {}),
     tty: options.tty ?? Boolean(io.stdin.isTTY),
     stdin: io.stdin,
     stdout: io.stdout,

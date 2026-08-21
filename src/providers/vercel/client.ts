@@ -116,6 +116,7 @@ export interface VercelSandboxCreateRequest {
   source: GitSource;
   timeout: number;
   ports?: number[];
+  env?: Record<string, string>;
   persistent: true;
   keepLastSnapshots: { count: 1 };
   tags: Record<string, string>;
@@ -147,6 +148,7 @@ export interface VercelSandboxCreateInput {
   source: GitSource;
   timeoutMs: number;
   ports?: number[];
+  runtimeEnvironment?: Record<string, string>;
   tags: Record<string, string>;
   signal?: AbortSignal;
   onCreate?: (sandbox: VercelSandboxHandle) => Promise<void>;
@@ -167,6 +169,7 @@ export function buildVercelSandboxCreateRequest(
     source: input.source,
     timeout: input.timeoutMs,
     ...(input.ports === undefined ? {} : { ports: [...input.ports] }),
+    ...(input.runtimeEnvironment === undefined ? {} : { env: { ...input.runtimeEnvironment } }),
     persistent: true,
     keepLastSnapshots: { count: 1 },
     tags: { ...input.tags },
@@ -307,8 +310,16 @@ export function createVercelSandboxClient(
           ? undefined
           : (sandbox: VercelSandboxHandle) => createRequest.onCreate!(wrapSandboxHandle(sandbox, [credentials.token, sourcePassword])),
       };
-      return call('Sandbox.getOrCreate', [credentials.token, sourcePassword], async () =>
-        wrapSandboxHandle(await sandboxApi.getOrCreate(withFetch(params)), [credentials.token, sourcePassword]),
+      return call('Sandbox.getOrCreate', [
+        credentials.token,
+        sourcePassword,
+        ...Object.values(createRequest.env ?? {}),
+      ], async () =>
+        wrapSandboxHandle(await sandboxApi.getOrCreate(withFetch(params)), [
+          credentials.token,
+          sourcePassword,
+          ...Object.values(createRequest.env ?? {}),
+        ]),
       );
     },
     get: async (request) => {

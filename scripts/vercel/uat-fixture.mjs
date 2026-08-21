@@ -36,16 +36,6 @@ async function command(file, args, options = {}) {
   }
 }
 
-async function readRuntimeEnv() {
-  const content = await readFile('/vercel/.env', 'utf8');
-  const values = {};
-  for (const line of content.split(/\r?\n/)) {
-    const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
-    if (match) values[match[1]] = match[2];
-  }
-  return values;
-}
-
 async function waitForFile(path, expected = 'ok\n') {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
@@ -255,7 +245,7 @@ async function runResume(refresh) {
 
 async function main() {
   if (phase !== 'initial' && phase !== 'resume') throw new Error('UAT phase must be initial or resume');
-  const { DEVBOX_UAT_REFRESH: refresh } = await readRuntimeEnv();
+  const refresh = process.env.DEVBOX_UAT_REFRESH;
   if (!refresh) throw new Error('UAT runtime secret refresh is missing');
   if (phase === 'initial') {
     await runInitial(refresh);

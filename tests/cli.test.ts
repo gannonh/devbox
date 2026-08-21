@@ -34,6 +34,7 @@ describe('cli dispatch', () => {
     expect(output).toContain('--url');
     expect(output).toContain('--provider local|vercel');
     expect(output).toContain('--password');
+    expect(output).toContain('--env <path>');
     expect(output).toContain('--version');
   });
 
@@ -177,6 +178,43 @@ describe('resolveBranchAction', () => {
   });
 });
 
+describe('--env parsing', () => {
+  it('parses a dotenv path for a boot', () => {
+    expect(parseCliArgs(['feature/ui', '--env', '/tmp/project.env'])).toEqual({
+      kind: 'branch',
+      branch: 'feature/ui',
+      action: { action: 'up' },
+      envPath: '/tmp/project.env',
+    });
+  });
+
+  it('parses a dotenv path for attach', () => {
+    expect(parseCliArgs(['feature/ui', '--attach', '--env', 'project.env']))
+      .toMatchObject({ action: { action: 'attach' }, envPath: 'project.env' });
+  });
+
+  it.each([
+    ['--stop', /--env is not valid with --stop/],
+    ['--url', /--env is not valid with --url/],
+    ['--rm', /--env is not valid with --rm/],
+    ['--password', /--env is not valid with --password/],
+  ])('rejects --env with %s', (flag, message) => {
+    const parsed = parseCliArgs(['feature/ui', flag, '--env', 'project.env']);
+    expect(parsed).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((parsed as { message: string }).message).toMatch(message);
+  });
+
+  it.each([
+    ['a missing value', ['feature/ui', '--env'], /missing env file path/],
+    ['a flag as the value', ['feature/ui', '--env', '--attach'], /missing env file path/],
+    ['a duplicate flag', ['feature/ui', '--env', 'one.env', '--env', 'two.env'], /duplicate --env/],
+  ])('rejects %s', (_label, args, message) => {
+    const parsed = parseCliArgs(args);
+    expect(parsed).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((parsed as { message: string }).message).toMatch(message);
+  });
+});
+
 describe('--expose-ports parsing', () => {
   it('parses a comma-separated list for a boot', () => {
     expect(parseCliArgs(['feature/ui', '--provider', 'vercel', '--expose-ports', '5173, 3000']))
@@ -254,6 +292,8 @@ describe('--expose-ports parsing', () => {
     const boot = await run(['feature/ui', '--help']);
 
     expect(global.stdout + global.stderr).toContain('--expose-ports <list>');
+    expect(global.stdout + global.stderr).toContain('--env <path>');
     expect(boot.stdout + boot.stderr).toContain('--expose-ports <list>');
+    expect(boot.stdout + boot.stderr).toContain('--env <path>');
   });
 });

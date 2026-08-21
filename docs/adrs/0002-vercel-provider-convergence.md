@@ -32,8 +32,8 @@ pairing so the printed display link works on click.
 
 ## Security and operations
 
-The public image is generic. GitHub/Vercel credentials, `.env`, Pi data, and
-display passwords enter only at runtime. App ports come from `forwardPorts`;
+The public image is generic. GitHub/Vercel credentials, explicit `--env`
+values, Pi data, and display passwords enter only at runtime. App ports come from `forwardPorts`;
 VNC `5900` and the internal noVNC listener stay private. Cleanup proves
 terminal sessions and snapshot deletion before removing mode-`0600` metadata.
 Partial cleanup retains only non-secret scope/residual IDs for retry.

@@ -8,7 +8,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { join, posix, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { promisify } from 'node:util';
+import { parseEnv, promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Sandbox, Snapshot } from '@vercel/sandbox';
@@ -172,25 +172,34 @@ export function createRunName(index, suffix = randomBytes(8).toString('hex')) {
 
 export function parseArgs(argv) {
   let outputDir;
+  let envPath;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--help' || argument === '-h') return { help: true };
     if (['--token', '--vercel-token', '--github-token'].includes(argument)) {
       throw new Error('credentials are environment-only; do not pass tokens on the command line');
     }
-    if (argument === '--output-dir' || argument === '--report') {
+    if (argument === '--env' || argument === '--output-dir' || argument === '--report') {
       const value = argv[++index];
-      if (!value || value.startsWith('--')) throw new Error(`${argument} requires a path`);
-      outputDir = resolve(value);
+      if (!value || value.startsWith('-')) throw new Error(`${argument} requires a path`);
+      if (argument === '--env') {
+        if (envPath !== undefined) throw new Error('duplicate --env flag');
+        envPath = resolve(value);
+      } else {
+        outputDir = resolve(value);
+      }
       continue;
     }
     throw new Error(`unknown benchmark argument: ${argument}`);
   }
-  return { outputDir: outputDir ?? resolve(process.env.VERCEL_BENCHMARK_OUTPUT_DIR ?? 'benchmark-results/vercel') };
+  return {
+    envPath,
+    outputDir: outputDir ?? resolve(process.env.VERCEL_BENCHMARK_OUTPUT_DIR ?? 'benchmark-results/vercel'),
+  };
 }
 
-export async function runBenchmark({ env = process.env, repoRoot = process.cwd(), outputDir, adapter = createLiveAdapter() } = {}) {
-  const config = await loadConfig(env, repoRoot);
+export async function runBenchmark({ env = process.env, repoRoot = process.cwd(), envPath, outputDir, adapter = createLiveAdapter() } = {}) {
+  const config = await loadConfig(env, repoRoot, envPath);
   const runs = [];
   for (let index = 1; index <= DEFAULT_RUN_COUNT; index += 1) {
     runs.push(await runOne(index, config, adapter));
@@ -269,6 +278,7 @@ async function runOne(index, config, adapter) {
         password: config.githubToken,
       },
       ports: config.ports,
+      env: config.runtimeEnvironment,
       timeout: config.timeoutMs,
       persistent: false,
       tags: { 'devbox-benchmark': name },
@@ -367,7 +377,7 @@ async function runOne(index, config, adapter) {
   return run;
 }
 
-async function loadConfig(env, repoRoot) {
+async function loadConfig(env, repoRoot, envPath) {
   const missing = [];
   const token = firstValue(env.VERCEL_TOKEN, env.VERCEL_OIDC_TOKEN);
   const teamId = nonEmpty(env.VERCEL_TEAM_ID);
@@ -385,15 +395,18 @@ async function loadConfig(env, repoRoot) {
   const branch = (env.SOURCE_BRANCH ?? await git(repoRoot, ['branch', '--show-current'])).trim();
   if (!branch) throw new Error('SOURCE_BRANCH or a checked-out branch is required');
   const image = resolveImage(env);
-  const envPath = env.DEVBOX_ENV ?? join(repoRoot, '.env');
-  let envFile = '';
-  try {
-    envFile = await readFile(envPath, 'utf8');
-  } catch (error) {
-    if (!isNodeError(error, 'ENOENT')) throw error;
+  let runtimeEnvironment = {};
+  if (envPath !== undefined) {
+    let content;
+    try {
+      content = await readFile(envPath, 'utf8');
+    } catch (error) {
+      throw new Error(`unable to read env file ${envPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    runtimeEnvironment = parseEnv(content);
   }
   const ports = await resolvePorts(repoRoot);
-  const secrets = collectSecrets([token, githubToken, envFile]);
+  const secrets = collectSecrets([token, githubToken, ...Object.values(runtimeEnvironment)]);
   return {
     credentials: { token, teamId, projectId },
     credentialSource: env.VERCEL_TOKEN ? 'VERCEL_TOKEN' : 'VERCEL_OIDC_TOKEN',
@@ -402,7 +415,7 @@ async function loadConfig(env, repoRoot) {
     image,
     source: { url: sourceUrl, repository: repositoryName(sourceUrl), commit: sourceCommit, branch },
     ports,
-    envFile,
+    runtimeEnvironment,
     timeoutMs: positiveNumber(env.VERCEL_BENCHMARK_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     cleanupTimeoutMs: positiveNumber(env.VERCEL_BENCHMARK_CLEANUP_TIMEOUT_MS, DEFAULT_CLEANUP_TIMEOUT_MS),
     setupTimeoutMs: positiveNumber(env.VERCEL_BENCHMARK_SETUP_TIMEOUT_MS, DEFAULT_SETUP_TIMEOUT_MS),
@@ -433,12 +446,11 @@ async function syncRuntimeSecrets(adapter, sandbox, config, workspace, signal) {
     signal,
   }, 'runtime directory creation');
   await adapter.writeFiles(sandbox, [
-    { path: '/vercel/.env', content: Buffer.from(config.envFile), mode: 0o600 },
     { path: '/vercel/.devbox/runtime/github-token', content: Buffer.from(config.githubToken), mode: 0o600 },
   ], { signal });
   await assertCommand(adapter, sandbox, {
     cmd: 'sh',
-    args: ['-c', 'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token && rm -f /vercel/.devbox/runtime/github-token && if [ ! -e .env ]; then ln -s /vercel/.env .env; fi'],
+    args: ['-c', 'gh auth login --hostname github.com --with-token < /vercel/.devbox/runtime/github-token && rm -f /vercel/.devbox/runtime/github-token'],
     cwd: workspace,
     signal,
   }, 'runtime GitHub authentication');
@@ -480,7 +492,6 @@ async function checkRuntimeReadiness(adapter, sandbox, workspace, signal) {
       'done',
       'for pid in ${pids}; do wait "${pid}"; done',
       'gh auth status --hostname github.com >/dev/null 2>&1',
-      'test -e /vercel/.env',
       'test -n "$(git branch --show-current)"',
     ].join('\n')],
     cwd: workspace,
@@ -952,7 +963,7 @@ function isRecord(value) {
 }
 
 function help() {
-  return `Usage: node scripts/vercel/benchmark.mjs [--help] [--output-dir PATH|--report PATH]\n\nRuns exactly five clean Vercel Sandbox launches, records stage timings, writes JSON and Markdown artifacts, and exits nonzero when a run, cleanup, residual-resource, or 10-second median gate fails.\n\nCredentials are environment-only: VERCEL_TOKEN (or VERCEL_OIDC_TOKEN), VERCEL_TEAM_ID, VERCEL_PROJECT_ID, and GH_TOKEN (or GITHUB_TOKEN).\nOptional environment: IMAGE_REF, SOURCE_SHA, SOURCE_BRANCH, DEVBOX_ENV, VERCEL_BENCHMARK_OUTPUT_DIR.\n`;
+  return `Usage: node scripts/vercel/benchmark.mjs [--help] [--env PATH] [--output-dir PATH|--report PATH]\n\nRuns exactly five clean Vercel Sandbox launches, records stage timings, writes JSON and Markdown artifacts, and exits nonzero when a run, cleanup, residual-resource, or 10-second median gate fails.\n\nCredentials are environment-only: VERCEL_TOKEN (or VERCEL_OIDC_TOKEN), VERCEL_TEAM_ID, VERCEL_PROJECT_ID, and GH_TOKEN (or GITHUB_TOKEN).\nOptional environment: IMAGE_REF, SOURCE_SHA, SOURCE_BRANCH, VERCEL_BENCHMARK_OUTPUT_DIR.\n`;
 }
 
 async function main() {
@@ -961,7 +972,7 @@ async function main() {
     process.stdout.write(help());
     return;
   }
-  const result = await runBenchmark({ outputDir: options.outputDir });
+  const result = await runBenchmark({ envPath: options.envPath, outputDir: options.outputDir });
   process.stdout.write(`Vercel benchmark ${result.evaluation.passed ? 'passed' : 'failed'}; median command-to-ready ${result.evaluation.medianCommandToReadyMs}ms\nJSON: ${result.jsonPath}\nMarkdown: ${result.markdownPath}\n`);
   if (!result.evaluation.passed) {
     process.stderr.write(`${result.evaluation.reasons.join('; ')}\n`);

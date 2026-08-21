@@ -22,6 +22,7 @@ export interface LaunchBackgroundSetupOptions {
   sandbox: VercelSandboxHandle;
   client: VercelSandboxClient;
   workspace: string;
+  env?: Record<string, string>;
   signal?: AbortSignal;
 }
 
@@ -112,6 +113,7 @@ export async function launchBackgroundSetup(
     args: [SETUP_SCRIPT_PATH],
     cwd: options.workspace,
     detached: true,
+    ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   if (typeof launch.exitCode === 'number' && launch.exitCode !== 0) {

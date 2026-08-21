@@ -8,10 +8,12 @@
  *      print ready banner, exec into shell.
  */
 import type { LauncherContext } from './context.js';
-import { dirname } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { containerFor, containerForAll, containerName } from './docker.js';
 import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch, ensureWorktreeConfig, resolveWorktreeStartPoint } from './worktree.js';
-import { resolveDevboxEnv, resolveGhToken } from './env.js';
+import { assertSafeEnvironmentKeys, readEnvironmentFile, resolveGhToken } from './env.js';
 import { hyperlink } from '../../lib/display.js';
 import { info, warn } from '../../lib/log.js';
 import { localFailure } from './errors.js';
@@ -20,9 +22,11 @@ import { existsSync } from 'node:fs';
 
 const CYAN = '\x1b[0;36m';
 const NC = '\x1b[0m';
+const LOCAL_RUNTIME_ENV_PATH = '/home/node/.devbox/runtime/environment.sh';
 
 export async function up(ctx: LauncherContext, branch: string): Promise<number> {
   const { repoRoot, repoName, runner, env, tty, stderr } = ctx;
+  const runtimeEnvironment = await requestedEnvironment(ctx);
 
   // Prerequisite checks (bash: require_cmd).
   const dockerOk = await commandExistsWithRunner(runner, 'docker');
@@ -37,6 +41,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   let cid = await containerFor(runner, branch);
   if (cid) {
     info(`attaching to running box for ${branch}`);
+    if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, cid, runtimeEnvironment);
     return execIntoShell(runner, cid, tty);
   }
 
@@ -55,6 +60,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
       warn('display stack restart may have failed');
     }
     await sleep(2000);
+    if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, cid, runtimeEnvironment);
     return execIntoShell(runner, cid, tty);
   }
 
@@ -83,26 +89,15 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
     );
   }
 
-  // .env check.
-  const devboxEnv = resolveDevboxEnv(repoRoot, env);
-  if (!existsSync(devboxEnv)) {
-    warn(`no .env at ${devboxEnv} (set DEVBOX_ENV)`);
-    // Create an empty placeholder so the devcontainer.json bind mount doesn't
-    // fail with "bind source path does not exist". provision.sh links this to
-    // /workspace/.env; an empty file is harmless.
-    await runner.execQuiet('mkdir', ['-p', dirname(devboxEnv)], {});
-    await runner.execQuiet('touch', [devboxEnv], {});
-  }
-
   // GitHub token forwarding.
   const ghToken = await resolveGhToken(env, runner, () => commandExistsWithRunner(runner, 'gh'));
   const ghEnvArgs: string[] = [];
-  if (ghToken) {
+  if (ghToken && runtimeEnvironment.GH_TOKEN === undefined && runtimeEnvironment.GITHUB_TOKEN === undefined) {
     // Escape for shell safety: devcontainer CLI passes through to container env.
     // Use the same escaping as profile.d injection.
     ghEnvArgs.push('--remote-env', `GH_TOKEN=${escapeShellSingleQuote(ghToken)}`);
     info('forwarding GitHub token from host gh');
-  } else {
+  } else if (!ghToken) {
     warn('no GitHub token (host gh not authed); gh/git push will need "gh auth login" in the box');
   }
 
@@ -116,24 +111,37 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
     '--mount', `type=bind,source=${repoRoot}/.git,target=/${repoName}/.git`,
     ...ghEnvArgs,
   ];
-  const devcontainerEnv = { ...env, DEVBOX_ENV: devboxEnv } as Record<string, string>;
-  const result = await runner.execQuiet('devcontainer', devcontainerArgs, {
-    env: devcontainerEnv,
-    stderr,
-    streamStdoutTo: { stream: stderr, prefix: '[devcontainer] ' },
-  });
-  // devcontainer up streams output; we don't parse it for the cid.
-  if (result.code !== 0) {
-    localFailure('devcontainer up failed; check output above');
+  const devcontainerEnv = { ...env } as Record<string, string>;
+  let secretsDirectory: string | undefined;
+  try {
+    if (Object.keys(runtimeEnvironment).length > 0) {
+      secretsDirectory = await mkdtemp(join(tmpdir(), 'devbox-env-'));
+      const secretsPath = join(secretsDirectory, 'values.json');
+      await writeFile(secretsPath, JSON.stringify(runtimeEnvironment), { mode: 0o600 });
+      devcontainerArgs.push('--secrets-file', secretsPath);
+    }
+    const result = await runner.execQuiet('devcontainer', devcontainerArgs, {
+      env: devcontainerEnv,
+      stderr,
+      streamStdoutTo: { stream: stderr, prefix: '[devcontainer] ' },
+    });
+    // devcontainer up streams output; we don't parse it for the cid.
+    if (result.code !== 0) {
+      localFailure('devcontainer up failed; check output above');
+    }
+  } finally {
+    if (secretsDirectory) await rm(secretsDirectory, { recursive: true, force: true });
   }
 
   // Look up the container by label (not CLI text parsing).
   cid = await containerFor(runner, branch);
   if (!cid) localFailure("container did not come up; check 'devcontainer up' output above");
 
+  if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, cid, runtimeEnvironment);
+
   // Persist GH_TOKEN so every shell is authed.
   if (ghToken) {
-    const tokenScript = `export GH_TOKEN=${escapeShellSingleQuote(ghToken)}\n`;
+    const tokenScript = `if [[ -z "\${GH_TOKEN+x}" && -z "\${GITHUB_TOKEN+x}" ]]; then export GH_TOKEN=${escapeShellSingleQuote(ghToken)}; fi\n`;
     await runner.execQuiet(
       'docker',
       ['exec', '-i', '-u', 'root', cid, 'bash', '-c', 'cat > /etc/profile.d/gh-token.sh && chown node:node /etc/profile.d/gh-token.sh && chmod 600 /etc/profile.d/gh-token.sh'],
@@ -166,10 +174,44 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
  * Exec into the container's shell. Uses spawn with inherited stdio so the
  * user gets an interactive shell. Signal forwarding is handled by spawnInherit.
  */
-function execIntoShell(runner: import('../../lib/shell.js').ShellRunner, cid: string, tty: boolean): Promise<number> {
+export function execIntoShell(runner: import('../../lib/shell.js').ShellRunner, cid: string, tty: boolean): Promise<number> {
   const ttyFlag = tty ? '-it' : '-i';
   // Split ttyFlag for docker exec: -it -> ['-it'], but docker accepts it as one arg.
-  return runner.spawnInherit('docker', ['exec', ttyFlag, '-w', '/workspace', '-u', 'node', cid, 'bash', '-l'], {});
+  return runner.spawnInherit(
+    'docker',
+    [
+      'exec', ttyFlag, '-w', '/workspace', '-u', 'node', cid, 'bash', '-lc',
+      `if [ -r ${LOCAL_RUNTIME_ENV_PATH} ]; then . ${LOCAL_RUNTIME_ENV_PATH}; fi; exec bash -l`,
+    ],
+    {},
+  );
+}
+
+export async function requestedEnvironment(ctx: LauncherContext): Promise<Record<string, string>> {
+  const values = ctx.runtimeEnvironment ?? (ctx.envPath === undefined ? {} : await readEnvironmentFile(ctx.envPath));
+  assertSafeEnvironmentKeys(values);
+  return values;
+}
+
+export async function syncLocalEnvironment(
+  runner: import('../../lib/shell.js').ShellRunner,
+  cid: string,
+  values: Record<string, string>,
+): Promise<void> {
+  assertSafeEnvironmentKeys(values);
+  const exports = Object.entries(values)
+    .map(([key, value]) => `export ${key}=${escapeShellSingleQuote(value)}`)
+    .join('\n');
+  const script = `${exports}\n`;
+  const result = await runner.execQuiet(
+    'docker',
+    [
+      'exec', '-i', '-u', 'node', cid, 'sh', '-c',
+      `umask 077; mkdir -p "$(dirname ${LOCAL_RUNTIME_ENV_PATH})"; cat > ${LOCAL_RUNTIME_ENV_PATH}; chmod 600 ${LOCAL_RUNTIME_ENV_PATH}`,
+    ],
+    { stdin: script },
+  );
+  if (result.code !== 0) localFailure('failed to update the box environment');
 }
 
 function sleep(ms: number): Promise<void> {

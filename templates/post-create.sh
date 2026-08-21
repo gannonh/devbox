@@ -2,7 +2,7 @@
 # =============================================================================
 # post-create.sh — repo-specific post-provision hook
 #
-# Runs AFTER provision.sh finishes deps install, agent setup, and .env linking.
+# Runs AFTER provision.sh finishes deps install and agent setup.
 # Use this for anything specific to YOUR repo that the generic provision.sh
 # doesn't handle: building native deps, running migrations, downloading
 # datasets, etc.

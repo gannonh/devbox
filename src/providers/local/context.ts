@@ -14,6 +14,8 @@ export interface LauncherContext {
   repoName: string;
   runner: ShellRunner;
   env: Record<string, string | undefined>;
+  envPath?: string;
+  runtimeEnvironment?: Record<string, string>;
   /** Whether stdin is a TTY (for docker exec -i vs -it). */
   tty: boolean;
   stdin: ProviderInput;

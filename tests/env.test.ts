@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveDevboxEnv, resolveGhToken } from '../src/providers/local/env.js';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { assertSafeEnvironmentKeys, readEnvironmentFile, resolveGhToken } from '../src/providers/local/env.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {
@@ -11,15 +14,43 @@ function mockShell(impl: Partial<ShellRunner>): ShellRunner {
   } as ShellRunner;
 }
 
-describe('resolveDevboxEnv', () => {
-  it('returns explicit DEVBOX_ENV when set', () => {
-    const result = resolveDevboxEnv('/repo', { DEVBOX_ENV: '/custom/.env' });
-    expect(result).toBe('/custom/.env');
+describe('readEnvironmentFile', () => {
+  it('parses dotenv values without returning comments or export syntax', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'devbox-env-'));
+    const path = join(root, '.env');
+    await writeFile(path, '# comment\nexport API_KEY="secret-value"\nPORT=5173\n');
+
+    try {
+      await expect(readEnvironmentFile(path)).resolves.toEqual({ API_KEY: 'secret-value', PORT: '5173' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
-  it('defaults to the repo-local .env', () => {
-    const result = resolveDevboxEnv('/Volumes/EVO/dev/my-repo', {});
-    expect(result).toBe('/Volumes/EVO/dev/my-repo/.env');
+  it('reports a missing selected file without exposing values', async () => {
+    const path = join(tmpdir(), 'devbox-env-missing', '.env');
+    await expect(readEnvironmentFile(path)).rejects.toThrow(`unable to read env file ${path}`);
+  });
+
+  it('rejects keys that are not shell identifiers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'devbox-env-key-'));
+    for (const line of ['A B=1', 'FOO$(whoami)=x', '1BAD=1', 'BAD-NAME=1']) {
+      const path = join(root, '.env');
+      await writeFile(path, `${line}\n`);
+      try {
+        await expect(readEnvironmentFile(path)).rejects.toThrow('invalid variable name');
+      } finally {
+        await rm(path, { force: true });
+      }
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('rejects reserved shell-startup keys', () => {
+    for (const key of ['BASH_ENV', 'ENV', 'PROMPT_COMMAND']) {
+      expect(() => assertSafeEnvironmentKeys({ [key]: 'dummy' })).toThrow('invalid variable name');
+    }
+    expect(() => assertSafeEnvironmentKeys({ OK_KEY: 'dummy' })).not.toThrow();
   });
 });
 

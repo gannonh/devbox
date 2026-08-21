@@ -196,9 +196,9 @@ function writeNextSteps(out: Writable): void {
   out.write('     forwardPorts/portsAttributes default to Vite (5173), RPC (9100),\n');
   out.write('     noVNC (6080). Adjust to your repo\'s dev servers.\n');
   out.write('\n');
-  out.write('  3. Secrets — .env in the repo root\n');
-  out.write('     provision.sh links it into the box as /home/node/.env. Add any keys\n');
-  out.write('     your code or agent needs (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY).\n');
+  out.write('  3. Secrets — pass a dotenv file with --env PATH\n');
+  out.write('     Values are injected into the box only for this command. Add keys your\n');
+  out.write('     code or agent needs (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY).\n');
   out.write('\n');
   out.write('  4. Agent — .devbox/provision.sh\n');
   out.write('     Pi is active by default. To use Claude Code or Codex instead,\n');

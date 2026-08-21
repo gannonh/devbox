@@ -26,6 +26,8 @@ function launcherContext(
     repoName: request.repoName,
     runner,
     env: request.env,
+    ...(request.envPath === undefined ? {} : { envPath: request.envPath }),
+    ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
     tty: request.tty,
     stdin: request.stdin,
     stdout: request.stdout,

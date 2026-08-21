@@ -213,8 +213,8 @@ listing needs a scope tag on the sandbox itself.
 ## Runtime and cleanup
 
 GitHub source is remote-first: dirty files and unpushed commits are excluded.
-Secrets, `.env`, GitHub auth, and filtered Pi configuration are synchronized
-at runtime only. Dependency installation and the post-create hook run in the
+Explicit `--env` values, GitHub auth, and filtered Pi configuration are
+synchronized at runtime only. Dependency installation and the post-create hook run in the
 background; inspect `/vercel/.devbox/runtime/setup.status` and
 `setup.log`, then retry with `bash /vercel/.devbox/runtime/setup.sh` after a
 failure.

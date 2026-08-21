@@ -19,14 +19,15 @@ provider.
 
 ## Data flow
 
-1. Resolve the GitHub origin, requested/default remote branch, `.env`, filtered
-   Pi bundle, explicit `forwardPorts`, and non-secret Vercel scope.
+1. Resolve the GitHub origin, requested/default remote branch, explicit `--env`
+   values, filtered Pi bundle, explicit `forwardPorts`, and non-secret Vercel
+   scope.
 2. Create or resume a named persistent Sandbox from the fully-qualified
    digest-pinned image. The SDK receives a Git source; local dirty state never
    crosses the boundary.
-3. Upload runtime-only files with mode `0600`, authenticate `gh`, link the
-   repository `.env`, start the display explicitly, and report setup as a
-   separate background status.
+3. Inject the explicit `--env` values, upload runtime-only state with mode
+   `0600`, authenticate `gh`, start the display explicitly, and report setup as
+   a separate background status.
 4. Expose port `6080`, the configured app ports, and any app ports the user
    accepts from the bounded remote detector. `5900` and the internal noVNC
    listener remain private. The display proxy pairs a browser from the access

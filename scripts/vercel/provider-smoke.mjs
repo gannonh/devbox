@@ -263,13 +263,14 @@ function buildSource(config, remote, requestedBranch, revision, requestedBranchE
   };
 }
 
-async function runCommand(client, sandbox, command, args, cwd, signal, timeoutMs = commandTimeoutMs) {
+async function runCommand(client, sandbox, command, args, cwd, signal, timeoutMs = commandTimeoutMs, env) {
   const result = await client.runCommand(sandbox, {
     cmd: command,
     args,
     cwd,
     signal,
     timeoutMs,
+    ...(env === undefined ? {} : { env }),
   });
   const [stdout, stderr] = await Promise.all([
     result.stdout ? result.stdout({ signal }) : Promise.resolve(''),
@@ -281,9 +282,12 @@ async function runCommand(client, sandbox, command, args, cwd, signal, timeoutMs
 async function runUatContract(client, sandbox, config, pathReport, cwd, signal, label) {
   const pushToken = config.fixture.token;
   const refreshValue = randomBytes(24).toString('hex');
-  const envContent = `DEVBOX_UAT_PHASE=${label}\nDEVBOX_UAT_REFRESH=${refreshValue}\n`;
+  const runtimeEnvironment = {
+    DEVBOX_UAT_PHASE: label,
+    DEVBOX_UAT_REFRESH: refreshValue,
+  };
   const fixtureSource = await readFile(new URL('./uat-fixture.mjs', import.meta.url), 'utf8');
-  addSensitiveValues([pushToken, envContent, refreshValue]);
+  addSensitiveValues([pushToken, ...Object.values(runtimeEnvironment), refreshValue]);
   const previousRefresh = label === 'resume'
     ? await runCommand(client, sandbox, 'cat', [UAT_REFRESH_PATH], cwd, signal)
     : undefined;
@@ -300,7 +304,7 @@ async function runUatContract(client, sandbox, config, pathReport, cwd, signal, 
   );
   recordCheck(pathReport, `${label} runtime directory`, directories.exitCode === 0, `exitCode=${directories.exitCode}`);
   await client.writeFiles(sandbox, [
-    { path: '/vercel/.env', content: Buffer.from(envContent), mode: 0o600 },
+    { path: '/vercel/.devbox/runtime/environment.json', content: Buffer.from(JSON.stringify(runtimeEnvironment)), mode: 0o600 },
     { path: '/vercel/.devbox/runtime/github-token', content: Buffer.from(pushToken), mode: 0o600 },
     { path: UAT_FIXTURE_PATH, content: Buffer.from(fixtureSource), mode: 0o700 },
   ], { signal });
@@ -314,16 +318,16 @@ async function runUatContract(client, sandbox, config, pathReport, cwd, signal, 
       signal,
     );
     recordCheck(pathReport, `${label} runtime GitHub authentication`, auth.exitCode === 0, `exitCode=${auth.exitCode}`);
-    const link = await runCommand(
+    const result = await runCommand(
       client,
       sandbox,
-      'sh',
-      ['-c', 'if [ -e .env ] && [ ! -L .env ]; then rm -f .env; fi; ln -sfn /vercel/.env .env'],
+      'node',
+      [UAT_FIXTURE_PATH, label],
       cwd,
       signal,
+      smokeTimeoutMs,
+      runtimeEnvironment,
     );
-    recordCheck(pathReport, `${label} runtime configuration`, link.exitCode === 0, `exitCode=${link.exitCode}`);
-    const result = await runCommand(client, sandbox, 'node', [UAT_FIXTURE_PATH, label], cwd, signal, smokeTimeoutMs);
     const markers = label === 'initial'
       ? [
         ['agents', 'DEVBOX_UAT:agents'],
@@ -364,7 +368,7 @@ async function runUatContract(client, sandbox, config, pathReport, cwd, signal, 
         client,
         sandbox,
         'sh',
-        ['-c', `rm -f -- .env /vercel/.env ${UAT_FIXTURE_PATH} /vercel/.devbox/runtime/github-token`],
+        ['-c', `rm -f -- ${UAT_FIXTURE_PATH} /vercel/.devbox/runtime/environment.json /vercel/.devbox/runtime/github-token`],
         cwd,
         signal,
       );

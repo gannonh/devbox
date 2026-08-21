@@ -64,15 +64,17 @@ describe('local command output', () => {
     const envFile = join(root, '.env');
     await mkdir(join(worktree, '.devcontainer'), { recursive: true });
     await writeFile(join(worktree, '.devcontainer', 'devcontainer.json'), '{}\n');
-    await writeFile(envFile, '');
+    await writeFile(envFile, 'API_PASSWORD=dotenv-secret\n');
 
     let devcontainerStarted = false;
+    let devcontainerArgs: string[] | undefined;
     let devcontainerOptions: Parameters<ShellRunner['execQuiet']>[2];
     const shell = runner({
       exec: vi.fn(async (command: string) => command === 'docker' ? '/box' : ''),
       execQuiet: vi.fn(async (command: string, args: string[], options) => {
         if (command === 'which') return { stdout: '/usr/bin/tool\n', code: 0 };
         if (command === 'devcontainer') {
+          devcontainerArgs = args;
           devcontainerStarted = true;
           devcontainerOptions = options;
           return { stdout: 'build output\n', code: 0 };
@@ -87,12 +89,25 @@ describe('local command output', () => {
     const ctx = context(shell);
     ctx.repoRoot = root;
     ctx.repoName = 'repo';
-    ctx.env = { DEVBOX_WORKTREES_DIR: worktrees, DEVBOX_ENV: envFile };
+    ctx.env = { DEVBOX_WORKTREES_DIR: worktrees };
+    ctx.envPath = envFile;
 
     try {
       expect(await up(ctx, 'feature')).toBe(0);
       expect(devcontainerOptions?.stderr).toBe(ctx.stderr);
       expect(devcontainerOptions?.streamStdoutTo?.stream).toBe(ctx.stderr);
+      expect(devcontainerArgs).toEqual(expect.arrayContaining([
+        '--secrets-file',
+        expect.stringContaining('devbox-env-'),
+      ]));
+      expect(shell.spawnInherit).toHaveBeenCalledWith(
+        'docker',
+        [
+          'exec', '-i', '-w', '/workspace', '-u', 'node', 'cid', 'bash', '-lc',
+          expect.stringContaining('/home/node/.devbox/runtime/environment.sh'),
+        ],
+        {},
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(worktrees, { recursive: true, force: true });
