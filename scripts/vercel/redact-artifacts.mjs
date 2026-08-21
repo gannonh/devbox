@@ -83,10 +83,18 @@ async function walk(path) {
 
 const targets = process.argv.slice(2);
 if (targets.length === 0) {
+  // Streaming mode: redact line by line so a long docker build stays
+  // observable (and tee-able) instead of buffering until EOF. Secrets never
+  // contain newlines, so a whole-line buffer cannot split one.
   process.stdin.setEncoding('utf8');
-  let input = '';
-  for await (const chunk of process.stdin) input += chunk;
-  process.stdout.write(redactText(input));
+  let pending = '';
+  for await (const chunk of process.stdin) {
+    pending += chunk;
+    const lines = pending.split('\n');
+    pending = lines.pop() ?? '';
+    process.stdout.write(redactText(lines.join('\n') + '\n'));
+  }
+  if (pending.length > 0) process.stdout.write(redactText(pending));
 } else {
   await Promise.all(targets.map((target) => walk(target)));
 }

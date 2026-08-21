@@ -225,7 +225,7 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).not.toContain('resolve-universal-digest.mjs');
     expect(workflow).not.toContain('universal_digest');
     expect(workflow).toContain('wait-vcr-ready.mjs');
-    expect(workflow).toContain('timeout-minutes: 45');
+    expect(workflow).toContain('timeout-minutes: 60');
     expect(workflow).toContain('SMOKE_TIMEOUT_MS:');
     expect(workflow).toContain('SMOKE_HTTP_TIMEOUT_MS:');
     expect(workflow).toContain('ARTIFACT_DIR=${artifact_dir}');
