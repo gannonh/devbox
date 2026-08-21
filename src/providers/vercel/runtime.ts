@@ -1,6 +1,6 @@
 import { join, posix } from 'node:path';
 import type { Writable } from 'node:stream';
-import { readEnvironmentFile } from '../local/env.js';
+import { assertSafeEnvironmentKeys, readEnvironmentFile } from '../local/env.js';
 import { addSecrets, redactSecrets } from './redaction.js';
 import { collectPiBundle } from './pi-bundle.js';
 import { startDisplayStack, VercelDisplayStartupError } from './display-startup.js';
@@ -54,6 +54,7 @@ export async function prepareSandboxRuntime(
   options: PrepareSandboxRuntimeOptions,
 ): Promise<VercelSetupStatus | null> {
   const runtimeEnvironment = await resolveRuntimeEnvironment(options);
+  assertSafeEnvironmentKeys(runtimeEnvironment);
   options.runtimeEnvironment = runtimeEnvironment;
   const token = await resolveGitHubToken({
     repoRoot: options.repoRoot,

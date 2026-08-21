@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -111,6 +111,24 @@ describe('Vercel runtime sync', () => {
     });
     expect(fake.commands.some((command) => command.env?.API_PASSWORD === 'dotenv-secret')).toBe(true);
     expect(fake.uploads.flat().some((file) => file.path === '/vercel/.env')).toBe(false);
+  });
+
+  it('rejects unsafe keys in directly supplied runtime environments', async () => {
+    const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-env-keys-'));
+    for (const key of ['BAD$(id)', 'BASH_ENV']) {
+      await expect(prepareSandboxRuntime({
+        repoRoot: '/host/repo',
+        repository: 'repo',
+        env: { GH_TOKEN: 'github-secret' },
+        runtimeEnvironment: { [key]: 'dummy' },
+        shellRunner: runner(),
+        sandbox: sandbox(),
+        client: client().client,
+        stderr: new PassThrough(),
+        piRoot: join(hostEnv, 'missing-pi'),
+      })).rejects.toThrow('invalid variable name');
+    }
+    await rm(hostEnv, { recursive: true, force: true });
   });
 
   it('reuses stored runtime state when no env override is provided', async () => {
