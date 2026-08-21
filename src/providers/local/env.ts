@@ -24,9 +24,15 @@ export async function readEnvironmentFile(path: string): Promise<Record<string, 
     throw new EnvironmentFileError(`unable to read env file ${path}: ${detail}`);
   }
 
-  return Object.fromEntries(
+  const parsed = Object.fromEntries(
     Object.entries(parseEnv(content)).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
   );
+  for (const key of Object.keys(parsed)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new EnvironmentFileError(`env file ${path} has an invalid variable name`);
+    }
+  }
+  return parsed;
 }
 
 /**

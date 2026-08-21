@@ -31,6 +31,20 @@ describe('readEnvironmentFile', () => {
     const path = join(tmpdir(), 'devbox-env-missing', '.env');
     await expect(readEnvironmentFile(path)).rejects.toThrow(`unable to read env file ${path}`);
   });
+
+  it('rejects keys that are not shell identifiers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'devbox-env-key-'));
+    for (const line of ['A B=1', 'FOO$(whoami)=x', '1BAD=1', 'BAD-NAME=1']) {
+      const path = join(root, '.env');
+      await writeFile(path, `${line}\n`);
+      try {
+        await expect(readEnvironmentFile(path)).rejects.toThrow('invalid variable name');
+      } finally {
+        await rm(path, { force: true });
+      }
+    }
+    await rm(root, { recursive: true, force: true });
+  });
 });
 
 describe('resolveGhToken', () => {

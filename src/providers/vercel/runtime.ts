@@ -65,7 +65,7 @@ export async function prepareSandboxRuntime(
     secrets,
     token,
     ...runtimeEnvironmentSecrets(options.env),
-    ...Object.values(runtimeEnvironment).filter((value) => value.length >= MIN_DOTENV_SECRET_LENGTH),
+    ...Object.values(runtimeEnvironment),
   );
   const piBundle = await runRuntimeOperation('Pi config collection', secrets, () => collectPiBundle({
     ...(options.piRoot === undefined ? {} : { root: options.piRoot }),
@@ -298,7 +298,6 @@ function runtimeEnvironmentSecrets(env: Record<string, string | undefined>): str
     .filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
-const MIN_DOTENV_SECRET_LENGTH = 8;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

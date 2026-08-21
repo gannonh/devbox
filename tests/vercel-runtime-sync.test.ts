@@ -655,7 +655,7 @@ describe('Vercel runtime sync', () => {
     const plainValue = 'dotenv-plain-runtime-error-secret';
     await writeFile(
       envPath,
-      `QUOTED="${quotedValue}"\nCOMMENTED=${commentedValue} # comment\nPLAIN=${plainValue}\nDEBUG=1\n`,
+      `QUOTED="${quotedValue}"\nCOMMENTED=${commentedValue} # comment\nPLAIN=${plainValue}\nSHORT=abc12\n`,
     );
     const uploads: VercelWriteFile[][] = [];
     const commands: VercelRunCommandRequest[] = [];
@@ -692,11 +692,13 @@ describe('Vercel runtime sync', () => {
     expect(String(error)).not.toContain(quotedValue);
     expect(String(error)).not.toContain(commentedValue);
     expect(String(error)).not.toContain(plainValue);
+    expect(String(error)).not.toContain('abc12');
     expect(String(error)).toContain('status=1');
     expect(output).not.toContain(token);
     expect(output).not.toContain(quotedValue);
     expect(output).not.toContain(commentedValue);
     expect(output).not.toContain(plainValue);
+    expect(output).not.toContain('abc12');
     expect(JSON.stringify(commands)).not.toContain(token);
     expect(uploads[0][1]).toMatchObject({ path: '/vercel/.devbox/runtime/github-token', mode: 0o600 });
     expect(uploads[0][1].content).toEqual(Buffer.from(token));

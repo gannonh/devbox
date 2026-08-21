@@ -912,9 +912,7 @@ function secretsFor(
     env.GITHUB_TOKEN,
     env.VERCEL_TOKEN,
     env.VERCEL_OIDC_TOKEN,
-    ...(runtimeEnvironment === undefined
-      ? []
-      : Object.values(runtimeEnvironment).filter((value) => value.length >= 8)),
+    ...(runtimeEnvironment === undefined ? [] : Object.values(runtimeEnvironment)),
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 
