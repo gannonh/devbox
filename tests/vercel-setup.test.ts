@@ -228,7 +228,6 @@ describe('Vercel background setup', () => {
       repoName: 'repo',
       env: {
         HOME: stateHome,
-        DEVBOX_ENV: envPath,
         GH_TOKEN: 'github-secret',
         VERCEL_TOKEN: 'vercel-secret',
         VERCEL_TEAM_ID: 'team-1',
@@ -405,7 +404,8 @@ describe('Vercel background setup', () => {
         request: {
           repoRoot,
           repoName: 'repo',
-          env: { HOME: stateHome, DEVBOX_ENV: envPath, VERCEL_TOKEN: 'vercel-secret' },
+          env: { HOME: stateHome, VERCEL_TOKEN: 'vercel-secret' },
+          envPath,
           tty: false,
           stdin: new PassThrough(),
           stdout: new PassThrough(),
@@ -462,7 +462,8 @@ describe('Vercel background setup', () => {
     await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { HOME: host, DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { HOME: host, GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: { exec: vi.fn(), execQuiet: vi.fn(), spawnInherit: vi.fn() },
       sandbox: sandbox(),
       client,

@@ -1,21 +1,32 @@
 /**
- * Environment resolution for DEVBOX_ENV and GH_TOKEN.
+ * Parse an explicitly selected dotenv file and resolve the GitHub token.
  *
- * DEVBOX_ENV: explicit env var, else the repo-local .env
  * GH_TOKEN: explicit GH_TOKEN, else GITHUB_TOKEN, else `gh auth token`
  */
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { parseEnv } from 'node:util';
 import type { ShellRunner } from '../../lib/shell.js';
 
-/**
- * Resolve the .env file path for the repo.
- * Priority: DEVBOX_ENV env var > <repoRoot>/.env
- */
-export function resolveDevboxEnv(
-  repoRoot: string,
-  env: Record<string, string | undefined>,
-): string {
-  return env.DEVBOX_ENV ?? join(repoRoot, '.env');
+export class EnvironmentFileError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EnvironmentFileError';
+  }
+}
+
+/** Read a dotenv file without exposing its contents in errors or output. */
+export async function readEnvironmentFile(path: string): Promise<Record<string, string>> {
+  let content: string;
+  try {
+    content = await readFile(path, 'utf8');
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new EnvironmentFileError(`unable to read env file ${path}: ${detail}`);
+  }
+
+  return Object.fromEntries(
+    Object.entries(parseEnv(content)).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
 }
 
 /**

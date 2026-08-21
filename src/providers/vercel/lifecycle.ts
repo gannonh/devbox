@@ -150,6 +150,7 @@ export interface VercelLifecycleOptions {
   packageVersion?: string;
   ports?: number[];
   env?: Record<string, string | undefined>;
+  runtimeEnvironment?: Record<string, string>;
   credentials?: VercelCredentials;
   credentialOptions?: Omit<CredentialResolutionOptions, 'repoRoot' | 'env'>;
   source?: GitHubSourcePlan;
@@ -206,6 +207,7 @@ export interface VercelLifecycle {
 interface PreparedContext {
   credentials: VercelCredentials;
   env: Record<string, string | undefined>;
+  runtimeEnvironment?: Record<string, string>;
   source?: GitHubSourcePlan;
   identity?: VercelSandboxIdentity;
   repository: string;
@@ -252,6 +254,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           timeoutMs: context.timeoutMs,
           ports,
           tags: { ...effectiveIdentity.tags },
+          ...(context.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: context.runtimeEnvironment }),
           onCreate: async (sandbox) => {
             createdSandbox = sandbox;
             await switchToRequestedBranch(sandbox, context);
@@ -745,6 +748,7 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
   return {
     credentials,
     env: options.env ?? {},
+    ...(options.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: options.runtimeEnvironment }),
     ...(source === undefined ? {} : { source }),
     ...(identity === undefined ? {} : { identity }),
     repository,

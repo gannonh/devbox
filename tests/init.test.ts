@@ -62,7 +62,7 @@ describe('init', () => {
     expect(output).toContain('.devbox/post-create.sh');
     expect(output).toContain('.devcontainer/devcontainer.json');
     expect(output).toContain('provision.sh');
-    expect(output).toContain('.env');
+    expect(output).toContain('--env PATH');
 
     // Names the boot command verbatim so users know how to start.
     expect(output).toContain('npx @gannonh/devbox <branch>');

@@ -8,16 +8,18 @@ import type { LauncherContext } from './context.js';
 import { containerFor, containerForAll } from './docker.js';
 import { info, warn } from '../../lib/log.js';
 import { localFailure } from './errors.js';
+import { execIntoShell, requestedEnvironment, syncLocalEnvironment } from './up.js';
 
 export async function attach(ctx: LauncherContext, branch: string): Promise<number> {
   const { runner, tty } = ctx;
+  const runtimeEnvironment = await requestedEnvironment(ctx);
 
   // Running box: attach directly.
   const runningCid = await containerFor(runner, branch);
   if (runningCid) {
     info(`attaching to running box for ${branch}`);
-    const ttyFlag = tty ? '-it' : '-i';
-    return runner.spawnInherit('docker', ['exec', ttyFlag, '-w', '/workspace', '-u', 'node', runningCid, 'bash', '-l'], {});
+    if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, runningCid, runtimeEnvironment);
+    return execIntoShell(runner, runningCid, tty);
   }
 
   // Stopped box: start it, re-bring display, attach.
@@ -35,8 +37,8 @@ export async function attach(ctx: LauncherContext, branch: string): Promise<numb
       warn('display stack restart may have failed');
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    const ttyFlag = tty ? '-it' : '-i';
-    return runner.spawnInherit('docker', ['exec', ttyFlag, '-w', '/workspace', '-u', 'node', stoppedCid, 'bash', '-l'], {});
+    if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, stoppedCid, runtimeEnvironment);
+    return execIntoShell(runner, stoppedCid, tty);
   }
 
   localFailure(`no box for ${branch} (start it with: devbox ${branch})`);

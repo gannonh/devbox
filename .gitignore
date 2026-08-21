@@ -7,3 +7,5 @@ coverage/
 uat-evidence/
 *.tsbuildinfo
 .env
+.vercel
+.env*

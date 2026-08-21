@@ -144,7 +144,12 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
     request: ProviderRequestContext,
     action: string,
     operation: (secrets: string[]) => Promise<ProviderActionResult>,
-  ) => withProviderErrors(request, action, operation, secretsFor(request.env));
+  ) => withProviderErrors(
+    request,
+    action,
+    operation,
+    secretsFor(request.env, request.runtimeEnvironment),
+  );
 
   const provider: DevboxProvider = {
     name: 'vercel',
@@ -180,10 +185,12 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         prepared.metadata,
       );
       const sandbox = await lifecycle.up();
-      const setupStatus = await prepareSandboxRuntime({
+      const runtimeOptions = {
         repoRoot: request.repoRoot,
         repository: prepared.source.remote.repository,
         env: request.env,
+        ...(request.envPath === undefined ? {} : { envPath: request.envPath }),
+        ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
         shellRunner: runner,
         sandbox,
         client,
@@ -192,7 +199,9 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore,
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
-      });
+      };
+      const setupStatus = await prepareSandboxRuntime(runtimeOptions);
+      request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
       const appPorts = await resolveAppPorts(
         request,
         options,
@@ -229,10 +238,12 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       // context reads as "it is creating a new sandbox" -- which attach cannot
       // do: it fails when there is no record and no live box to resume.
       request.stderr.write(`Attaching to the existing Vercel sandbox for ${request.branch}\n`);
-      const setupStatus = await prepareSandboxRuntime({
+      const runtimeOptions = {
         repoRoot: request.repoRoot,
         repository,
         env: request.env,
+        ...(request.envPath === undefined ? {} : { envPath: request.envPath }),
+        ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
         shellRunner: runner,
         sandbox,
         client,
@@ -241,7 +252,9 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore!,
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
-      });
+      };
+      const setupStatus = await prepareSandboxRuntime(runtimeOptions);
+      request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
       const appPorts = await resolveAppPorts(
         request,
         options,
@@ -553,6 +566,7 @@ function createLifecycle(
     repoRoot: request.repoRoot,
     ...(source?.requestedBranch === undefined ? {} : { branch: source.requestedBranch }),
     env: request.env,
+    ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
     credentials,
     ...(source === undefined ? {} : { source }),
     shellRunner: runner,
@@ -738,6 +752,7 @@ async function terminalResult(
       cols: request.stdout.columns ?? 80,
       rows: request.stdout.rows ?? 24,
     }),
+    ...(request.runtimeEnvironment === undefined ? {} : { env: request.runtimeEnvironment }),
     ...(signalSource === undefined ? {} : { signalSource }),
   };
   const result = await terminal.attach(sandbox, terminalOptions);
@@ -888,12 +903,18 @@ async function withProviderErrors(
   }
 }
 
-function secretsFor(env: Record<string, string | undefined>): string[] {
+function secretsFor(
+  env: Record<string, string | undefined>,
+  runtimeEnvironment?: Record<string, string>,
+): string[] {
   return [
     env.GH_TOKEN,
     env.GITHUB_TOKEN,
     env.VERCEL_TOKEN,
     env.VERCEL_OIDC_TOKEN,
+    ...(runtimeEnvironment === undefined
+      ? []
+      : Object.values(runtimeEnvironment).filter((value) => value.length >= 8)),
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
 

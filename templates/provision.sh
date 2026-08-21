@@ -48,13 +48,7 @@ if [[ -f package.json ]] && grep -q '"ensure:electron"' package.json; then
   bun run ensure:electron || log "warn: ensure:electron failed (Electron GUI may not launch)"
 fi
 
-# --- 3. .env link -------------------------------------------------------------
-if [[ -f "${HOME}/.env" ]] && [[ ! -e /workspace/.env ]]; then
-  ln -s "${HOME}/.env" /workspace/.env
-  log "linked .env -> ${HOME}/.env"
-fi
-
-# --- 4. Agent setup -----------------------------------------------------------
+# --- 3. Agent setup -----------------------------------------------------------
 # Only ONE block should be active. See the AGENT SWITCHING comment at the top.
 
 # --- 4a. Pi (active default) --------------------------------------------------
@@ -93,14 +87,14 @@ else
 fi
 
 # --- 4b. Claude Code (commented out — uncomment to use) -----------------------
-# Claude Code uses the Anthropic API by default. Set ANTHROPIC_API_KEY in your
-# .env file or pass it via devcontainer.json containerEnv. No config-dir copy
+# Claude Code uses the Anthropic API by default. Set ANTHROPIC_API_KEY with
+# devbox's --env flag. No config-dir copy
 # needed — Claude Code reads the env var directly.
 # log "installing Claude Code"
 # npm install -g @anthropic-ai/claude-code
 
 # --- 4c. Codex (commented out — uncomment to use) -----------------------------
-# Codex (OpenAI) can auth via OPENAI_API_KEY in your .env, or via `codex --login`
+# Codex (OpenAI) can auth via OPENAI_API_KEY from devbox's --env flag, or via `codex --login`
 # which opens a browser (works in-box via the Chromium display stack).
 # log "installing Codex"
 # npm install -g @openai/codex

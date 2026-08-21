@@ -203,7 +203,7 @@ describe('Vercel Sandbox client adapter', () => {
       keepLastSnapshots: { count: 1 },
       tags: {},
     });
-    const files = [{ path: '/vercel/.env', content: Buffer.from('safe'), mode: 0o600 }];
+    const files = [{ path: '/vercel/test-secret', content: Buffer.from('safe'), mode: 0o600 }];
     const request = {
       cmd: 'gh',
       args: ['auth', 'status'],
@@ -249,11 +249,11 @@ describe('Vercel Sandbox client adapter', () => {
       tags: {},
     });
 
-    await expect(client.writeFiles(handle, [{ path: '/vercel/.env', content: Buffer.from('safe') }]))
+    await expect(client.writeFiles(handle, [{ path: '/vercel/test-secret', content: Buffer.from('safe') }]))
       .rejects.toEqual(expect.objectContaining({
         message: expect.stringContaining('[REDACTED]'),
       }));
-    await expect(client.writeFiles(handle, [{ path: '/vercel/.env', content: Buffer.from('safe') }]))
+    await expect(client.writeFiles(handle, [{ path: '/vercel/test-secret', content: Buffer.from('safe') }]))
       .rejects.toEqual(expect.objectContaining({
         message: expect.not.stringContaining(secret),
       }));

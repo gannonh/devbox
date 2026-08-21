@@ -31,6 +31,7 @@ Open the headed display in your browser (the `init` output and the ready banner 
 - **Headed display via noVNC.** Xvfb + fluxbox + x11vnc + noVNC run inside the box; view the desktop in any browser. Electron apps render there.
 - **Coding agent built in.** Pi is the default. Claude Code and Codex ship as commented-out blocks in `provision.sh` — switch by commenting out Pi and uncommenting your choice.
 - **GitHub auth forwarded.** Your host `gh auth token` (macOS keyring) is forwarded into the box so `gh` and `git push` work without re-logging in.
+- **Project environment is explicit.** Use `--env PATH` to inject dotenv values. Omitting it transfers no project environment.
 - **Chromium + OAuth in the box.** `xdg-open` routes to Chromium (with the flags it needs under Xvfb), so OAuth flows that open a browser consent page complete entirely inside the container, visible via noVNC.
 
 ## Prerequisites
@@ -46,6 +47,7 @@ Open the headed display in your browser (the `init` output and the ready banner 
 ```bash
 npx @gannonh/devbox init                              # scaffold config into this repo
 npx @gannonh/devbox <branch>                          # boot a local box (default provider)
+npx @gannonh/devbox <branch> --env PATH              # inject dotenv values
 npx @gannonh/devbox <branch> --attach                # re-enter a running box
 npx @gannonh/devbox <branch> --stop                  # stop (keeps worktree + container)
 npx @gannonh/devbox <branch> --rm                    # remove container + worktree + branch
@@ -64,7 +66,7 @@ npx @gannonh/devbox --provider vercel <branch> --password # print its display ac
 ```
 .devbox/
   Dockerfile          # base image + tools + display stack + Chromium + agent
-  provision.sh        # deps (lockfile-detected), .env link, agent setup, display
+  provision.sh        # deps (lockfile-detected), agent setup, display
   start-display.sh    # idempotent Xvfb/fluxbox/x11vnc/noVNC startup
   post-create.sh      # opt-in hook for repo-specific steps (no-op stub)
   README.md           # per-repo guide

@@ -1,7 +1,6 @@
-import { readFile } from 'node:fs/promises';
 import { join, posix } from 'node:path';
 import type { Writable } from 'node:stream';
-import { resolveDevboxEnv } from '../local/env.js';
+import { readEnvironmentFile } from '../local/env.js';
 import { addSecrets, redactSecrets } from './redaction.js';
 import { collectPiBundle } from './pi-bundle.js';
 import { startDisplayStack, VercelDisplayStartupError } from './display-startup.js';
@@ -19,7 +18,7 @@ import type {
 
 export const VERCEL_SANDBOX_HOME = '/vercel';
 export const VERCEL_RUNTIME_DIRECTORY = `${VERCEL_SANDBOX_HOME}/.devbox/runtime`;
-export const VERCEL_RUNTIME_ENV_PATH = `${VERCEL_SANDBOX_HOME}/.env`;
+export const VERCEL_RUNTIME_ENV_STATE_PATH = `${VERCEL_RUNTIME_DIRECTORY}/environment.json`;
 export const VERCEL_RUNTIME_GITHUB_TOKEN_PATH = `${VERCEL_RUNTIME_DIRECTORY}/github-token`;
 export const VERCEL_GH_CONFIG_DIRECTORY = `${VERCEL_SANDBOX_HOME}/.config/gh`;
 export const VERCEL_RUNTIME_PI_PATH = `${VERCEL_SANDBOX_HOME}/.pi`;
@@ -38,6 +37,8 @@ export interface PrepareSandboxRuntimeOptions {
   repoRoot: string;
   repository: string;
   env: Record<string, string | undefined>;
+  envPath?: string;
+  runtimeEnvironment?: Record<string, string>;
   shellRunner: ShellRunner;
   sandbox: VercelSandboxHandle;
   client: VercelSandboxClient;
@@ -52,26 +53,20 @@ export interface PrepareSandboxRuntimeOptions {
 export async function prepareSandboxRuntime(
   options: PrepareSandboxRuntimeOptions,
 ): Promise<VercelSetupStatus | null> {
-  const hostEnvPath = resolveDevboxEnv(options.repoRoot, options.env);
-  let content: Buffer;
-  try {
-    content = await readFile(hostEnvPath);
-  } catch (error) {
-    if (!isNodeError(error, 'ENOENT')) throw error;
-    writeRuntimeWarning(
-      options.stderr,
-      `no .env at ${hostEnvPath} (set DEVBOX_ENV)`,
-      runtimeEnvironmentSecrets(options.env),
-    );
-    content = Buffer.alloc(0);
-  }
+  const runtimeEnvironment = await resolveRuntimeEnvironment(options);
+  options.runtimeEnvironment = runtimeEnvironment;
   const token = await resolveGitHubToken({
     repoRoot: options.repoRoot,
     env: options.env,
     shellRunner: options.shellRunner,
   });
   const secrets = options.secrets ?? [];
-  addSecrets(secrets, token, ...runtimeEnvironmentSecrets(options.env), ...dotenvSecrets(content));
+  addSecrets(
+    secrets,
+    token,
+    ...runtimeEnvironmentSecrets(options.env),
+    ...Object.values(runtimeEnvironment).filter((value) => value.length >= MIN_DOTENV_SECRET_LENGTH),
+  );
   const piBundle = await runRuntimeOperation('Pi config collection', secrets, () => collectPiBundle({
     ...(options.piRoot === undefined ? {} : { root: options.piRoot }),
     ...(options.hostHome === undefined ? {} : { home: options.hostHome }),
@@ -93,11 +88,11 @@ export async function prepareSandboxRuntime(
     );
   }
   const files = [
-    {
-      path: VERCEL_RUNTIME_ENV_PATH,
-      content,
+    ...(options.envPath === undefined ? [] : [{
+      path: VERCEL_RUNTIME_ENV_STATE_PATH,
+      content: Buffer.from(JSON.stringify(runtimeEnvironment)),
       mode: 0o600,
-    },
+    }]),
     {
       path: VERCEL_RUNTIME_GITHUB_TOKEN_PATH,
       content: Buffer.from(token),
@@ -145,14 +140,10 @@ export async function prepareSandboxRuntime(
     await removeRuntimeGitHubToken(options, secrets);
     throw error;
   }
-  await runRuntimeCommand(options, {
-    cmd: 'sh',
-    args: ['-c', 'if [ ! -e .env ]; then ln -s /vercel/.env .env; fi'],
-    cwd: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  }, 'workspace .env link', secrets);
   const displayCredentialsStore = options.displayCredentialsStore;
   if (displayCredentialsStore) {
+    // Display services need the image's base environment; project dotenv values
+    // belong to the terminal and background setup commands below.
     await runRuntimeOperation('Display startup', secrets, () => startDisplayStack({
       sandbox: options.sandbox,
       client: options.client,
@@ -165,8 +156,55 @@ export async function prepareSandboxRuntime(
     sandbox: options.sandbox,
     client: options.client,
     workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+    ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
+}
+
+async function resolveRuntimeEnvironment(
+  options: PrepareSandboxRuntimeOptions,
+): Promise<Record<string, string>> {
+  if (options.runtimeEnvironment !== undefined) return options.runtimeEnvironment;
+  if (options.envPath !== undefined) {
+    try {
+      return await readEnvironmentFile(options.envPath);
+    } catch (error) {
+      throw new VercelRuntimeSyncError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  let result: Awaited<ReturnType<VercelSandboxClient['runCommand']>>;
+  try {
+    result = await options.client.runCommand(options.sandbox, {
+      cmd: 'sh',
+      args: ['-c', `if [ -f ${VERCEL_RUNTIME_ENV_STATE_PATH} ]; then cat ${VERCEL_RUNTIME_ENV_STATE_PATH}; fi`],
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+  } catch (error) {
+    throw new VercelRuntimeSyncError(`runtime environment state read failed: ${String(error)}`);
+  }
+  if (result.exitCode !== 0 || !result.stdout) return {};
+
+  try {
+    const value: unknown = JSON.parse(await result.stdout(
+      options.signal === undefined ? undefined : { signal: options.signal },
+    ));
+    if (!isRecord(value) || Object.values(value).some((entry) => typeof entry !== 'string')) {
+      throw new Error('invalid environment state');
+    }
+    return value as Record<string, string>;
+  } catch {
+    throw new VercelRuntimeSyncError('runtime environment state is invalid');
+  }
+}
+
+function withRuntimeEnvironment(
+  options: PrepareSandboxRuntimeOptions,
+  request: Parameters<VercelSandboxClient['runCommand']>[1],
+): Parameters<VercelSandboxClient['runCommand']>[1] {
+  const values = options.runtimeEnvironment;
+  if (values === undefined) return request;
+  return { ...request, env: { ...values, ...(request.env ?? {}) } };
 }
 
 async function uploadRuntimeFiles(
@@ -240,7 +278,7 @@ async function runRuntimeCommand(
   secrets: readonly string[],
 ): Promise<void> {
   const result = await runRuntimeOperation(operation, secrets, () =>
-    options.client.runCommand(options.sandbox, request));
+    options.client.runCommand(options.sandbox, withRuntimeEnvironment(options, request)));
   const output = await runRuntimeOperation(`${operation} output`, secrets, async () => {
     const parts: string[] = [];
     if (result.stdout) parts.push(await result.stdout(options.signal === undefined ? undefined : { signal: options.signal }));
@@ -262,23 +300,9 @@ function runtimeEnvironmentSecrets(env: Record<string, string | undefined>): str
 
 const MIN_DOTENV_SECRET_LENGTH = 8;
 
-function dotenvSecrets(content: Buffer): string[] {
-  const text = content.toString('utf8');
-  return [
-    text,
-    ...text.split(/\r?\n/).flatMap((line) => {
-      const separator = line.indexOf('=');
-      if (separator < 0) return [];
-      const rawValue = line.slice(separator + 1).trim();
-      const unquotedValue = rawValue.replace(/^(['"])(.*)\1$/, '$2');
-      const value = unquotedValue === rawValue
-        ? rawValue.replace(/ #.*$/, '')
-        : unquotedValue;
-      return [line, rawValue, value];
-    }),
-  ].filter((value) => value.length >= MIN_DOTENV_SECRET_LENGTH);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
 
 function runtimeDirectories(paths: readonly string[]): string[] {
   const directories = new Set([
@@ -309,9 +333,4 @@ function writeRuntimeWarning(
   secrets: readonly string[],
 ): void {
   stderr.write(`${redactSecrets(message, secrets)}\n`);
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error
-    && (error as { code?: unknown }).code === code;
 }

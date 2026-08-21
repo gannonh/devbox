@@ -86,77 +86,17 @@ function tokenTrackingClient(authExitCode: number): {
 }
 
 describe('Vercel runtime sync', () => {
-  it('transfers a host .env to the sandbox home with mode 0600', async () => {
+  it('injects selected dotenv values into private runtime state', async () => {
     const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-env-'));
     const envPath = join(hostEnv, '.env');
-    const content = 'API_PASSWORD=dotenv-secret\n';
-    await writeFile(envPath, content);
+    await writeFile(envPath, 'API_PASSWORD=dotenv-secret\nPORT=5173\n');
     const fake = client();
-    const stderr = new PassThrough();
 
     await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
-      shellRunner: runner(),
-      sandbox: sandbox(),
-      client: fake.client,
-      stderr,
-      piRoot: join(hostEnv, 'missing-pi'),
-    });
-
-    expect(fake.uploads.flat()).toContainEqual({
-      path: '/vercel/.env',
-      content: Buffer.from(content),
-      mode: 0o600,
-    });
-  });
-
-  it('warns and uploads an empty .env when the configured host file is missing', async () => {
-    const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-missing-env-'));
-    const envPath = join(hostEnv, '.env');
-    const fake = client();
-    const stderr = new PassThrough();
-    let output = '';
-    stderr.on('data', (chunk) => { output += chunk.toString(); });
-
-    await prepareSandboxRuntime({
-      repoRoot: '/host/repo',
-      repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
-      shellRunner: runner(),
-      sandbox: sandbox(),
-      client: fake.client,
-      stderr,
-      piRoot: join(hostEnv, 'missing-pi'),
-    });
-
-    expect(output).toContain(`no .env at ${envPath} (set DEVBOX_ENV)`);
-    expect(fake.uploads.flat()).toContainEqual({
-      path: '/vercel/.env',
-      content: Buffer.alloc(0),
-      mode: 0o600,
-    });
-  });
-
-  it('links the sandbox .env without clobbering an existing workspace file', async () => {
-    const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-link-'));
-    const envPath = join(hostEnv, '.env');
-    await writeFile(envPath, 'API_KEY=dotenv-secret\n');
-    const fake = client();
-    const runCommand = fake.client.runCommand as unknown as ReturnType<typeof vi.fn>;
-    runCommand.mockImplementation(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
-      if (request.cwd === '/vercel/sandbox/repo' && request.args?.[1]?.includes('ln -s')) {
-        if (!request.args[1].includes('[ ! -e .env ]')) throw new Error('workspace link would clobber .env');
-      }
-      fake.commands.push(request);
-      return { exitCode: 0 };
-    });
-
-    await prepareSandboxRuntime({
-      repoRoot: '/host/repo',
-      repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -164,11 +104,79 @@ describe('Vercel runtime sync', () => {
       piRoot: join(hostEnv, 'missing-pi'),
     });
 
-    expect(fake.commands).toContainEqual({
-      cmd: 'sh',
-      args: ['-c', 'if [ ! -e .env ]; then ln -s /vercel/.env .env; fi'],
-      cwd: '/vercel/sandbox/repo',
+    expect(fake.uploads.flat()).toContainEqual({
+      path: '/vercel/.devbox/runtime/environment.json',
+      content: Buffer.from(JSON.stringify({ API_PASSWORD: 'dotenv-secret', PORT: '5173' })),
+      mode: 0o600,
     });
+    expect(fake.commands.some((command) => command.env?.API_PASSWORD === 'dotenv-secret')).toBe(true);
+    expect(fake.uploads.flat().some((file) => file.path === '/vercel/.env')).toBe(false);
+  });
+
+  it('reuses stored runtime state when no env override is provided', async () => {
+    const fake = client();
+    const runCommand = fake.client.runCommand as unknown as ReturnType<typeof vi.fn>;
+    runCommand.mockImplementation(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
+      fake.commands.push(request);
+      if (request.args?.[1]?.includes('if [ -f /vercel/.devbox/runtime/environment.json')) {
+        return { exitCode: 0, stdout: async () => JSON.stringify({ API_KEY: 'persisted-secret' }) };
+      }
+      return { exitCode: 0 };
+    });
+
+    await prepareSandboxRuntime({
+      repoRoot: '/host/repo',
+      repository: 'repo',
+      env: { GH_TOKEN: 'github-secret' },
+      shellRunner: runner(),
+      sandbox: sandbox(),
+      client: fake.client,
+      stderr: new PassThrough(),
+      piRoot: join(tmpdir(), 'missing-pi'),
+    });
+
+    expect(fake.commands.some((command) => command.env?.API_KEY === 'persisted-secret')).toBe(true);
+    expect(fake.uploads.flat().some((file) => file.path === '/vercel/.devbox/runtime/environment.json')).toBe(false);
+  });
+
+  it('fails when the selected env file is missing', async () => {
+    const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-missing-env-'));
+    const envPath = join(hostEnv, '.env');
+    const fake = client();
+
+    await expect(prepareSandboxRuntime({
+      repoRoot: '/host/repo',
+      repository: 'repo',
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
+      shellRunner: runner(),
+      sandbox: sandbox(),
+      client: fake.client,
+      stderr: new PassThrough(),
+      piRoot: join(hostEnv, 'missing-pi'),
+    })).rejects.toThrow(`unable to read env file ${envPath}`);
+    expect(fake.uploads).toEqual([]);
+  });
+
+  it('does not create a dotenv file in the remote checkout', async () => {
+    const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-link-'));
+    const envPath = join(hostEnv, '.env');
+    await writeFile(envPath, 'API_KEY=dotenv-secret\n');
+    const fake = client();
+
+    await prepareSandboxRuntime({
+      repoRoot: '/host/repo',
+      repository: 'repo',
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
+      shellRunner: runner(),
+      sandbox: sandbox(),
+      client: fake.client,
+      stderr: new PassThrough(),
+      piRoot: join(hostEnv, 'missing-pi'),
+    });
+
+    expect(fake.commands.some((command) => command.args?.some((arg) => arg.includes('.env')))).toBe(false);
   });
 
   it('authenticates gh and git from a 0600 token file without putting the token in argv', async () => {
@@ -181,7 +189,8 @@ describe('Vercel runtime sync', () => {
     await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: token },
+      env: { GH_TOKEN: token },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -205,7 +214,7 @@ describe('Vercel runtime sync', () => {
     expect(authCommand?.args).toEqual(expect.arrayContaining([
       expect.stringContaining('gh auth setup-git --hostname github.com'),
     ]));
-    expect(authCommand?.env).toBeUndefined();
+    expect(authCommand?.env).toEqual({ API_PASSWORD: 'dotenv-secret' });
     expect(fake.commands.find((command) => command.cmd === 'mkdir')?.args)
       .toEqual(expect.arrayContaining(['/vercel/.config/gh']));
     expect(JSON.stringify(fake.commands)).not.toContain(token);
@@ -235,7 +244,8 @@ describe('Vercel runtime sync', () => {
     await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -260,7 +270,8 @@ describe('Vercel runtime sync', () => {
     await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -282,7 +293,8 @@ describe('Vercel runtime sync', () => {
     await expect(prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -308,7 +320,8 @@ describe('Vercel runtime sync', () => {
     await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -321,14 +334,16 @@ describe('Vercel runtime sync', () => {
       content: Buffer.from('{"packages":[]}'),
       mode: 0o754,
     });
-    expect(fake.commands).toContainEqual({
+    expect(fake.commands).toContainEqual(expect.objectContaining({
       cmd: 'mkdir',
       args: ['-p', '/vercel/.devbox', '/vercel/.devbox/runtime', '/vercel/.config', '/vercel/.config/gh', '/vercel/.pi', '/vercel/.pi/agent'],
-    });
-    expect(fake.commands).toContainEqual({
+      env: { API_KEY: 'dotenv-secret' },
+    }));
+    expect(fake.commands).toContainEqual(expect.objectContaining({
       cmd: 'chmod',
       args: ['700', '/vercel/.devbox', '/vercel/.devbox/runtime', '/vercel/.config', '/vercel/.config/gh', '/vercel/.pi', '/vercel/.pi/agent'],
-    });
+      env: { API_KEY: 'dotenv-secret' },
+    }));
   });
 
   it('warns and continues when the host Pi root is missing', async () => {
@@ -345,11 +360,11 @@ describe('Vercel runtime sync', () => {
       repoRoot: '/host/repo',
       repository: 'repo',
       env: {
-        DEVBOX_ENV: envPath,
         GH_TOKEN: 'github-secret',
         PWD: piRoot,
         SHELL: '/bin/bash',
       },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -378,7 +393,8 @@ describe('Vercel runtime sync', () => {
     await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -403,7 +419,8 @@ describe('Vercel runtime sync', () => {
     await expect(prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fake.client,
@@ -477,12 +494,12 @@ describe('Vercel runtime sync', () => {
       repoName: 'repo',
       env: {
         HOME: hostEnv,
-        DEVBOX_ENV: envPath,
         GH_TOKEN: 'github-secret',
         VERCEL_TOKEN: 'vercel-secret',
         VERCEL_TEAM_ID: 'team-1',
         VERCEL_PROJECT_ID: 'project-1',
       },
+      envPath,
       tty: true,
       stdin: new PassThrough(),
       stdout: new PassThrough(),
@@ -577,10 +594,10 @@ describe('Vercel runtime sync', () => {
       repoName: 'repo',
       env: {
         HOME: hostEnv,
-        DEVBOX_ENV: envPath,
         GH_TOKEN: 'github-secret',
         VERCEL_TOKEN: 'vercel-secret',
       },
+      envPath,
       tty: true,
       stdin: new PassThrough(),
       stdout: new PassThrough(),
@@ -616,7 +633,8 @@ describe('Vercel runtime sync', () => {
     const error = await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: 'github-secret' },
+      env: { GH_TOKEN: 'github-secret' },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fakeClient,
@@ -662,7 +680,8 @@ describe('Vercel runtime sync', () => {
     const error = await prepareSandboxRuntime({
       repoRoot: '/host/repo',
       repository: 'repo',
-      env: { DEVBOX_ENV: envPath, GH_TOKEN: token },
+      env: { GH_TOKEN: token },
+      envPath,
       shellRunner: runner(),
       sandbox: sandbox(),
       client: fakeClient,

@@ -23,6 +23,10 @@ export interface ProviderRequestContext {
   repoRoot: string;
   repoName: string;
   env: Record<string, string | undefined>;
+  /** Host dotenv source selected by `--env`, when provided. */
+  envPath?: string;
+  /** Parsed values from the selected dotenv source. */
+  runtimeEnvironment?: Record<string, string>;
   tty: boolean;
   stdin: ProviderInput;
   stdout: ProviderOutput;

@@ -30,15 +30,13 @@
   },
 
   // Host config mounted in (read-only):
-  //   - DEVBOX_ENV -> /home/node/.env  (the repo's .env; provision.sh links it)
-  //   - ~/.pi      -> /tmp/host-pi      (provision.sh copies it minus
-  //                  sessions/npm/cache, then replays extensions Linux-native)
+  //   - ~/.pi -> /tmp/host-pi (provision.sh copies it minus
+  //              sessions/npm/cache, then replays extensions Linux-native)
   //
   // The ~/.pi mount is Pi-specific. If you switch to Claude Code or Codex
-  // (see .devbox/provision.sh), remove the second mount line below — it is
-  // inert for non-Pi agents and ~/.pi is ~1.3GB.
+  // (see .devbox/provision.sh), remove this mount — it is inert for non-Pi
+  // agents and ~/.pi is ~1.3GB.
   "mounts": [
-    "source=${localEnv:DEVBOX_ENV},target=/home/node/.env,type=bind,readonly",
     "source=${localEnv:HOME}/.pi,target=/tmp/host-pi,type=bind,readonly"
   ],
 
@@ -55,7 +53,7 @@
   },
 
   // Lifecycle hooks (devcontainer spec):
-  //   postCreate — once, after create: full provisioning (deps, agent, .env) +
+  //   postCreate — once, after create: full provisioning (deps, agent) +
   //                first display start. The CLI waits for this to finish.
   //   postStart  — every start: (re)bring the display stack up. setsid fully
   //                detaches it so the CLI tearing down the exec session does

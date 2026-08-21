@@ -42,7 +42,7 @@ init prints a customization guide pointing at the repo-specific surfaces. The te
 
 - **`.devbox/post-create.sh`** — the repo-specific hook. Add migrations, native builds, seed data, extra tool installs here. No-op by default.
 - **`.devcontainer/devcontainer.json`** — `forwardPorts`/`portsAttributes` default to Vite (5173), RPC (9100), noVNC (6080). Adjust to the repo's dev servers. Add Features or `containerEnv` here too. On the Vercel provider these stay the explicit, always-retained path, but they are no longer required: devbox reads the remote checkout's `package.json` manifests — the root and, in a monorepo, the declared workspace members — and offers the Vite/Next port as a **public** route once, and `--expose-ports` is the non-interactive opt-in. If nothing is detected it still asks, so you can name a port by hand. Serving on that route is still the app's job — bind with `--host 0.0.0.0`, and on Vite 5.4.12+ add `server.allowedHosts: ['.vercel.run']`.
-- **`.env`** (repo root) — provision.sh links it into the box as `/home/node/.env`. Put secrets here (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.).
+- **Environment values** — pass a dotenv file with `--env PATH` when booting or attaching. Values are injected without copying the file into the box or worktree.
 - **`.devbox/provision.sh`** — agent switching only (see below). Otherwise generic; don't edit for repo setup.
 - **`.devbox/Dockerfile`** — extra apt packages, rarely needed.
 
@@ -87,7 +87,7 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 ## Inside the box
 
 - The worktree is bind-mounted at `/workspace`; you're in `/workspace` as `node`.
-- `.env` from the host is linked at `/home/node/.env`.
+- Values from `--env PATH` are exported in every shell for that box session.
 - `GH_TOKEN` is exported in every shell (forwarded from host `gh`), so `gh` and `git push` work.
 - The display (Xvfb + x11vnc + noVNC) runs detached via `setsid` and survives container restarts.
 - Chromium is wrapped to pass `--no-sandbox --disable-gpu --test-type` so it launches under Xvfb. `xdg-open <url>` routes to it, which is how in-box OAuth works (a `localhost` callback is reachable in the shared network namespace).
@@ -99,7 +99,7 @@ The box ships with the **Pi agent** active. To switch to Claude Code or Codex:
 
 1. Edit `.devbox/provision.sh`: comment out the Pi block (section 4a), uncomment 4b (Claude Code) or 4c (Codex).
 2. Edit `.devcontainer/devcontainer.json`: remove the `~/.pi` mount line (inert for non-Pi agents, and `~/.pi` is ~1.3GB).
-3. Set the agent's key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) in `.env` or `devcontainer.json` `containerEnv`. For Codex, `codex --login` inside the box also works (opens Chromium).
+3. Pass the agent's key in a dotenv file with `--env PATH`, or use `devcontainer.json` `containerEnv`. For Codex, `codex --login` inside the box also works (opens Chromium).
 
 Re-provision by removing the box (`devbox <branch> --rm`) and booting again, since provision runs at create time.
 
