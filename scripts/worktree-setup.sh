@@ -5,9 +5,8 @@
 #   cd ../devbox-feature
 #   npm run worktree:setup
 #
-# Installs dependencies and builds the package. It never copies or links
-# environment files; pass DEVBOX_ENV explicitly when a command needs one.
-# Idempotent: safe to re-run.
+# Installs dependencies, builds the package, and links the central .env
+# from ~/dotfiles/repos/devbox/.env. Idempotent: safe to re-run.
 
 set -euo pipefail
 
