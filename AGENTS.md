@@ -2,7 +2,7 @@
 
 ## Vercel credentials and real UAT
 
-- Devbox transfers dotenv values only when invoked with `devbox <branch> --env PATH`; `npm run worktree:setup` never copies or links environment files. Loading a file does **not** export variables into the caller's shell, so use an explicit child shell when needed. Never infer credential absence from bare `process.env` in a process that did not load the intended file.
+- `npm run worktree:setup` links the central `.env` from `~/dotfiles/repos/devbox/.env` into the worktree. Loading a file does **not** export variables into the caller's shell, so use an explicit child shell when needed. Never infer credential absence from bare `process.env` in a process that did not load the intended file.
 - For local commands that need `.env`, load it only in the child shell and never print values or pass secrets in argv:
   ```bash
   (set -a; . "$PWD/.env"; set +a; <command>)

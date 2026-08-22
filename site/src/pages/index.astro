@@ -1,0 +1,565 @@
+---
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dbx — one sandbox per branch</title>
+    <meta
+      name="description"
+      content="devbox boots an isolated Ubuntu sandbox per git worktree: headed display in your browser, coding agent preinstalled, Chromium for OAuth, gh credentials forwarded. Local or on Vercel."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script is:inline>document.documentElement.classList.add('js');</script>
+    <meta property="og:title" content="dbx — one sandbox per branch" />
+    <meta
+      property="og:description"
+      content="One command spins up an isolated Ubuntu box per git worktree, with a headed display viewable in your browser and a coding agent built in."
+    />
+    <meta property="og:url" content="https://dbx.gannonh.dev" />
+  </head>
+  <body>
+    <header class="nav">
+      <div class="wrap nav-row">
+        <a class="logo" href="#top"><span class="logo-glyph">❯_</span> dbx</a>
+        <nav class="nav-links">
+          <a href="#how">how it works</a>
+          <a href="#cli">cli</a>
+          <a href="#providers">providers</a>
+          <a href="#install">install</a>
+          <a href="https://github.com/gannonh/devbox" target="_blank" rel="noopener">github ↗</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- ============ hero ============ -->
+      <section class="hero wrap">
+        <p class="eyebrow">// one command, one box per branch</p>
+        <h1>Every branch gets its own dev&nbsp;sandbox.</h1>
+        <p class="sub">
+          devbox spins up an isolated Ubuntu box per git worktree — headed display in your browser,
+          coding agent preinstalled, Chromium for OAuth flows, <code>gh</code> credentials forwarded.
+          Run concurrent branches of the same repo with zero port collisions. Locally or in a Vercel Sandbox.
+        </p>
+        <div class="badges">
+          <span class="badge">npm <b>@gannonh/devbox</b></span>
+          <span class="badge">alias <b>@gannonh/dbx</b></span>
+          <span class="badge">license <b>MIT</b></span>
+          <span class="badge">os <b>macOS · Linux</b></span>
+          <span class="badge">runs <b>Docker · Vercel Sandbox</b></span>
+        </div>
+
+        <div class="term hero-term">
+          <div class="term-bar">
+            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="term-title">zsh — devbox</span>
+          </div>
+          <div class="term-body" id="hero-terminal">
+            <div class="tline cmd"><span class="prompt">$</span> <span id="typed"></span><span class="cursor" id="hero-cursor"></span></div>
+            <div class="tline log" data-log><span class="dim">›</span> worktree&nbsp;&nbsp;<span class="grn">feat-auth</span> → ../repo-worktrees/feat-auth</div>
+            <div class="tline log" data-log><span class="dim">›</span> image&nbsp;&nbsp;&nbsp;&nbsp;devbox-base <span class="dim">(cached)</span></div>
+            <div class="tline log" data-log><span class="dim">›</span> container&nbsp;dbx-feat-auth · up</div>
+            <div class="tline log" data-log><span class="dim">›</span> display&nbsp;&nbsp;&nbsp;<span class="blu">http://dbx-feat-auth.orb.local:6080/vnc.html</span></div>
+            <div class="tline log" data-log><span class="dim">›</span> agent&nbsp;&nbsp;&nbsp;&nbsp;pi ready · gh auth forwarded</div>
+            <div class="tline log done" data-log><span class="grn">✓</span> box ready — open the display link, start coding</div>
+            <div class="tline final" data-log hidden><span class="prompt">$</span> <span class="cursor blink"></span></div>
+          </div>
+        </div>
+
+        <p class="hero-note">
+          <code>npx @gannonh/dbx init</code> scaffolds config into your repo ·
+          <a href="#install">full install instructions ↓</a>
+        </p>
+      </section>
+
+      <!-- ============ 01 isolation ============ -->
+      <section class="feature wrap reveal" id="how">
+        <div class="fnum">01 <span class="fnum-tag">isolation</span></div>
+        <div class="fgrid">
+          <div class="ftext">
+            <h2>Concurrent branches, zero collisions</h2>
+            <p>
+              Each worktree gets its own sandbox and its own network namespace. Boot three branches of the same repo
+              and every one of them can bind port 5173 — nothing fights over ports, files, or state. Uncommitted work
+              stays on your disk, exactly where you left it.
+            </p>
+            <ul class="checks">
+              <li>one sandbox + network namespace per git worktree</li>
+              <li>standard devcontainer format — works in Codespaces and Cursor too</li>
+              <li><code>--attach</code>, <code>--stop</code>, <code>--rm</code> per box</li>
+            </ul>
+          </div>
+          <div class="term">
+            <div class="term-bar">
+              <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+              <span class="term-title">two boxes, same port</span>
+            </div>
+            <div class="term-body">
+              <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx feat-auth</div>
+              <div class="tline"><span class="dim">›</span> display <span class="blu">http://dbx-feat-auth.orb.local:6080/vnc.html</span></div>
+              <div class="tline gap"><span class="prompt">$</span> npx @gannonh/dbx fix-cart</div>
+              <div class="tline"><span class="dim">›</span> display <span class="blu">http://dbx-fix-cart.orb.local:6080/vnc.html</span></div>
+              <div class="tline gap"><span class="prompt">$</span> curl -sI dbx-feat-auth.orb.local:5173 | head -1</div>
+              <div class="tline"><span class="grn">HTTP/1.1 200 OK</span></div>
+              <div class="tline"><span class="prompt">$</span> curl -sI dbx-fix-cart.orb.local:5173 | head -1</div>
+              <div class="tline"><span class="grn">HTTP/1.1 200 OK</span> <span class="dim"># same port, separate namespaces</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 02 display ============ -->
+      <section class="feature wrap reveal">
+        <div class="fnum">02 <span class="fnum-tag">display</span></div>
+        <div class="fgrid flip">
+          <div class="ftext">
+            <h2>Headed, not headless</h2>
+            <p>
+              Every box runs a real desktop — Xvfb, fluxbox, x11vnc, noVNC — rendered in a browser tab. Electron apps
+              draw there. <code>xdg-open</code> routes to Chromium inside the container, so OAuth consent screens
+              complete where the app lives, visible to you the whole time.
+            </p>
+            <ul class="checks">
+              <li>open the display link from any browser, anywhere</li>
+              <li>Chromium + OAuth inside the box, watchable over noVNC</li>
+              <li>Vercel boxes pair a one-time access code on click</li>
+            </ul>
+          </div>
+          <div class="term browser-mock">
+            <div class="term-bar">
+              <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+              <span class="term-title chrome-url">🔒 dbx-fix-cart.orb.local:6080/vnc.html</span>
+            </div>
+            <div class="desktop">
+              <div class="desk-win">
+                <div class="desk-win-bar"><span>user@dbx-fix-cart: ~/workspace</span><span class="desk-btns">— ▢ ✕</span></div>
+                <div class="desk-win-body">
+                  <div>$ npm test</div>
+                  <div><span class="grn">✓</span> provider registry (14)</div>
+                  <div><span class="grn">✓</span> worktree lifecycle (9)</div>
+                  <div><span class="grn">✓</span> ports (6)</div>
+                  <div class="dim">…running 29/29</div>
+                </div>
+              </div>
+              <div class="desk-dock">fluxbox · x11vnc → your tab</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 03 agents ============ -->
+      <section class="feature wrap reveal">
+        <div class="fnum">03 <span class="fnum-tag">agents</span></div>
+        <div class="fgrid">
+          <div class="ftext">
+            <h2>Your agent already lives here</h2>
+            <p>
+              Pi is active by default, with its config copied in from your host. Claude Code and Codex ship as
+              comment-toggle blocks in <code>provision.sh</code>. Your host <code>gh</code> token is forwarded, so
+              cloning, pushing, and opening PRs from inside the box just work.
+            </p>
+            <ul class="checks">
+              <li>Pi active by default · Claude Code / Codex one toggle away</li>
+              <li>host <code>gh auth token</code> copied in for pushes</li>
+              <li><code>~/.pi</code> mounted read-only from your host, config copied into the box</li>
+              <li>project dotenv enters only when you pass <code>--env</code></li>
+            </ul>
+          </div>
+          <div class="term">
+            <div class="term-bar">
+              <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+              <span class="term-title">dbx-feat-auth — session</span>
+            </div>
+            <div class="term-body">
+              <div class="tline"><span class="dim">user@dbx-feat-auth:/workspace$</span> git push -u origin feat-auth</div>
+              <div class="tline"><span class="grn">✓</span> pushed · gh credentials forwarded from host</div>
+              <div class="tline gap"><span class="dim">user@dbx-feat-auth:/workspace$</span> pi</div>
+              <div class="tline"><span class="dim">›</span> session restored · ~/.pi mounted</div>
+              <div class="tline"><span class="blu">pi ›</span> fix the flaky checkout test and open a PR</div>
+              <div class="tline dim"># …agent works while you watch over noVNC</div>
+              <div class="tline"><span class="grn">✓</span> PR #42 opened from inside the box</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 04 providers ============ -->
+      <section class="feature wrap reveal" id="providers">
+        <div class="fnum">04 <span class="fnum-tag">providers</span></div>
+        <h2>Local by default, cloud when you want it</h2>
+        <p class="sec-sub">
+          The choice is remembered per repository until you pass <code>--provider</code> again.
+        </p>
+        <div class="ptable">
+          <div class="prow phead">
+            <span></span>
+            <span><b>local</b> <i>default</i></span>
+            <span><b>vercel</b> <i>sandbox</i></span>
+          </div>
+          <div class="prow">
+            <span class="plabel">runs on</span>
+            <span>your machine, via OrbStack / Docker</span>
+            <span>a Vercel Sandbox in the cloud</span>
+          </div>
+          <div class="prow">
+            <span class="plabel">reachable at</span>
+            <span>&lt;container&gt;.orb.local:&lt;port&gt;</span>
+            <span>HTTPS routes issued by Vercel</span>
+          </div>
+          <div class="prow">
+            <span class="plabel">source of code</span>
+            <span>the worktree on disk — uncommitted work included</span>
+            <span>the authenticated GitHub origin — pushed commits only</span>
+          </div>
+          <div class="prow">
+            <span class="plabel">display</span>
+            <span>browser tab over noVNC</span>
+            <span>HTTPS display link, paired on click</span>
+          </div>
+          <div class="prow">
+            <span class="plabel">app ports</span>
+            <span>namespaced per box, never collide</span>
+            <span>detected from package.json, exposed on request</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 05 cli ============ -->
+      <section class="feature wrap reveal" id="cli">
+        <div class="fnum">05 <span class="fnum-tag">the cli</span></div>
+        <h2>The CLI</h2>
+        <div class="cligrid">
+          <div class="clicol">
+            <h3>setup &amp; boot</h3>
+            <div class="cmdrow"><code>npx @gannonh/dbx init</code><span>scaffold .devbox/ + .devcontainer/ into this repo</span></div>
+            <div class="cmdrow"><code>npx @gannonh/dbx &lt;branch&gt;</code><span>boot a local box for that branch and drop into it</span></div>
+            <div class="cmdrow"><code>--provider vercel</code><span>run the box in a Vercel Sandbox instead</span></div>
+            <div class="cmdrow"><code>--env PATH</code><span>inject dotenv values into this run only</span></div>
+          </div>
+          <div class="clicol">
+            <h3>lifecycle</h3>
+            <div class="cmdrow"><code>--attach</code><span>re-enter a running box</span></div>
+            <div class="cmdrow"><code>--stop</code><span>stop it — keeps worktree + container</span></div>
+            <div class="cmdrow"><code>--rm</code><span>remove container + worktree + branch</span></div>
+            <div class="cmdrow"><code>--list</code><span>list local devbox containers</span></div>
+          </div>
+          <div class="clicol">
+            <h3>access</h3>
+            <div class="cmdrow"><code>--url</code><span>print current provider routes</span></div>
+            <div class="cmdrow"><code>--open</code><span>open the first route in a browser</span></div>
+            <div class="cmdrow"><code>--password</code><span>print the Vercel display access code</span></div>
+            <div class="cmdrow"><code>--expose-ports 5173</code><span>publish app ports on a Vercel box</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 06 security ============ -->
+      <section class="feature wrap reveal">
+        <div class="fnum">06 <span class="fnum-tag">trust</span></div>
+        <h2>What runs on your machine</h2>
+        <p class="sec-sub">The whole surface, stated plainly.</p>
+        <div class="secgrid">
+          <div class="seccard"><h4>files</h4><p><code>init</code> writes <code>.devbox/</code> and <code>.devcontainer/</code> plus XDG state under <code>~/.local/state</code>. Nothing else. Delete the two directories to undo.</p></div>
+          <div class="seccard"><h4>execution</h4><p>Docker <code>build</code>/<code>exec</code> driven by your devcontainer config, plus plain shell hooks in <code>.devbox/provision.sh</code>. All readable, all in your repo.</p></div>
+          <div class="seccard"><h4>credentials</h4><p>Your host <code>gh</code> token is copied in so pushes work. Pi's config comes from <code>~/.pi</code>. Project dotenv values enter only when you pass <code>--env</code>.</p></div>
+          <div class="seccard"><h4>network</h4><p>Boxes pull base images and install dependencies. Devbox makes no telemetry calls.</p></div>
+        </div>
+      </section>
+
+      <!-- ============ install ============ -->
+      <section class="feature wrap reveal" id="install">
+        <div class="fnum">07 <span class="fnum-tag">install</span></div>
+        <h2>Install</h2>
+        <div class="fgrid">
+          <div>
+            <div class="term">
+              <div class="term-bar">
+                <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+                <span class="term-title">install</span>
+              </div>
+              <div class="term-body">
+                <div class="tline dim"># run it straight from npm</div>
+                <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx init</div>
+                <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx my-branch</div>
+                <div class="tline gap dim"># or install globally (devbox is the real package)</div>
+                <div class="tline"><span class="prompt">$</span> npm i -g @gannonh/devbox</div>
+                <div class="tline"><span class="prompt">$</span> devbox my-branch</div>
+              </div>
+            </div>
+          </div>
+          <div class="reqs">
+            <h3>requirements</h3>
+            <ul>
+              <li><b>OrbStack</b> or any Docker runtime — OrbStack gives you <code>&lt;container&gt;.orb.local</code> URLs</li>
+              <li><b>@devcontainers/cli</b> — <code>npm i -g @devcontainers/cli</code></li>
+              <li><b>gh</b> authenticated on the host — <code>gh auth login</code></li>
+              <li><b>git</b> 2.45+</li>
+              <li>optional: host <code>~/.pi</code> if you use the Pi agent</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <div class="wrap foot-row">
+          <span class="logo-glyph">❯_</span> dbx.gannonh.dev
+          <span class="dim">·</span>
+          <a href="https://github.com/gannonh/devbox" target="_blank" rel="noopener">github.com/gannonh/devbox</a>
+          <span class="dim">·</span>
+          <span>MIT</span>
+          <span class="dim">·</span>
+          <span><code>@gannonh/dbx</code> is an alias for <code>@gannonh/devbox</code></span>
+        </div>
+      </footer>
+    </main>
+
+    <script>
+      // hero typewriter: type the command, then reveal boot lines
+      const typed = document.getElementById('typed');
+      const cursor = document.getElementById('hero-cursor');
+      const logs = document.querySelectorAll('#hero-terminal [data-log]');
+      const cmd = 'npx @gannonh/dbx feat-auth';
+      let i = 0;
+      function type() {
+        if (i <= cmd.length) {
+          typed.textContent = cmd.slice(0, i++);
+          setTimeout(type, 34 + Math.random() * 46);
+        } else {
+          setTimeout(reveal, 350);
+        }
+      }
+      let j = 0;
+      function reveal() {
+        cursor.style.display = 'none';
+        if (j < logs.length) {
+          logs[j].hidden = false;
+          logs[j].classList.add('on');
+          j++;
+          setTimeout(reveal, j === logs.length ? 120 : 260);
+        }
+      }
+      window.addEventListener('DOMContentLoaded', () => {
+        logs.forEach((el) => (el.hidden = true));
+        setTimeout(type, 500);
+      });
+
+      // scroll reveal
+      const io = new IntersectionObserver(
+        (entries) => entries.forEach((e) => e.isIntersecting && e.target.classList.add('in')),
+        { threshold: 0.12 }
+      );
+      document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+    </script>
+
+    <style>
+      :root {
+        --bg: #0a0d13;
+        --panel: #0e1219;
+        --panel-2: #11161f;
+        --border: #1d2530;
+        --text: #c9d3de;
+        --dim: #77828f;
+        --green: #4ade80;
+        --blue: #7dd3fc;
+        --amber: #fbbf24;
+        --red: #f87171;
+        --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html { scroll-behavior: smooth; }
+      body {
+        background:
+          radial-gradient(900px 420px at 70% -10%, rgba(74, 222, 128, 0.055), transparent 65%),
+          radial-gradient(700px 380px at 15% 5%, rgba(125, 211, 252, 0.04), transparent 60%),
+          var(--bg);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 15px;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+      a { color: var(--green); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      code {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 0.08em 0.35em;
+        font-family: inherit;
+        font-size: 0.92em;
+      }
+
+      /* nav */
+      .nav {
+        position: sticky; top: 0; z-index: 50;
+        background: rgba(10, 13, 19, 0.82);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--border);
+      }
+      .nav-row { display: flex; align-items: center; justify-content: space-between; height: 58px; }
+      .logo { color: var(--text); font-weight: 700; font-size: 17px; letter-spacing: 0.02em; }
+      .logo:hover { text-decoration: none; }
+      .logo-glyph { color: var(--green); margin-right: 2px; }
+      .nav-links { display: flex; gap: 22px; flex-wrap: wrap; }
+      .nav-links a { color: var(--dim); font-size: 13.5px; }
+      .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+      /* hero */
+      .hero { padding: 88px 24px 40px; }
+      .eyebrow { color: var(--green); font-size: 14px; margin-bottom: 18px; }
+      h1 {
+        font-size: clamp(30px, 5vw, 52px);
+        line-height: 1.12;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+        max-width: 820px;
+        margin-bottom: 20px;
+      }
+      .sub { color: var(--dim); max-width: 720px; font-size: 16px; margin-bottom: 26px; }
+      .sub code { color: var(--text); }
+      .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 36px; }
+      .badge {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        border-radius: 6px;
+        padding: 4px 11px;
+        font-size: 12.5px;
+        color: var(--dim);
+      }
+      .badge b { color: var(--text); font-weight: 600; }
+      .hero-note { color: var(--dim); font-size: 13.5px; margin-top: 18px; }
+
+      /* terminal */
+      .term {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+      }
+      .hero-term { max-width: 780px; }
+      .term-bar {
+        display: flex; align-items: center; gap: 7px;
+        padding: 10px 14px;
+        background: var(--panel-2);
+        border-bottom: 1px solid var(--border);
+      }
+      .dot { width: 11px; height: 11px; border-radius: 50%; opacity: 0.85; }
+      .dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+      .term-title { margin-left: 10px; color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .chrome-url { color: var(--text); }
+      .term-body { padding: 16px 18px 20px; font-size: 13.5px; line-height: 1.75; white-space: pre-wrap; word-break: break-all; }
+      .prompt { color: var(--green); font-weight: 700; }
+      .tline { min-height: 1.75em; }
+      .dim { color: var(--dim); }
+      .grn { color: var(--green); }
+      .blu { color: var(--blue); }
+      .gap { margin-top: 0.9em; }
+      .tline.log[hidden] { display: none; }
+      .tline.log.on { animation: pop 0.25s ease-out; }
+      @keyframes pop { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+      .cursor {
+        display: inline-block; width: 8px; height: 1.1em;
+        background: var(--green); vertical-align: text-bottom; margin-left: 2px;
+      }
+      .blink { animation: blink 1.05s steps(1) infinite; }
+      @keyframes blink { 50% { opacity: 0; } }
+
+      /* sections */
+      section.feature { padding: 64px 24px 12px; }
+      .fnum { color: var(--amber); font-size: 14px; margin-bottom: 26px; }
+      .fnum-tag { color: var(--dim); margin-left: 10px; }
+      h2 { font-size: clamp(21px, 3vw, 29px); font-weight: 700; letter-spacing: -0.005em; margin-bottom: 14px; }
+      .sec-sub { color: var(--dim); margin-bottom: 30px; max-width: 700px; }
+      .fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; align-items: start; }
+      .fgrid.flip > .ftext { order: 2; }
+      .ftext p { color: var(--dim); margin-bottom: 18px; }
+      .ftext code { color: var(--text); }
+      .checks { list-style: none; }
+      .checks li { padding-left: 22px; position: relative; margin-bottom: 9px; font-size: 13.5px; color: var(--text); }
+      .checks li::before { content: '✓'; position: absolute; left: 0; color: var(--green); }
+
+      /* browser mock */
+      .desktop {
+        background: linear-gradient(160deg, #131926, #0c1017);
+        min-height: 250px; position: relative; padding: 26px 20px 40px;
+      }
+      .desk-win {
+        background: #161c27; border: 1px solid #2a3444; border-radius: 7px;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+        max-width: 400px; font-size: 12.5px;
+      }
+      .desk-win-bar {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 6px 11px; background: #1d2530; border-bottom: 1px solid #2a3444;
+        color: var(--dim); font-size: 11.5px;
+      }
+      .desk-btns { letter-spacing: 3px; }
+      .desk-win-body { padding: 11px 14px 14px; line-height: 1.8; }
+      .desk-dock {
+        position: absolute; bottom: 9px; right: 14px;
+        color: var(--dim); font-size: 11px;
+      }
+
+      /* providers table */
+      .ptable { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--panel); }
+      .prow { display: grid; grid-template-columns: 150px 1fr 1fr; border-top: 1px solid var(--border); }
+      .prow:first-child { border-top: 0; }
+      .phead { background: var(--panel-2); }
+      .phead span { padding: 12px 16px; font-size: 13.5px; }
+      .phead b { color: var(--text); }
+      .phead i { color: var(--dim); font-style: normal; margin-left: 6px; font-size: 11.5px; }
+      .prow > span { padding: 12px 16px; font-size: 13px; color: var(--dim); }
+      .plabel { color: var(--amber) !important; font-size: 12.5px !important; }
+      .prow > span:nth-child(2), .prow > span:nth-child(3) { border-left: 1px solid var(--border); }
+
+      /* cli */
+      .cligrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; margin-top: 8px; }
+      .clicol h3 { font-size: 13px; color: var(--green); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; }
+      .cmdrow { margin-bottom: 15px; font-size: 13px; }
+      .cmdrow code { display: inline-block; margin-bottom: 3px; }
+      .cmdrow span { color: var(--dim); display: block; }
+
+      /* security */
+      .secgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+      .seccard { border: 1px solid var(--border); background: var(--panel); border-radius: 10px; padding: 20px 22px; }
+      .seccard h4 { color: var(--green); font-size: 13px; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 8px; }
+      .seccard p { color: var(--dim); font-size: 13.5px; }
+      .seccard code { color: var(--text); }
+
+      /* install */
+      .reqs h3 { color: var(--amber); font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; }
+      .reqs ul { list-style: none; }
+      .reqs li { padding-left: 20px; position: relative; margin-bottom: 11px; font-size: 13.5px; color: var(--dim); }
+      .reqs li::before { content: '›'; position: absolute; left: 0; color: var(--green); }
+      .reqs b { color: var(--text); }
+      .reqs code { color: var(--text); }
+
+      /* footer */
+      .foot { border-top: 1px solid var(--border); margin-top: 80px; padding: 26px 0 34px; }
+      .foot-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--dim); font-size: 13px; }
+      .foot a { color: var(--dim); }
+      .foot a:hover { color: var(--text); }
+
+      /* reveal: concealed only when JS is available (html.js set inline) */
+      html.js .reveal { opacity: 0; transform: translateY(16px); transition: opacity 0.55s ease, transform 0.55s ease; }
+      html.js .reveal.in { opacity: 1; transform: none; }
+
+      @media (max-width: 860px) {
+        .fgrid, .secgrid { grid-template-columns: 1fr; }
+        .fgrid.flip > .ftext { order: 0; }
+        .cligrid { grid-template-columns: 1fr; }
+        .prow { grid-template-columns: 110px 1fr 1fr; }
+        .nav-links { gap: 14px; }
+      }
+      @media (max-width: 480px) {
+        .nav-row { height: auto; min-height: 58px; padding-block: 10px; align-items: flex-start; }
+        .nav-links { row-gap: 8px; }
+      }
+    </style>
+  </body>
+</html>

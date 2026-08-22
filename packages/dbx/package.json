@@ -1,0 +1,32 @@
+{
+  "name": "@gannonh/dbx",
+  "version": "0.1.5",
+  "description": "Short-name alias for @gannonh/devbox. npx @gannonh/dbx <branch> == npx @gannonh/devbox <branch>.",
+  "type": "module",
+  "bin": {
+    "dbx": "bin.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "devbox",
+    "devcontainer",
+    "worktree",
+    "sandbox",
+    "coding-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gannonh/devbox",
+    "directory": "packages/dbx"
+  },
+  "homepage": "https://dbx.gannonh.dev",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@gannonh/devbox": "0.1.5"
+  }
+}
