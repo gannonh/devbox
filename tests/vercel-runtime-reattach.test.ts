@@ -45,10 +45,6 @@ interface ReattachHarness {
   files: Map<string, Buffer>;
 }
 
-/**
- * Stateful fake: written files persist so a second preparation reads back the
- * evidence marker exactly as a resumed Sandbox would.
- */
 function reattachClient(statusSequence: readonly string[] = [DISPLAY_STATUS_OUTPUT]): ReattachHarness {
   const uploads: VercelWriteFile[][] = [];
   const commands: VercelRunCommandRequest[] = [];
@@ -252,8 +248,6 @@ describe('Vercel cheap re-attach', () => {
       branch: 'feature/display',
     });
     await store.write({ displayCredentials: { username: 'devbox', password: 'display-password' } });
-    // Boot verifies a running stack; the attach probe then sees services down
-    // and the fallback startup must restore them.
     const harness = reattachClient([DISPLAY_STATUS_OUTPUT, DISPLAY_STATUS_OUTPUT.replace('Xvfb=running', 'Xvfb=stopped'), DISPLAY_STATUS_OUTPUT]);
 
     await prepareSandboxRuntime(prepareOptions({

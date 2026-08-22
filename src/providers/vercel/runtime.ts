@@ -143,8 +143,6 @@ async function reusePreparedRuntime(
   options: PrepareSandboxRuntimeOptions,
   secrets: readonly string[],
 ): Promise<boolean> {
-  // Without a credentials store nothing can report or restore the display
-  // stack, mirroring the full path's behavior of skipping display startup.
   const store = options.displayCredentialsStore;
   if (!store || await isDisplayStackRunning({ sandbox: options.sandbox, client: options.client })) {
     return true;
@@ -277,8 +275,6 @@ export async function prepareSandboxRuntime(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     }));
   }
-  // Recorded so a successful full preparation can leave positive evidence; a
-  // failed probe simply means the next attach takes the full path.
   const revision = await readRemoteRevision(options);
   const setupStatus = await launchBackgroundSetup({
     sandbox: options.sandbox,
@@ -288,7 +284,7 @@ export async function prepareSandboxRuntime(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   if (revision !== undefined) {
-    // Written last so its presence proves every earlier step completed.
+    // Written last: moving it earlier would let a crash mid-preparation fake evidence.
     const marker: RuntimePreparationMarker = {
       sandboxId: sandboxIdentifier(options.sandbox),
       revision,

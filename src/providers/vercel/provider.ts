@@ -858,11 +858,6 @@ async function resolveAppPorts(
   }
 }
 
-/**
- * Cheap-attach port handling: never scans and never prompts. The recorded
- * selection's applied set is restored only when the live route set has drifted
- * from it; a changed candidate set surfaces on the next full preparation.
- */
 async function reuseRecordedAppPorts(
   request: ProviderBranchRequest,
   client: VercelSandboxClient,
