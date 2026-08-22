@@ -1,146 +1,157 @@
 # @gannonh/devbox
 
-One command spins up an isolated Ubuntu dev container per git worktree, with a headed display viewable in your browser. Run multiple worktrees of the same repo concurrently with no port collisions.
+`@gannonh/devbox` creates an isolated Ubuntu dev container for each Git worktree. Every container has its own network namespace and a desktop you can open in a browser.
 
-Each box includes Node/Bun, git, `gh`, ripgrep, fd, fzf, tmux, a coding agent (Pi by default; Claude Code and Codex as one-line alternatives), and a headed desktop (Xvfb + fluxbox + x11vnc + noVNC) rendered in a browser tab. The container config uses the standard devcontainer format, so it also works in Codespaces and Cursor.
+The default image includes Node, Bun, git, `gh`, ripgrep, fd, fzf, tmux, Chromium, and Pi. You can switch the coding agent to Claude Code or Codex. The generated configuration follows the devcontainer specification and also works in Codespaces and Cursor.
 
-Boxes run locally by default, or in a Vercel Sandbox in the cloud. See [Providers](#providers-where-the-box-runs).
+Devbox runs containers on your machine by default. It can also run them in a Vercel Sandbox. See [Providers](#providers).
 
-## Quickstart
-
-```bash
-npx @gannonh/devbox init      # scaffold .devbox/ + .devcontainer/ into this repo
-npx @gannonh/devbox my-branch # boot a box for that branch, drop you into it
-```
-
-`init` prints the files it creates and suggested tailoring steps. Booting prints a ready banner with the display URL. On OrbStack it looks like `http://<container>.orb.local:6080/vnc.html`. Vercel boxes print an HTTPS display link instead.
-
-To run from a checkout of this repository:
+## Quick start
 
 ```bash
-npm run build && node dist/cli.js --help
+npx @gannonh/devbox init      # create .devbox/ and .devcontainer/
+npx @gannonh/devbox my-branch # create the worktree and open a shell in its container
 ```
 
-## What runs on your machine
+`init` lists each file it creates. Booting a local box prints its display URL. With OrbStack, the URL has the form `http://<container>.orb.local:6080/vnc.html`. Vercel boxes print an HTTPS URL.
 
-Devbox builds images and runs containers and shell hooks. This is the full surface:
+To run devbox from this repository:
 
-- **Files.** `init` writes `.devbox/` and `.devcontainer/` in your repo. Outside those and its own state under `~/.local/state` (XDG), devbox writes nothing. Delete the two directories to undo `init`.
-- **Execution.** The local provider runs Docker (`docker build`, `docker exec`) driven by your devcontainer config, plus the hooks in `.devbox/provision.sh` inside the container. Both are plain shell in your repo.
-- **Credentials forwarded in.** Your host `gh auth token` is copied into the box so `git push` works there. Pi's config is copied from host `~/.pi` (sessions and npm cache excluded). Project dotenv values enter only when you pass `--env PATH`; omitting it transfers no project environment.
-- **Network.** Local boxes pull base images and install dependencies. Devbox makes no telemetry calls. The Vercel provider clones your GitHub origin into a Vercel Sandbox and exposes HTTPS routes; accepted app ports are public to anyone with the URL.
-- **Uninstall.** `npx @gannonh/devbox <branch> --rm` removes that box's container, worktree, and branch. Remove the package with `npm un -g @gannonh/devbox` if globally installed; `npx` usage leaves nothing on disk except the state directory.
+```bash
+npm run build
+node dist/cli.js --help
+```
 
-## What one command does
+## Requirements
 
-`npx @gannonh/devbox <branch>` fetches `origin`, creates a git worktree from `origin/<default>` (`DEVBOX_START_POINT=local` to use the local default instead), builds the image once, boots the container, and starts a shell in `/workspace` as a non-root user.
+- Node.js 22 or newer
+- OrbStack or another Docker runtime for local boxes. OrbStack provides the `<container>.orb.local` URLs.
+- `@devcontainers/cli`, installed with `npm install -g @devcontainers/cli`
+- Git 2.45 or newer for `worktree --relative-paths`
+- An authenticated GitHub CLI, set up with `gh auth login`
+- Host configuration in `~/.pi` if you use Pi
 
-- **Per-worktree isolation.** Each worktree gets its own container and network namespace, so concurrent boxes never collide on ports.
-- **Headed display.** Xvfb + fluxbox + x11vnc + noVNC run inside the box; Electron apps render there and are visible in any browser.
-- **Chromium + OAuth inside the box.** `xdg-open` routes to Chromium, so OAuth consent flows complete inside the container, visible over noVNC.
-- **Agent built in.** Pi is active by default. Switching agents is comment-toggling blocks in `.devbox/provision.sh`.
+## What devbox changes
 
-## Prerequisites
+- `init` writes `.devbox/` and `.devcontainer/` in the current repository. Delete both directories to undo it.
+- The local provider runs `docker build` and `docker exec` from the devcontainer configuration. It runs `.devbox/provision.sh` inside the container.
+- Devbox copies the token from `gh auth token` into the box so Git can push. It also copies Pi configuration from `~/.pi`, excluding sessions and the npm cache.
+- Devbox loads project environment variables only when you pass `--env PATH`. It does not copy the dotenv file itself.
+- Local boxes pull base images and install dependencies. Devbox sends no telemetry.
+- The Vercel provider clones the GitHub origin into a Vercel Sandbox and creates HTTPS routes. Anyone with an app route URL can reach that port.
+- Devbox stores provider preferences and metadata under `$XDG_STATE_HOME/devbox`, or `~/.local/state/devbox` when `XDG_STATE_HOME` is unset.
 
-- **OrbStack** or any Docker runtime (OrbStack provides the `<container>.orb.local` URLs). [orbstack.dev](https://orbstack.dev)
-- **`@devcontainers/cli`** — `npm i -g @devcontainers/cli`
-- **`gh`** authenticated on the host — `gh auth login`
-- **git** 2.45+ (for `worktree --relative-paths`)
-- **Optional:** host `~/.pi` if you use the Pi agent
+Run `npx @gannonh/devbox <branch> --rm` to remove a box, its worktree, and its branch. Uncommitted work in that worktree may be lost. If you installed the package globally, remove it with `npm uninstall -g @gannonh/devbox`. After removing all boxes, delete the state directory above to clear stored preferences and metadata.
 
 ## Commands
 
 ```bash
-npx @gannonh/devbox init                              # scaffold config into this repo
-npx @gannonh/devbox <branch>                          # boot a local box (default provider)
-npx @gannonh/devbox <branch> --env PATH              # inject dotenv values into this run
-npx @gannonh/devbox <branch> --attach                # re-enter a running box
-npx @gannonh/devbox <branch> --stop                  # stop (keeps worktree + container)
-npx @gannonh/devbox <branch> --rm                    # remove container + worktree + branch
-npx @gannonh/devbox <branch> --url                   # print current provider routes
-npx @gannonh/devbox <branch> --open                  # open the first route in a browser
-npx @gannonh/devbox --list                           # list local devbox containers
+npx @gannonh/devbox init                              # create config in this repo
+npx @gannonh/devbox <branch>                          # boot a local box
+npx @gannonh/devbox <branch> --env PATH               # load dotenv values for this run
+npx @gannonh/devbox <branch> --attach                 # enter a running box
+npx @gannonh/devbox <branch> --stop                   # stop the box but keep its resources
+npx @gannonh/devbox <branch> --rm                     # remove the box, worktree, and branch
+npx @gannonh/devbox <branch> --url                    # print provider routes
+npx @gannonh/devbox <branch> --open                   # open the first route
+npx @gannonh/devbox --list                            # list local boxes
 ```
 
-`--attach` reuses the environment stored with the box; passing `--env` again replaces it. `--stop` rejects `--env`, since stopping transfers nothing.
+`--attach` reuses the environment stored with the box. Passing `--env` again replaces it. `--stop` rejects `--env` because stopping a box transfers no environment values.
+
+## How it works
+
+`npx @gannonh/devbox <branch>` fetches `origin`, creates a worktree from `origin/<default>`, builds the image if needed, starts the container, and opens a shell at `/workspace` as a non-root user. Set `DEVBOX_START_POINT=local` to create the worktree from the local default branch instead.
+
+Each worktree gets a separate container and network namespace, so two worktrees can bind the same port. Xvfb, fluxbox, x11vnc, and noVNC provide the browser desktop. `xdg-open` uses Chromium inside the box, which keeps OAuth consent flows inside the container.
 
 ## Coding agents
 
-`provision.sh` ships three agent blocks, Pi active by default:
+`.devbox/provision.sh` contains setup blocks for three agents. Pi is enabled by default.
 
-| Agent | Package | Auth |
+| Agent | Package | Authentication |
 | --- | --- | --- |
 | Pi | `@earendil-works/pi-coding-agent` | copied from host `~/.pi` |
 | Claude Code | `@anthropic-ai/claude-code` | `ANTHROPIC_API_KEY` |
 | Codex | `@openai/codex` | `OPENAI_API_KEY` or `codex --login` |
 
-To switch, comment-toggle the blocks in `.devbox/provision.sh` and remove the `~/.pi` mount from `.devcontainer/devcontainer.json`.
+To switch agents, enable the matching block in `.devbox/provision.sh`. If you disable Pi, also remove the `~/.pi` mount from `.devcontainer/devcontainer.json`.
 
-## Providers: where the box runs
+## Providers
 
-| Provider | Runs on | Reachable at | Source of your code |
+| Provider | Runs on | Address | Source code |
 | --- | --- | --- | --- |
-| `local` (default) | your machine, via OrbStack/Docker | `<container>.orb.local:<port>` | the worktree on disk, uncommitted work included |
-| `vercel` | a Vercel Sandbox in the cloud | HTTPS routes issued by Vercel | the authenticated GitHub origin — pushed commits only |
+| `local` | OrbStack or Docker on your machine | `<container>.orb.local:<port>` with OrbStack | local worktree, including uncommitted files |
+| `vercel` | Vercel Sandbox | Vercel HTTPS routes | authenticated GitHub origin, using pushed commits only |
 
-The choice is remembered per repository until you pass `--provider` again. A remembered cloud provider prints a notice before it runs.
+Devbox remembers the provider for each repository until you pass `--provider` again. It prints a notice before using a remembered Vercel provider.
 
-### Vercel Sandboxes
+### Vercel Sandbox
 
-Runs the box in Vercel's cloud; no local Docker runtime needed, and the display is reachable over HTTPS from anywhere.
+The Vercel provider runs without a local Docker runtime and makes the display available over HTTPS.
 
 ```bash
-npx @gannonh/devbox --provider vercel my-branch   # boot; later commands reuse it
-npx @gannonh/devbox my-branch --password          # print the display access code
+npx @gannonh/devbox --provider vercel my-branch
+npx @gannonh/devbox my-branch --password
 ```
 
-- **Remote-first source.** The Sandbox clones the GitHub origin, so dirty files and unpushed commits stay on your machine.
-- **Confirmed scope on first use.** Devbox prints the Vercel team and project and requires confirmation in a TTY. Credentials resolve in order: a complete `VERCEL_TOKEN` + `VERCEL_TEAM_ID` + `VERCEL_PROJECT_ID` triad, then `VERCEL_OIDC_TOKEN`, then device auth scoped by `.vercel/project.json`.
-- **Display link pairs on click.** The printed link carries a one-use access code, exchanged for a session cookie on open. A stale or truncated link lands on the pairing form; paste the code from `--password`.
-- **Terminal keys.** `Ctrl-C` reaches the remote foreground process; `Ctrl-]` detaches without stopping the Sandbox.
-- **App ports.** After checkout, devbox reads `package.json` manifests as data (never executed) and offers conventional ports such as Vite's `5173`; monorepo workspace members are scanned too. Accepted ports are public and are added to the running Sandbox without recreating it. Non-interactive form:
+The Sandbox clones the GitHub origin. Dirty files and unpushed commits remain on your machine.
 
-  ```bash
-  npx @gannonh/devbox --provider vercel my-branch --expose-ports 5173
-  ```
+On first use, devbox prints the Vercel team and project, then asks for confirmation in a TTY. It checks credentials in this order:
 
-  Serving on the port is your app's job. Bind externally (`npm run dev -- --host 0.0.0.0 --strictPort`) and, on Vite 5.4.12+, add `server.allowedHosts: ['.vercel.run']`.
+1. `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`
+2. `VERCEL_OIDC_TOKEN`
+3. Vercel device authentication scoped by `.vercel/project.json`
 
-Commands, configuration precedence, and recovery behavior are in the [provider reference](docs/reference/vercel-provider.md).
+The display URL contains a one-use access code. Opening the complete URL exchanges the code for a session cookie. If the URL is stale or incomplete, run `--password` and enter the printed code in the pairing form.
+
+In the remote terminal, `Ctrl-C` reaches the foreground process. `Ctrl-]` disconnects without stopping the Sandbox.
+
+After checkout, devbox reads `package.json` files without executing them and suggests common application ports such as Vite's `5173`. It also scans npm workspace members. Approved ports become public without recreating the Sandbox. To skip the prompt, pass the ports explicitly:
+
+```bash
+npx @gannonh/devbox --provider vercel my-branch --expose-ports 5173
+```
+
+Your application must listen on the exposed port. For Vite, run `npm run dev -- --host 0.0.0.0 --strictPort`. On Vite 5.4.12 or newer, add `server.allowedHosts: ['.vercel.run']`.
+
+See the [Vercel provider reference](docs/reference/vercel-provider.md) for command details, configuration order, and recovery behavior.
 
 <details>
-<summary>Why the runtime image is digest-pinned</summary>
+<summary>Runtime image pinning</summary>
 
-A Sandbox boots from an OCI image, so devbox ships one carrying the display stack and toolchain. The rule is tags for development, digests for releases: a published package carries a digest frozen at publish time, so every Sandbox runs the exact artifact its smoke evidence proves, while a git checkout follows the `nightly` channel. Nothing in the source tree contains a digest, so an image change is one pull request. Set `DEVBOX_VERCEL_IMAGE` to a fully-qualified digest reference to run a locally built image; it is refused against a published release. Channels, rollback, and orphan cleanup are in the [image supply chain runbook](docs/runbooks/vercel-image-supply-chain.md).
+Vercel Sandboxes boot from an OCI image. Published packages contain the digest of the image that passed their smoke tests. Repository checkouts use the `nightly` channel instead. The source tree contains no digest because `scripts/vercel/emit-image-pin.mjs` writes it into `dist/` during publication.
+
+Set `DEVBOX_VERCEL_IMAGE` to a fully qualified digest to test a locally built image. Published releases reject this override. See the [image supply chain runbook](docs/runbooks/vercel-image-supply-chain.md) for channels, rollback, and cleanup.
 
 </details>
 
-## Maintainer-facing: CI and release infrastructure
+## Maintainer CI and releases
 
 <details>
-<summary>Workflows, secrets, and what credentialed runs verify</summary>
+<summary>Workflows, secrets, and credentialed checks</summary>
 
-Unit tests cover provider logic in isolation. Proving the Vercel provider end to end needs live infrastructure and production credentials, so that work runs in scheduled workflows rather than on every push:
+Unit tests cover provider logic without live credentials. Vercel checks run in scheduled or manually dispatched workflows.
 
-| Workflow | Trigger | What it does |
+| Workflow | Trigger | Checks |
 | --- | --- | --- |
-| **CI** | every push and pull request | lint, typecheck, build, tests — no credentials |
-| **Nightly** | scheduled on `main`, or dispatched at any ref | builds the image, runs publisher and consumer smoke gates, publishes a prerelease |
-| **Release** | manual, default branch | promotes a proven nightly digest to `stable` and `latest`, gated by terminal smoke, UAT, and the five-run benchmark |
+| CI | every push and pull request | lint, types, build, and tests without credentials |
+| Nightly | scheduled on `main`, or manually dispatched at any ref | image build, publisher and consumer smoke tests, and prerelease publication |
+| Release | manual run from the default branch | stable tag promotion after terminal smoke tests, UAT, and the five-run benchmark |
 
-Pull requests never receive cloud credentials, and no label authorizes anything. To prove a branch against real infrastructure, dispatch Nightly against that ref; add `publish` to install it with `npx @gannonh/devbox@dev-<branch>`. Credentialed runs require the repository owner and the protected `vercel-provider-smoke` environment.
+Pull requests receive no cloud credentials. Labels do not authorize credentialed runs. To test a branch against Vercel, dispatch Nightly for that ref. Pass `publish` to install the result as `npx @gannonh/devbox@dev-<branch>`. Credentialed runs require the repository owner and the protected `vercel-provider-smoke` environment.
 
-Required repository secrets: `VERCEL_CONSUMER_TOKEN` / `VERCEL_CONSUMER_TEAM_ID` / `VERCEL_CONSUMER_PROJECT_ID` (consumer triad for the `devbox-uat` project, mapped into the script environment as `VERCEL_TOKEN`/`VERCEL_TEAM_ID`/`VERCEL_PROJECT_ID`), `DEVBOX_GITHUB_FIXTURE_TOKEN`, `DEVBOX_GITHUB_FIXTURE_REPOSITORY`, `DEVBOX_GITHUB_FIXTURE_BRANCH`, `DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH`, and `DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE` / `..._EXPECTED_CONTENT`.
+Repository secrets include the Vercel consumer credential triad, the GitHub fixture token and repository details, and the expected fixture file and content. The workflow maps the Vercel values to `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID` for the smoke process.
 
-A run verifies clone (remote, exact revision, clean worktree, fixture content, detached `HEAD` allowed on the existing path), terminal protocol (`openInteractive` per session, Ctrl-C SIGINT delivery, production Ctrl-] escape detachment through stop/snapshot completion), image identity (manifest digest must exactly match the promoted pin; anything else fails closed), and cleanup (preflight plus per-path reconciliation until every sandbox and snapshot is absent, deleted, or provably terminal). Evidence artifacts carry non-reversible fingerprints only — never fixture values, tokens, or Vercel IDs — and upload after a final redaction step, including on failure. Ambiguous duplicates found during recovery follow the manual path in the supply chain runbook rather than `--rm`.
+The smoke run checks the exact Git revision, terminal signal and detach behavior, image identity, and resource cleanup. Evidence contains one-way fingerprints rather than fixture values, tokens, or Vercel IDs. A final redaction step runs before upload, including after failures. If cleanup finds ambiguous duplicate resources, follow the manual procedure in the supply chain runbook instead of running `--rm`.
 
-The design history is in the [Vercel provider convergence issue](https://github.com/gannonh/devbox/issues/7) and the [OKF docs bundle](docs/index.md).
+See the [Vercel provider convergence issue](https://github.com/gannonh/devbox/issues/7) and the [documentation index](docs/index.md) for design history and maintainer procedures.
 
 </details>
 
 ## Status
 
-Stable releases publish to npm (`latest`) from proven nightlies. See the release workflow above for how a version earns its tag.
+Stable releases publish to the npm `latest` tag after their nightly build passes the release checks above.
 
 ## License
 
