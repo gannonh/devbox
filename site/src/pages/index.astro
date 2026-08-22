@@ -6,17 +6,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>dbx — one sandbox per branch</title>
+    <title>dbx | one sandbox per branch</title>
     <meta
       name="description"
-      content="devbox boots an isolated Ubuntu sandbox per git worktree: headed display in your browser, coding agent preinstalled, Chromium for OAuth, gh credentials forwarded. Local or on Vercel."
+      content="devbox starts one isolated Ubuntu sandbox per git worktree. Each box has a desktop you can open in a browser, Pi, Chromium for OAuth, and host GitHub credentials. Run it locally or on Vercel."
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <script is:inline>document.documentElement.classList.add('js');</script>
-    <meta property="og:title" content="dbx — one sandbox per branch" />
+    <meta property="og:title" content="dbx | one sandbox per branch" />
     <meta
       property="og:description"
-      content="One command spins up an isolated Ubuntu box per git worktree, with a headed display viewable in your browser and a coding agent built in."
+      content="Start one isolated Ubuntu sandbox per git worktree, with a desktop in your browser and Pi installed."
     />
     <meta property="og:url" content="https://dbx.gannonh.dev" />
   </head>
@@ -37,12 +37,12 @@
     <main id="top">
       <!-- ============ hero ============ -->
       <section class="hero wrap">
-        <p class="eyebrow">// one command, one box per branch</p>
-        <h1>Every branch gets its own dev&nbsp;sandbox.</h1>
+        <p class="eyebrow">// one box per branch</p>
+        <h1>Run every branch in its own dev&nbsp;sandbox.</h1>
         <p class="sub">
-          devbox spins up an isolated Ubuntu box per git worktree — headed display in your browser,
-          coding agent preinstalled, Chromium for OAuth flows, <code>gh</code> credentials forwarded.
-          Run concurrent branches of the same repo with zero port collisions. Locally or in a Vercel Sandbox.
+          devbox starts one isolated Ubuntu sandbox for each git worktree. Each box has a desktop you can open in
+          your browser, Pi, Chromium for OAuth, and a copy of your host <code>gh</code> credentials. Run branches side
+          by side on the same ports, either locally or on Vercel.
         </p>
         <div class="badges">
           <span class="badge">npm <b>@gannonh/devbox</b></span>
@@ -55,7 +55,7 @@
         <div class="term hero-term">
           <div class="term-bar">
             <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-            <span class="term-title">zsh — devbox</span>
+            <span class="term-title">zsh · devbox</span>
           </div>
           <div class="term-body" id="hero-terminal">
             <div class="tline cmd"><span class="prompt">$</span> <span id="typed"></span><span class="cursor" id="hero-cursor"></span></div>
@@ -63,14 +63,14 @@
             <div class="tline log" data-log><span class="dim">›</span> image&nbsp;&nbsp;&nbsp;&nbsp;devbox-base <span class="dim">(cached)</span></div>
             <div class="tline log" data-log><span class="dim">›</span> container&nbsp;dbx-feat-auth · up</div>
             <div class="tline log" data-log><span class="dim">›</span> display&nbsp;&nbsp;&nbsp;<span class="blu">http://dbx-feat-auth.orb.local:6080/vnc.html</span></div>
-            <div class="tline log" data-log><span class="dim">›</span> agent&nbsp;&nbsp;&nbsp;&nbsp;pi ready · gh auth forwarded</div>
-            <div class="tline log done" data-log><span class="grn">✓</span> box ready — open the display link, start coding</div>
+            <div class="tline log" data-log><span class="dim">›</span> agent&nbsp;&nbsp;&nbsp;&nbsp;Pi ready · gh credentials copied</div>
+            <div class="tline log done" data-log><span class="grn">✓</span> box ready · open the display link and start coding</div>
             <div class="tline final" data-log hidden><span class="prompt">$</span> <span class="cursor blink"></span></div>
           </div>
         </div>
 
         <p class="hero-note">
-          <code>npx @gannonh/dbx init</code> scaffolds config into your repo ·
+          <code>npx @gannonh/dbx init</code> writes its config to your repo ·
           <a href="#install">full install instructions ↓</a>
         </p>
       </section>
@@ -80,16 +80,15 @@
         <div class="fnum">01 <span class="fnum-tag">isolation</span></div>
         <div class="fgrid">
           <div class="ftext">
-            <h2>Concurrent branches, zero collisions</h2>
+            <h2>Run branches side by side</h2>
             <p>
-              Each worktree gets its own sandbox and its own network namespace. Boot three branches of the same repo
-              and every one of them can bind port 5173 — nothing fights over ports, files, or state. Uncommitted work
-              stays on your disk, exactly where you left it.
+              Each worktree gets its own sandbox and network namespace. Three branches can all bind port 5173
+              without sharing files, processes, or state. Uncommitted changes stay in the local worktree.
             </p>
             <ul class="checks">
-              <li>one sandbox + network namespace per git worktree</li>
-              <li>standard devcontainer format — works in Codespaces and Cursor too</li>
-              <li><code>--attach</code>, <code>--stop</code>, <code>--rm</code> per box</li>
+              <li>one sandbox and network namespace per git worktree</li>
+              <li>standard devcontainer format, also supported by Codespaces and Cursor</li>
+              <li>manage each box with <code>--attach</code>, <code>--stop</code>, or <code>--rm</code></li>
             </ul>
           </div>
           <div class="term">
@@ -105,7 +104,7 @@
               <div class="tline gap"><span class="prompt">$</span> curl -sI dbx-feat-auth.orb.local:5173 | head -1</div>
               <div class="tline"><span class="grn">HTTP/1.1 200 OK</span></div>
               <div class="tline"><span class="prompt">$</span> curl -sI dbx-fix-cart.orb.local:5173 | head -1</div>
-              <div class="tline"><span class="grn">HTTP/1.1 200 OK</span> <span class="dim"># same port, separate namespaces</span></div>
+              <div class="tline"><span class="grn">HTTP/1.1 200 OK</span> <span class="dim"># same port, separate networks</span></div>
             </div>
           </div>
         </div>
@@ -116,16 +115,16 @@
         <div class="fnum">02 <span class="fnum-tag">display</span></div>
         <div class="fgrid flip">
           <div class="ftext">
-            <h2>Headed, not headless</h2>
+            <h2>A desktop in your browser</h2>
             <p>
-              Every box runs a real desktop — Xvfb, fluxbox, x11vnc, noVNC — rendered in a browser tab. Electron apps
-              draw there. <code>xdg-open</code> routes to Chromium inside the container, so OAuth consent screens
-              complete where the app lives, visible to you the whole time.
+              Each box runs Xvfb, fluxbox, x11vnc, and noVNC. Open the desktop in a browser tab to use Electron apps
+              and Chromium. <code>xdg-open</code> opens URLs in the box's Chromium. OAuth consent pages stay inside the
+              box and remain visible over noVNC.
             </p>
             <ul class="checks">
-              <li>open the display link from any browser, anywhere</li>
-              <li>Chromium + OAuth inside the box, watchable over noVNC</li>
-              <li>Vercel boxes pair a one-time access code on click</li>
+              <li>open the box's desktop in your browser</li>
+              <li>run Chromium and OAuth flows inside the box</li>
+              <li>open Vercel displays with a one-time access code</li>
             </ul>
           </div>
           <div class="term browser-mock">
@@ -135,7 +134,7 @@
             </div>
             <div class="desktop">
               <div class="desk-win">
-                <div class="desk-win-bar"><span>user@dbx-fix-cart: ~/workspace</span><span class="desk-btns">— ▢ ✕</span></div>
+                <div class="desk-win-bar"><span>user@dbx-fix-cart: ~/workspace</span><span class="desk-btns">− ▢ ✕</span></div>
                 <div class="desk-win-body">
                   <div>$ npm test</div>
                   <div><span class="grn">✓</span> provider registry (14)</div>
@@ -155,31 +154,31 @@
         <div class="fnum">03 <span class="fnum-tag">agents</span></div>
         <div class="fgrid">
           <div class="ftext">
-            <h2>Your agent already lives here</h2>
+            <h2>Pi included by default</h2>
             <p>
-              Pi is active by default, with its config copied in from your host. Claude Code and Codex ship as
-              comment-toggle blocks in <code>provision.sh</code>. Your host <code>gh</code> token is forwarded, so
-              cloning, pushing, and opening PRs from inside the box just work.
+              devbox installs Pi and copies its configuration from your host <code>~/.pi</code>, excluding sessions
+              and npm cache. The generated <code>provision.sh</code> also has disabled install blocks for Claude Code
+              and Codex. The box receives a copy of your host <code>gh</code> token for clone, push, and PR commands.
             </p>
             <ul class="checks">
-              <li>Pi active by default · Claude Code / Codex one toggle away</li>
-              <li>host <code>gh auth token</code> copied in for pushes</li>
-              <li><code>~/.pi</code> mounted read-only from your host, config copied into the box</li>
-              <li>project dotenv enters only when you pass <code>--env</code></li>
+              <li>Pi enabled by default, with Claude Code and Codex blocks included</li>
+              <li>host <code>gh auth token</code> copied into the box</li>
+              <li><code>~/.pi</code> configuration copied without sessions or npm cache</li>
+              <li>dotenv values loaded only when you pass <code>--env</code></li>
             </ul>
           </div>
           <div class="term">
             <div class="term-bar">
               <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-              <span class="term-title">dbx-feat-auth — session</span>
+              <span class="term-title">dbx-feat-auth · session</span>
             </div>
             <div class="term-body">
               <div class="tline"><span class="dim">user@dbx-feat-auth:/workspace$</span> git push -u origin feat-auth</div>
-              <div class="tline"><span class="grn">✓</span> pushed · gh credentials forwarded from host</div>
+              <div class="tline"><span class="grn">✓</span> pushed with host gh credentials</div>
               <div class="tline gap"><span class="dim">user@dbx-feat-auth:/workspace$</span> pi</div>
-              <div class="tline"><span class="dim">›</span> session restored · ~/.pi mounted</div>
+              <div class="tline"><span class="dim">›</span> Pi started · host configuration loaded</div>
               <div class="tline"><span class="blu">pi ›</span> fix the flaky checkout test and open a PR</div>
-              <div class="tline dim"># …agent works while you watch over noVNC</div>
+              <div class="tline dim"># Pi runs in the box; the desktop stays visible over noVNC</div>
               <div class="tline"><span class="grn">✓</span> PR #42 opened from inside the box</div>
             </div>
           </div>
@@ -189,9 +188,9 @@
       <!-- ============ 04 providers ============ -->
       <section class="feature wrap reveal" id="providers">
         <div class="fnum">04 <span class="fnum-tag">providers</span></div>
-        <h2>Local by default, cloud when you want it</h2>
+        <h2>Choose local Docker or Vercel Sandbox</h2>
         <p class="sec-sub">
-          The choice is remembered per repository until you pass <code>--provider</code> again.
+          devbox saves your provider choice for this repository until you pass <code>--provider</code> again.
         </p>
         <div class="ptable">
           <div class="prow phead">
@@ -210,19 +209,19 @@
             <span>HTTPS routes issued by Vercel</span>
           </div>
           <div class="prow">
-            <span class="plabel">source of code</span>
-            <span>the worktree on disk — uncommitted work included</span>
-            <span>the authenticated GitHub origin — pushed commits only</span>
+            <span class="plabel">code source</span>
+            <span>local worktree, including uncommitted changes</span>
+            <span>authenticated GitHub origin, pushed commits only</span>
           </div>
           <div class="prow">
             <span class="plabel">display</span>
             <span>browser tab over noVNC</span>
-            <span>HTTPS display link, paired on click</span>
+            <span>HTTPS display link with a one-time pairing code</span>
           </div>
           <div class="prow">
             <span class="plabel">app ports</span>
-            <span>namespaced per box, never collide</span>
-            <span>detected from package.json, exposed on request</span>
+            <span>namespaced per box with no port collisions</span>
+            <span>devbox exposes approved package.json ports</span>
           </div>
         </div>
       </section>
@@ -234,16 +233,16 @@
         <div class="cligrid">
           <div class="clicol">
             <h3>setup &amp; boot</h3>
-            <div class="cmdrow"><code>npx @gannonh/dbx init</code><span>scaffold .devbox/ + .devcontainer/ into this repo</span></div>
-            <div class="cmdrow"><code>npx @gannonh/dbx &lt;branch&gt;</code><span>boot a local box for that branch and drop into it</span></div>
-            <div class="cmdrow"><code>--provider vercel</code><span>run the box in a Vercel Sandbox instead</span></div>
-            <div class="cmdrow"><code>--env PATH</code><span>inject dotenv values into this run only</span></div>
+            <div class="cmdrow"><code>npx @gannonh/dbx init</code><span>write .devbox/ and .devcontainer/ to this repo</span></div>
+            <div class="cmdrow"><code>npx @gannonh/dbx &lt;branch&gt;</code><span>start a local box and open its shell</span></div>
+            <div class="cmdrow"><code>--provider vercel</code><span>start the box in a Vercel Sandbox</span></div>
+            <div class="cmdrow"><code>--env PATH</code><span>load dotenv values for this run</span></div>
           </div>
           <div class="clicol">
             <h3>lifecycle</h3>
             <div class="cmdrow"><code>--attach</code><span>re-enter a running box</span></div>
-            <div class="cmdrow"><code>--stop</code><span>stop it — keeps worktree + container</span></div>
-            <div class="cmdrow"><code>--rm</code><span>remove container + worktree + branch</span></div>
+            <div class="cmdrow"><code>--stop</code><span>stop it and keep the worktree and container</span></div>
+            <div class="cmdrow"><code>--rm</code><span>remove the container, worktree, and branch</span></div>
             <div class="cmdrow"><code>--list</code><span>list local devbox containers</span></div>
           </div>
           <div class="clicol">
@@ -259,13 +258,12 @@
       <!-- ============ 06 security ============ -->
       <section class="feature wrap reveal">
         <div class="fnum">06 <span class="fnum-tag">trust</span></div>
-        <h2>What runs on your machine</h2>
-        <p class="sec-sub">The whole surface, stated plainly.</p>
+        <h2>What devbox accesses</h2>
         <div class="secgrid">
-          <div class="seccard"><h4>files</h4><p><code>init</code> writes <code>.devbox/</code> and <code>.devcontainer/</code> plus XDG state under <code>~/.local/state</code>. Nothing else. Delete the two directories to undo.</p></div>
-          <div class="seccard"><h4>execution</h4><p>Docker <code>build</code>/<code>exec</code> driven by your devcontainer config, plus plain shell hooks in <code>.devbox/provision.sh</code>. All readable, all in your repo.</p></div>
-          <div class="seccard"><h4>credentials</h4><p>Your host <code>gh</code> token is copied in so pushes work. Pi's config comes from <code>~/.pi</code>. Project dotenv values enter only when you pass <code>--env</code>.</p></div>
-          <div class="seccard"><h4>network</h4><p>Boxes pull base images and install dependencies. Devbox makes no telemetry calls.</p></div>
+          <div class="seccard"><h4>files</h4><p><code>init</code> writes <code>.devbox/</code> and <code>.devcontainer/</code>. devbox stores its own state under <code>~/.local/state</code>. Delete the two repo directories to undo <code>init</code>.</p></div>
+          <div class="seccard"><h4>execution</h4><p>The local provider runs Docker <code>build</code> and <code>exec</code> using your devcontainer config. It also runs shell hooks from <code>.devbox/provision.sh</code>. Both files live in your repo.</p></div>
+          <div class="seccard"><h4>credentials</h4><p>devbox copies your host <code>gh</code> token into the box for pushes and GitHub commands. It also copies Pi config from <code>~/.pi</code>, excluding sessions and npm cache. It loads project dotenv values only when you pass <code>--env</code>.</p></div>
+          <div class="seccard"><h4>network</h4><p>Boxes pull base images and install project dependencies. Vercel also clones your GitHub origin and publishes the routes you approve. devbox sends no telemetry.</p></div>
         </div>
       </section>
 
@@ -284,7 +282,7 @@
                 <div class="tline dim"># run it straight from npm</div>
                 <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx init</div>
                 <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx my-branch</div>
-                <div class="tline gap dim"># or install globally (devbox is the real package)</div>
+                <div class="tline gap dim"># or install globally</div>
                 <div class="tline"><span class="prompt">$</span> npm i -g @gannonh/devbox</div>
                 <div class="tline"><span class="prompt">$</span> devbox my-branch</div>
               </div>
@@ -293,9 +291,9 @@
           <div class="reqs">
             <h3>requirements</h3>
             <ul>
-              <li><b>OrbStack</b> or any Docker runtime — OrbStack gives you <code>&lt;container&gt;.orb.local</code> URLs</li>
-              <li><b>@devcontainers/cli</b> — <code>npm i -g @devcontainers/cli</code></li>
-              <li><b>gh</b> authenticated on the host — <code>gh auth login</code></li>
+              <li><b>OrbStack</b> or any Docker runtime. OrbStack provides <code>&lt;container&gt;.orb.local</code> URLs</li>
+              <li><b>@devcontainers/cli</b>, installed with <code>npm i -g @devcontainers/cli</code></li>
+              <li><b>gh</b> authenticated on the host with <code>gh auth login</code></li>
               <li><b>git</b> 2.45+</li>
               <li>optional: host <code>~/.pi</code> if you use the Pi agent</li>
             </ul>
