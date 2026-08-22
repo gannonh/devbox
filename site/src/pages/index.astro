@@ -12,6 +12,7 @@
       content="devbox boots an isolated Ubuntu sandbox per git worktree: headed display in your browser, coding agent preinstalled, Chromium for OAuth, gh credentials forwarded. Local or on Vercel."
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script is:inline>document.documentElement.classList.add('js');</script>
     <meta property="og:title" content="dbx — one sandbox per branch" />
     <meta
       property="og:description"
@@ -161,8 +162,9 @@
               cloning, pushing, and opening PRs from inside the box just work.
             </p>
             <ul class="checks">
-              <li>Pi default · Claude Code / Codex one toggle away</li>
+              <li>Pi active by default · Claude Code / Codex one toggle away</li>
               <li>host <code>gh auth token</code> copied in for pushes</li>
+              <li><code>~/.pi</code> mounted read-only from your host, config copied into the box</li>
               <li>project dotenv enters only when you pass <code>--env</code></li>
             </ul>
           </div>
@@ -543,9 +545,9 @@
       .foot a { color: var(--dim); }
       .foot a:hover { color: var(--text); }
 
-      /* reveal */
-      .reveal { opacity: 0; transform: translateY(16px); transition: opacity 0.55s ease, transform 0.55s ease; }
-      .reveal.in { opacity: 1; transform: none; }
+      /* reveal: concealed only when JS is available (html.js set inline) */
+      html.js .reveal { opacity: 0; transform: translateY(16px); transition: opacity 0.55s ease, transform 0.55s ease; }
+      html.js .reveal.in { opacity: 1; transform: none; }
 
       @media (max-width: 860px) {
         .fgrid, .secgrid { grid-template-columns: 1fr; }
@@ -553,6 +555,10 @@
         .cligrid { grid-template-columns: 1fr; }
         .prow { grid-template-columns: 110px 1fr 1fr; }
         .nav-links { gap: 14px; }
+      }
+      @media (max-width: 480px) {
+        .nav-row { height: auto; min-height: 58px; padding-block: 10px; align-items: flex-start; }
+        .nav-links { row-gap: 8px; }
       }
     </style>
   </body>

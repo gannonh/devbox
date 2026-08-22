@@ -14,14 +14,20 @@ set -euo pipefail
 # the caller's CWD within the worktree.
 worktree_root="$(cd "$(dirname "$0")/.." && pwd)"
 env_source="$HOME/dotfiles/repos/devbox/.env"
+env_target="$worktree_root/.env"
 
 cd "$worktree_root"
 
 npm install
 npm run build
 
+if [[ -e "$env_target" && ! -L "$env_target" ]]; then
+  echo "refusing to replace existing regular .env at $env_target" >&2
+  exit 1
+fi
+
 if [[ -f "$env_source" ]]; then
-  ln -sfn "$env_source" "$worktree_root/.env"
+  ln -sfn "$env_source" "$env_target"
   echo "linked .env ← $env_source"
 else
   echo "warn: central env not found at $env_source — .env not linked" >&2

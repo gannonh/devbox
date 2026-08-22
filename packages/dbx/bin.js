@@ -9,4 +9,11 @@ const cli = createRequire(import.meta.url).resolve('@gannonh/devbox/dist/cli.js'
 const result = spawnSync(process.execPath, [cli, ...process.argv.slice(2)], {
   stdio: 'inherit',
 });
+if (result.error) {
+  console.error(result.error.message);
+  process.exit(1);
+}
+if (result.signal) {
+  process.kill(process.pid, result.signal);
+}
 process.exit(result.status ?? 1);

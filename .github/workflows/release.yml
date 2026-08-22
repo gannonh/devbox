@@ -272,6 +272,22 @@ jobs:
           echo "Publishing @gannonh/devbox@$TARGET_VERSION to latest"
           npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag latest
 
+      # The alias workspace pins @gannonh/devbox exactly, so it is versioned and
+      # published here rather than in Nightly: npx @gannonh/dbx resolves latest,
+      # and latest only ever moves through stable releases.
+      - name: Publish @gannonh/dbx alias
+        if: ${{ github.event.inputs.dry_run != true }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          TARGET_VERSION="${{ steps.version.outputs.target_version }}"
+          cd packages/dbx
+          npm version "$TARGET_VERSION" --no-git-tag-version --allow-same-version
+          npm pkg set "dependencies.@gannonh/devbox=$TARGET_VERSION"
+          echo "Publishing @gannonh/dbx@$TARGET_VERSION -> @gannonh/devbox@$TARGET_VERSION"
+          npm publish --access public --tag latest
+
       # --- Commit, tag, and GitHub Release ------------------------------------
       # Only after publish succeeds (or dry_run). Each step gates on the
       # previous step's success() so a publish failure leaves no tag/release.
