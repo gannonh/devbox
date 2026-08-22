@@ -18,10 +18,10 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ['dist/', 'node_modules/', 'templates/', '.agents/'],
+    ignores: ['dist/', 'node_modules/', 'templates/', '.agents/', 'site/.astro/', 'site/dist/'],
   },
   {
-    files: ['scripts/**/*.mjs', 'images/vercel/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'images/vercel/**/*.mjs', 'packages/dbx/**/*.js'],
     languageOptions: {
       globals: nodeGlobals,
     },
