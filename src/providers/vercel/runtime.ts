@@ -178,7 +178,7 @@ async function resolveRuntimeEnvironment(
   try {
     result = await options.client.runCommand(options.sandbox, {
       cmd: 'sh',
-      args: ['-c', `if [ -f ${VERCEL_RUNTIME_ENV_STATE_PATH} ]; then cat ${VERCEL_RUNTIME_ENV_STATE_PATH}; fi`],
+      args: ['-c', `if [ -f ${VERCEL_RUNTIME_ENV_STATE_PATH} ]; then cat ${VERCEL_RUNTIME_ENV_STATE_PATH}; else printf '{}'; fi`],
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
   } catch (error) {

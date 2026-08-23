@@ -157,6 +157,32 @@ describe('Vercel runtime sync', () => {
     expect(fake.uploads.flat().some((file) => file.path === '/vercel/.devbox/runtime/environment.json')).toBe(false);
   });
 
+  it('uses an empty runtime environment when no stored state exists', async () => {
+    const fake = client();
+    const runCommand = fake.client.runCommand as unknown as ReturnType<typeof vi.fn>;
+    runCommand.mockImplementation(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
+      fake.commands.push(request);
+      if (request.args?.[1]?.includes('if [ -f /vercel/.devbox/runtime/environment.json')) {
+        const stdout = request.args[1].includes("else printf '{}'; fi") ? '{}' : '';
+        return { exitCode: 0, stdout: async () => stdout };
+      }
+      return { exitCode: 0 };
+    });
+
+    await prepareSandboxRuntime({
+      repoRoot: '/host/repo',
+      repository: 'repo',
+      env: { GH_TOKEN: 'github-secret' },
+      shellRunner: runner(),
+      sandbox: sandbox(),
+      client: fake.client,
+      stderr: new PassThrough(),
+      piRoot: join(tmpdir(), 'missing-pi'),
+    });
+
+    expect(fake.commands.every((command) => Object.keys(command.env ?? {}).length === 0)).toBe(true);
+  });
+
   it('fails when the selected env file is missing', async () => {
     const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-missing-env-'));
     const envPath = join(hostEnv, '.env');
