@@ -113,6 +113,12 @@ After checkout, devbox reads `package.json` files without executing them and sug
 npx @gannonh/devbox --provider vercel my-branch --expose-ports 5173
 ```
 
+On boot or `--attach`, `--timeout <minutes>` sets the Sandbox timeout (default 60 minutes, maximum 1440) and `--vcpus <n>` sets the Sandbox vCPUs (2048 MB of memory per vCPU; Vercel defaults to 2). Both are stored per branch like the image, so changing one later conflicts instead of updating:
+
+```bash
+npx @gannonh/devbox --provider vercel my-branch --timeout 90 --vcpus 4
+```
+
 Your application must listen on the exposed port. For Vite, run `npm run dev -- --host 0.0.0.0 --strictPort`. On Vite 5.4.12 or newer, add `server.allowedHosts: ['.vercel.run']`.
 
 See the [Vercel provider reference](docs/reference/vercel-provider.md) for command details, configuration order, and recovery behavior.
