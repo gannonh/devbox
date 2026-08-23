@@ -18,6 +18,7 @@ import {
   VERCEL_RUNTIME_PREPARATION_PATH,
 } from '../src/providers/vercel/runtime.js';
 import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
+import { SETUP_STATUS_PATH } from '../src/providers/vercel/setup.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 
 const HEAD = 'b'.repeat(40);
@@ -76,6 +77,12 @@ function reattachClient(statusSequence: readonly string[] = [DISPLAY_STATUS_OUTP
             exitCode: 0,
             stdout: async () => `${marker?.toString('utf8') ?? ''}\n--DEVBOX--\n${HEAD}\n`,
           };
+        }
+        if (request.cmd === 'cat' && request.args?.[0] === '/vercel/.devbox/runtime/setup.status') {
+          const content = files.get('/vercel/.devbox/runtime/setup.status');
+          return content === undefined
+            ? { exitCode: 1 }
+            : { exitCode: 0, stdout: async () => content.toString('utf8') };
         }
         if ((request.cmd === 'git' && request.args?.includes('rev-parse'))
           || script.includes('rev-parse HEAD')) {
@@ -151,22 +158,61 @@ describe('Vercel cheap re-attach', () => {
       sandboxId: 'runtime-sync',
       revision: HEAD,
       githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
-      environmentHash: createHash('sha256').update('API_KEY=dotenv-secret', 'utf8').digest('hex'),
+      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
     });
 
     const commandCount = harness.commands.length;
     const uploadCount = harness.uploads.length;
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
     const reused = await prepareSandboxRuntime(prepareOptions({
       client: harness.client,
       mode: 'attach',
     }));
 
-    expect(reused).toEqual({ setupStatus: null, reused: true });
+    expect(reused.reused).toBe(true);
+    expect(reused.setupStatus?.status).toBe('succeeded');
     expect(harness.commands.slice(commandCount).map((command) => command.cmd))
-      .toEqual(['sh']);
+      .toEqual(['sh', 'cat']);
     expect(harness.uploads.slice(uploadCount)).toEqual([]);
     expect(harness.commands.slice(commandCount).some((command) =>
       (command.args?.[1] ?? '').includes('gh auth login'))).toBe(false);
+  });
+
+  it('relaunches background setup that failed after preparation', async () => {
+    const harness = reattachClient();
+    await prepareSandboxRuntime(prepareOptions({ client: harness.client }));
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'failed', startedAt: 1, finishedAt: 2, failedStep: 'install',
+    })));
+    const commandCount = harness.commands.length;
+
+    const reused = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      mode: 'attach',
+    }));
+
+    expect(reused.reused).toBe(true);
+    expect(reused.setupStatus?.status).toBe('running');
+    expect(harness.commands.slice(commandCount).map((command) => command.cmd))
+      .toContain('bash');
+  });
+
+  it('hashes newline-bearing environments injectively', async () => {
+    const multiline = reattachClient();
+    await prepareSandboxRuntime(prepareOptions({
+      client: multiline.client,
+      runtimeEnvironment: { A: 'x\nB=y' },
+    }));
+    const twoEntries = reattachClient();
+    await prepareSandboxRuntime(prepareOptions({
+      client: twoEntries.client,
+      runtimeEnvironment: { A: 'x', B: 'y' },
+    }));
+
+    expect(markerOf(multiline)!.environmentHash)
+      .not.toBe(markerOf(twoEntries)!.environmentHash);
   });
 
   it('takes the full path when no evidence exists', async () => {
@@ -255,13 +301,17 @@ describe('Vercel cheap re-attach', () => {
       displayCredentialsStore: store,
     }));
     const uploadCount = harness.uploads.length;
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
     const reused = await prepareSandboxRuntime(prepareOptions({
       client: harness.client,
       mode: 'attach',
       displayCredentialsStore: store,
     }));
 
-    expect(reused).toEqual({ setupStatus: null, reused: true });
+    expect(reused.reused).toBe(true);
+    expect(reused.setupStatus?.status).toBe('succeeded');
     const reuploaded = harness.uploads.slice(uploadCount).flat().map((file) => file.path);
     expect(reuploaded).toContain('/vercel/.devbox/runtime/novnc-proxy.mjs');
     expect(reuploaded.some((path) =>

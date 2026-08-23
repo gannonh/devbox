@@ -66,6 +66,7 @@ import { addSecrets, redactSecrets } from './redaction.js';
 import { DEVBOX_NOVNC_PROXY_PORT, appPortsOf, buildDesiredPortSet, samePortSet } from './ports.js';
 import {
   applyAppPorts,
+  reconcilePendingAppPorts,
   type AppPortFlowMode,
   type AppPortFlowResult,
   type AppPortPrompt,
@@ -260,8 +261,8 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       };
       const runtime = await prepareSandboxRuntime(runtimeOptions);
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
-      const appPorts = runtime.reused
-        ? await reuseRecordedAppPorts(request, client, sandbox, prepared.branchStore!, secrets)
+      const appPorts = runtime.reused && request.exposePorts === undefined
+        ? await reuseRecordedAppPorts(request, client, sandbox, prepared.branchStore!, repository, secrets)
         : await resolveAppPorts(
           request,
           options,
@@ -863,11 +864,31 @@ async function reuseRecordedAppPorts(
   client: VercelSandboxClient,
   sandbox: VercelSandboxHandle,
   branchStore: VercelBranchMetadataStore,
+  repository: string,
   secrets: readonly string[],
 ): Promise<AppPortFlowResult> {
   const actual = buildDesiredPortSet(appPortsOf((sandbox.routes ?? []).map((route) => route.port)), []);
   try {
-    const selection = await branchStore.withLock(async () => (await branchStore.read())?.appPorts);
+    const selection = await branchStore.withLock(async () => {
+      let metadata = await branchStore.read();
+      if (metadata?.pendingAppPorts) {
+        // An interrupted route update must reconcile before any recorded
+        // selection is restored; the flow owns that reconciliation.
+        metadata = await reconcilePendingAppPorts({
+          sandbox,
+          client,
+          branchStore,
+          repoRoot: request.repoRoot,
+          workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
+          branch: request.branch,
+          tty: request.tty,
+          stdin: request.stdin,
+          stderr: request.stderr,
+          secrets,
+        }, metadata);
+      }
+      return metadata?.appPorts;
+    });
     if (selection?.applied && !samePortSet(actual, selection.applied)) {
       await client.updatePorts(sandbox, selection.applied);
       return {

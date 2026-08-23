@@ -96,8 +96,9 @@ export function evaluatePreparation(
 }
 
 function environmentStateHash(environment: Record<string, string>): string {
-  const canonical = Object.keys(environment).sort()
-    .map((key) => `${key}=${environment[key]}`).join('\n');
+  // JSON encoding keeps the hash injective; dotenv values may contain newlines.
+  const canonical = JSON.stringify(Object.keys(environment).sort()
+    .map((key) => [key, environment[key]]));
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
 
@@ -142,19 +143,27 @@ async function readPreparationEvidence(
 async function reusePreparedRuntime(
   options: PrepareSandboxRuntimeOptions,
   secrets: readonly string[],
-): Promise<boolean> {
+): Promise<PreparedSandboxRuntime> {
   const store = options.displayCredentialsStore;
-  if (!store || await isDisplayStackRunning({ sandbox: options.sandbox, client: options.client })) {
-    return true;
+  if (store && !await isDisplayStackRunning({ sandbox: options.sandbox, client: options.client })) {
+    await runRuntimeOperation('Display startup', secrets, () => startDisplayStack({
+      sandbox: options.sandbox,
+      client: options.client,
+      store,
+      secrets: [...secrets],
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    }));
   }
-  await runRuntimeOperation('Display startup', secrets, () => startDisplayStack({
+  // Reconciles background setup through the same routine as the full path: a
+  // failed or vanished run is relaunched, a succeeded or live run is reported.
+  const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
     sandbox: options.sandbox,
     client: options.client,
-    store,
-    secrets: [...secrets],
+    workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+    ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   }));
-  return true;
+  return { setupStatus, reused: true };
 }
 
 export async function prepareSandboxRuntime(
@@ -179,16 +188,13 @@ export async function prepareSandboxRuntime(
   const environmentHash = environmentStateHash(runtimeEnvironment);
   if (options.mode === 'attach') {
     const evidence = await readPreparationEvidence(options);
-    if (
-      evidence !== null && evaluatePreparation(evidence.marker, {
-        sandboxId: sandboxIdentifier(options.sandbox),
-        revision: evidence.revision,
-        githubTokenHash,
-        environmentHash,
-      }) && await reusePreparedRuntime(options, secrets)
-    ) {
-      return { setupStatus: null, reused: true };
-    }
+    const prepared = evidence !== null && evaluatePreparation(evidence.marker, {
+      sandboxId: sandboxIdentifier(options.sandbox),
+      revision: evidence.revision,
+      githubTokenHash,
+      environmentHash,
+    });
+    if (prepared) return reusePreparedRuntime(options, secrets);
   }
   const piBundle = await runRuntimeOperation('Pi config collection', secrets, () => collectPiBundle({
     ...(options.piRoot === undefined ? {} : { root: options.piRoot }),

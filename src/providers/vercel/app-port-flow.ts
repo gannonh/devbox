@@ -219,7 +219,7 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
  * cleared, and anything else is restored to the recorded previous set before
  * the record is cleared. An unknown route set is never treated as committed.
  */
-async function reconcilePendingAppPorts(
+export async function reconcilePendingAppPorts(
   options: AppPortFlowOptions,
   metadata: VercelBranchMetadata | null,
 ): Promise<VercelBranchMetadata | null> {
