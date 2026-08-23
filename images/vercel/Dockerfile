@@ -94,6 +94,7 @@ RUN set -eux; \
       dnsutils \
       file \
       fzf \
+      g++ \
       gh=2.98.0 \
       git \
       git-lfs \
@@ -104,10 +105,12 @@ RUN set -eux; \
       less \
       libatomic1 \
       lsof \
+      make \
       nano \
       netcat-openbsd \
       openssl \
       procps \
+      python3 \
       "python${PYTHON_MAJOR}" \
       "python${PYTHON_MAJOR}-venv" \
       python-is-python3 \
