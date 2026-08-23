@@ -180,6 +180,13 @@ describe('Vercel runtime sync', () => {
       piRoot: join(tmpdir(), 'missing-pi'),
     });
 
+    const stateReadCommand = fake.commands.find((command) =>
+      command.cmd === 'sh'
+      && command.args?.[0] === '-c'
+      && command.args?.[1]?.includes('/vercel/.devbox/runtime/environment.json'),
+    );
+    expect(stateReadCommand).toBeDefined();
+    expect(stateReadCommand?.args?.[1] ?? '').toContain("else printf '{}'; fi");
     expect(fake.commands.every((command) => Object.keys(command.env ?? {}).length === 0)).toBe(true);
   });
 
