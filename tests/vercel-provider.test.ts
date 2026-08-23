@@ -1088,6 +1088,62 @@ describe('Vercel provider', () => {
     expect(stored?.appPorts?.applied).toEqual([3000, 6080]);
   });
 
+  it('gives a request timeout or vcpus precedence over stored configuration on up', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-timeout-precedence-'));
+    const remote = 'github.com/acme/repo';
+    const identity = createVercelIdentity({
+      remote,
+      branch: 'feature/ui',
+      packageVersion: '0.1.2',
+      scope: { teamId: 'team-1', projectId: 'project-1' },
+    });
+    await createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' }).write({
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: { ...identity.tags },
+      },
+      sandboxId: identity.name,
+      configuration: {
+        imageReference: TEST_IMAGE_REFERENCE,
+        sourceUrl: 'https://github.com/acme/repo.git',
+        sourceRevision: 'main',
+        requestedBranch: 'feature/ui',
+        needsBranchSetup: false,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+        vcpus: 4,
+      },
+    });
+    const seen: VercelLifecycleOptions[] = [];
+    const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
+      runner: runner(),
+      stateHome,
+      lifecycle: (options) => {
+        seen.push(options);
+        return lifecycle();
+      },
+      confirmation: vi.fn(async () => true),
+      terminal: { attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })) },
+    });
+
+    await provider.up(request({ timeoutMs: 7_200_000 }));
+    expect(seen[0]?.timeoutMs).toBe(7_200_000);
+    expect(seen[0]?.vcpus).toBe(4);
+
+    await provider.up(request({}));
+    expect(seen[1]?.timeoutMs).toBe(1_800_000);
+    expect(seen[1]?.vcpus).toBe(4);
+
+    await provider.up(request({ vcpus: 2 }));
+    expect(seen[2]?.timeoutMs).toBe(1_800_000);
+    expect(seen[2]?.vcpus).toBe(2);
+  });
+
   it('renders only concise stop usage output', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-stop-'));
     const remote = 'github.com/acme/repo';

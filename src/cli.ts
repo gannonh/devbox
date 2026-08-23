@@ -56,6 +56,11 @@ OPTIONS
   --expose-ports <list>     Vercel only, with a boot or --attach: expose these
                             comma-separated app ports as public routes without
                             the interactive prompt
+  --timeout <minutes>       Vercel only, with a boot or --attach: Sandbox
+                            timeout in minutes (1-1440); default 60
+  --vcpus <n>               Vercel only, with a boot or --attach: Sandbox
+                            vCPUs, 1 or even up to 32; memory is 2048 MB per
+                            vCPU and Vercel defaults to 2
 
 EXAMPLES
   devbox init                        # set up .devbox/ in the current repo
@@ -112,6 +117,10 @@ FLAGS
                             copied into the box or host worktree
   --expose-ports <list>     Vercel only: expose these comma-separated app ports
                             as public routes instead of prompting
+  --timeout <minutes>       Vercel only: Sandbox timeout in minutes
+                            (1-1440); default 60
+  --vcpus <n>               Vercel only: Sandbox vCPUs, 1 or even up to 32;
+                            memory is 2048 MB per vCPU and Vercel defaults to 2
 
 EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box
@@ -261,6 +270,8 @@ export type ParsedCommand =
     action: BranchAction;
     envPath?: string;
     exposePorts?: number[];
+    timeoutMs?: number;
+    vcpus?: number;
   }
   | { kind: 'help'; scope: 'global' | 'init' | 'list' | 'branch'; branch?: string; action?: BranchAction }
   | { kind: 'version' }
@@ -314,6 +325,30 @@ function readEnvPath(args: string[], index: number): { path: string; next: numbe
     throw new CliUsageError('missing env file path after --env');
   }
   return { path: value, next: index + 2 };
+}
+
+function readTimeoutMinutes(args: string[], index: number): { timeoutMs: number; next: number } {
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) {
+    throw new CliUsageError('missing timeout in minutes after --timeout');
+  }
+  const minutes = Number(value);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+    throw new CliUsageError('timeout must be an integer between 1 and 1440 minutes');
+  }
+  return { timeoutMs: minutes * 60 * 1000, next: index + 2 };
+}
+
+function readVcpus(args: string[], index: number): { vcpus: number; next: number } {
+  const value = args[index + 1];
+  if (!value || value.startsWith('-')) {
+    throw new CliUsageError('missing vCPU count after --vcpus');
+  }
+  const vcpus = Number(value);
+  if (!Number.isInteger(vcpus) || vcpus < 1 || vcpus > 32 || (vcpus !== 1 && vcpus % 2 !== 0)) {
+    throw new CliUsageError('vcpus must be a positive integer that is 1 or even, up to 32');
+  }
+  return { vcpus, next: index + 2 };
 }
 
 function formatBranchUsage(branch: string, action: BranchAction): string {
@@ -384,7 +419,10 @@ function parseList(rest: string[], initialProvider?: ProviderName): ParsedComman
       continue;
     }
     if (flag === '--list' || flag === '-l') return usageError('duplicate --list flag');
-    if (flag === '--expose-ports' || flag === '--env') {
+    if (
+      flag === '--expose-ports' || flag === '--env'
+      || flag === '--timeout' || flag === '--vcpus'
+    ) {
       return usageError(`${flag} is only valid when booting or attaching a branch`);
     }
     return usageError(`misplaced or unknown flag for --list: ${flag}`);
@@ -398,6 +436,8 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
   const actionFlags: string[] = [];
   let envPath: string | undefined;
   let exposePorts: number[] | undefined;
+  let timeoutMs: number | undefined;
+  let vcpus: number | undefined;
   let help = false;
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -423,6 +463,30 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
         const parsed = readExposePorts(rest, index);
         if (exposePorts) return usageError('duplicate --expose-ports flag');
         exposePorts = parsed.ports;
+        index = parsed.next - 1;
+      } catch (error) {
+        if (error instanceof CliUsageError) return usageError(error.message);
+        throw error;
+      }
+      continue;
+    }
+    if (flag === '--timeout') {
+      try {
+        const parsed = readTimeoutMinutes(rest, index);
+        if (timeoutMs !== undefined) return usageError('duplicate --timeout flag');
+        timeoutMs = parsed.timeoutMs;
+        index = parsed.next - 1;
+      } catch (error) {
+        if (error instanceof CliUsageError) return usageError(error.message);
+        throw error;
+      }
+      continue;
+    }
+    if (flag === '--vcpus') {
+      try {
+        const parsed = readVcpus(rest, index);
+        if (vcpus !== undefined) return usageError('duplicate --vcpus flag');
+        vcpus = parsed.vcpus;
         index = parsed.next - 1;
       } catch (error) {
         if (error instanceof CliUsageError) return usageError(error.message);
@@ -464,6 +528,12 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
     if (envPath !== undefined && action.action !== 'up' && action.action !== 'attach') {
       return usageError(`--env is not valid with --${action.action}`);
     }
+    if (timeoutMs !== undefined && action.action !== 'up' && action.action !== 'attach') {
+      return usageError(`--timeout is not valid with --${action.action}`);
+    }
+    if (vcpus !== undefined && action.action !== 'up' && action.action !== 'attach') {
+      return usageError(`--vcpus is not valid with --${action.action}`);
+    }
     return {
       kind: 'branch',
       branch,
@@ -471,6 +541,8 @@ function parseBranch(branch: string, rest: string[], initialProvider?: ProviderN
       action,
       ...(envPath === undefined ? {} : { envPath }),
       ...(exposePorts === undefined ? {} : { exposePorts }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(vcpus === undefined ? {} : { vcpus }),
     };
   } catch (error) {
     if (error instanceof CliUsageError) return usageError(error.message);
@@ -712,10 +784,20 @@ export async function dispatch(
     io.stderr.write(`[devbox] --expose-ports is not supported by the ${choice.provider} provider\n`);
     return 2;
   }
+  if (parsed.timeoutMs !== undefined && choice.provider !== 'vercel') {
+    io.stderr.write(`[devbox] --timeout is not supported by the ${choice.provider} provider\n`);
+    return 2;
+  }
+  if (parsed.vcpus !== undefined && choice.provider !== 'vercel') {
+    io.stderr.write(`[devbox] --vcpus is not supported by the ${choice.provider} provider\n`);
+    return 2;
+  }
   const request: ProviderBranchRequest = {
     ...context,
     branch: parsed.branch,
     ...(parsed.exposePorts === undefined ? {} : { exposePorts: parsed.exposePorts }),
+    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs }),
+    ...(parsed.vcpus === undefined ? {} : { vcpus: parsed.vcpus }),
   };
   switch (parsed.action.action) {
     case 'up':

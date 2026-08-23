@@ -734,7 +734,50 @@ describe('Vercel Sandbox client adapter', () => {
       },
     });
     expect('runtime' in request).toBe(false);
+    expect('resources' in request).toBe(false);
     expect(JSON.stringify(request)).not.toContain('vercel-token');
+  });
+
+  it('maps requested vcpus onto the SDK resources field', () => {
+    const request = buildVercelSandboxCreateRequest({
+      name: 'devbox-vercel-repo-main',
+      image: TEST_IMAGE_REFERENCE,
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        revision: 'main',
+        username: 'x-access-token',
+        password: 'github-token',
+      },
+      timeoutMs: 1_800_000,
+      tags: {},
+      vcpus: 4,
+    });
+
+    expect(request.resources).toEqual({ vcpus: 4 });
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -2],
+    ['fractional', 1.5],
+    ['odd', 3],
+    ['over the cap', 33],
+  ])('refuses %s vcpus', (_label, vcpus) => {
+    expect(() => buildVercelSandboxCreateRequest({
+      name: 'devbox-vercel-repo-main',
+      image: TEST_IMAGE_REFERENCE,
+      source: {
+        type: 'git',
+        url: 'https://github.com/acme/repo.git',
+        revision: 'main',
+        username: 'x-access-token',
+        password: 'github-token',
+      },
+      timeoutMs: 1_800_000,
+      tags: {},
+      vcpus,
+    })).toThrow(/Vercel Sandbox vcpus must be 1 or an even integer up to 32/);
   });
 });
 

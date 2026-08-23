@@ -573,6 +573,11 @@ function createLifecycle(
 ): VercelLifecycle {
   const repoKey = source?.remote.canonical ?? repository;
   if (!repoKey) throw new Error('Vercel lifecycle repository is required');
+  const stored = metadata?.configuration;
+  const requestedTimeoutMs = 'branch' in request ? request.timeoutMs : undefined;
+  const requestedVcpus = 'branch' in request ? request.vcpus : undefined;
+  const timeoutMs = requestedTimeoutMs ?? stored?.timeoutMs;
+  const vcpus = requestedVcpus ?? stored?.vcpus;
   return injectedLifecycle ?? makeLifecycle({
     repoRoot: request.repoRoot,
     ...(source?.requestedBranch === undefined ? {} : { branch: source.requestedBranch }),
@@ -587,7 +592,8 @@ function createLifecycle(
     repoKey,
     repository: repoKey,
     ...(recovery === undefined ? {} : { recovery }),
-    ...(metadata?.configuration === undefined ? {} : { timeoutMs: metadata.configuration.timeoutMs }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(vcpus === undefined ? {} : { vcpus }),
     ...(options.credentialOptions === undefined ? {} : { credentialOptions: options.credentialOptions }),
   });
 }

@@ -117,6 +117,14 @@ comma-separated list of decimal ports, refuses duplicates, `5900`, and the
 internal noVNC port, and adds the requested app ports to the retained
 configured set. The whole desired set is validated before anything is applied.
 
+`--timeout <minutes>` and `--vcpus <n>` are also valid only with a boot or
+`--attach`. `--timeout` sets the Sandbox timeout in minutes between 1 and 1440
+(24 hours); the default is 60. `--vcpus` sets the Sandbox vCPUs, which must be
+1 or an even number up to 32, with 2048 MB of memory per vCPU; Vercel defaults
+to 2. Both are create-only configuration: they are stored in the branch's
+metadata like the image digest, so a later boot that changes one conflicts
+instead of updating the Sandbox.
+
 ### The port maximum is 14, not 15
 
 Three sources disagree about how many ports a Sandbox can expose, so devbox

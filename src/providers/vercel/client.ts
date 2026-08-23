@@ -1,6 +1,7 @@
 import { Command, CommandFinished, Sandbox, Snapshot } from '@vercel/sandbox';
 import type { VercelCredentials } from './auth.js';
 import { parseVercelImageReference } from './image.js';
+import { assertSandboxVcpus } from './resources.js';
 import type { GitSource } from './source.js';
 import { redactSecrets } from './redaction.js';
 
@@ -72,6 +73,7 @@ export interface VercelSandboxHandle {
   readonly persistent?: boolean;
   readonly image?: string;
   readonly timeout?: number;
+  readonly vcpus?: number;
   readonly createdAt?: Date;
   readonly expiresAt?: Date;
   readonly cwd?: string;
@@ -120,6 +122,7 @@ export interface VercelSandboxCreateRequest {
   persistent: true;
   keepLastSnapshots: { count: 1 };
   tags: Record<string, string>;
+  resources?: { vcpus: number };
   signal?: AbortSignal;
   onCreate?: (sandbox: VercelSandboxHandle) => Promise<void>;
 }
@@ -150,6 +153,7 @@ export interface VercelSandboxCreateInput {
   ports?: number[];
   runtimeEnvironment?: Record<string, string>;
   tags: Record<string, string>;
+  vcpus?: number;
   signal?: AbortSignal;
   onCreate?: (sandbox: VercelSandboxHandle) => Promise<void>;
 }
@@ -160,6 +164,9 @@ export function buildVercelSandboxCreateRequest(
   if (!input.name.trim()) throw new Error('Vercel Sandbox name must not be empty');
   if (!Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');
+  }
+  if (input.vcpus !== undefined) {
+    assertSandboxVcpus(input.vcpus);
   }
   // Throws unless the reference is fully qualified and digest-pinned.
   parseVercelImageReference(input.image);
@@ -173,6 +180,7 @@ export function buildVercelSandboxCreateRequest(
     persistent: true,
     keepLastSnapshots: { count: 1 },
     tags: { ...input.tags },
+    ...(input.vcpus === undefined ? {} : { resources: { vcpus: input.vcpus } }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(input.onCreate === undefined ? {} : { onCreate: input.onCreate }),
   };

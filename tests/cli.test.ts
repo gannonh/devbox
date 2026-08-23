@@ -297,3 +297,113 @@ describe('--expose-ports parsing', () => {
     expect(boot.stdout + boot.stderr).toContain('--env <path>');
   });
 });
+
+describe('--timeout and --vcpus parsing', () => {
+  it('parses minutes to milliseconds and vcpus for a Vercel boot', () => {
+    expect(parseCliArgs(['mybranch', '--provider', 'vercel', '--timeout', '90', '--vcpus', '4']))
+      .toEqual({
+        kind: 'branch',
+        branch: 'mybranch',
+        provider: 'vercel',
+        action: { action: 'up' },
+        timeoutMs: 5_400_000,
+        vcpus: 4,
+      });
+  });
+
+  it('parses both flags for --attach', () => {
+    expect(parseCliArgs(['feature/ui', '--attach', '--timeout', '60', '--vcpus', '2']))
+      .toMatchObject({ action: { action: 'attach' }, timeoutMs: 3_600_000, vcpus: 2 });
+  });
+
+  it('accepts the range boundaries', () => {
+    expect(parseCliArgs(['feature/ui', '--timeout', '1'])).toMatchObject({ timeoutMs: 60_000 });
+    expect(parseCliArgs(['feature/ui', '--timeout', '1440'])).toMatchObject({ timeoutMs: 86_400_000 });
+    expect(parseCliArgs(['feature/ui', '--vcpus', '1'])).toMatchObject({ vcpus: 1 });
+    expect(parseCliArgs(['feature/ui', '--vcpus', '32'])).toMatchObject({ vcpus: 32 });
+  });
+
+  it.each([
+    ['zero minutes', ['feature/ui', '--timeout', '0'], /timeout must be an integer between 1 and 1440/],
+    ['minutes over the 24h maximum', ['feature/ui', '--timeout', '1441'], /timeout must be an integer between 1 and 1440/],
+    ['a non-numeric timeout', ['feature/ui', '--timeout', 'abc'], /timeout must be an integer between 1 and 1440/],
+    ['a missing timeout value', ['feature/ui', '--timeout'], /missing timeout in minutes/],
+    ['an odd vcpu count', ['feature/ui', '--vcpus', '3'], /vcpus must be a positive integer that is 1 or even, up to 32/],
+    ['zero vcpus', ['feature/ui', '--vcpus', '0'], /vcpus must be a positive integer that is 1 or even, up to 32/],
+    ['vcpus over the maximum', ['feature/ui', '--vcpus', '33'], /vcpus must be a positive integer that is 1 or even, up to 32/],
+    ['a missing vcpus value', ['feature/ui', '--vcpus'], /missing vCPU count/],
+    ['a duplicate --timeout flag', ['feature/ui', '--timeout', '30', '--timeout', '90'], /duplicate --timeout flag/],
+    ['a duplicate --vcpus flag', ['feature/ui', '--vcpus', '2', '--vcpus', '4'], /duplicate --vcpus flag/],
+  ])('rejects %s', (_label, args, message) => {
+    const parsed = parseCliArgs(args);
+    expect(parsed).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((parsed as { message: string }).message).toMatch(message);
+  });
+
+  it.each([
+    ['--stop', /--timeout is not valid with --stop/],
+    ['--rm', /--timeout is not valid with --rm/],
+    ['--url', /--timeout is not valid with --url/],
+  ])('rejects --timeout with %s', (flag, message) => {
+    const parsed = parseCliArgs(['feature/ui', flag, '--timeout', '90']);
+    expect(parsed).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((parsed as { message: string }).message).toMatch(message);
+  });
+
+  it.each([
+    ['--stop', /--vcpus is not valid with --stop/],
+    ['--rm', /--vcpus is not valid with --rm/],
+    ['--url', /--vcpus is not valid with --url/],
+  ])('rejects --vcpus with %s', (flag, message) => {
+    const parsed = parseCliArgs(['feature/ui', flag, '--vcpus', '4']);
+    expect(parsed).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((parsed as { message: string }).message).toMatch(message);
+  });
+
+  it('rejects the flags on --list with the targeted message', () => {
+    const timeout = parseCliArgs(['--list', '--timeout', '90']);
+    expect(timeout).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((timeout as { message: string }).message)
+      .toMatch(/--timeout is only valid when booting or attaching a branch/);
+    const vcpus = parseCliArgs(['--list', '--vcpus', '4']);
+    expect(vcpus).toMatchObject({ kind: 'error', exitCode: 2 });
+    expect((vcpus as { message: string }).message)
+      .toMatch(/--vcpus is only valid when booting or attaching a branch/);
+  });
+
+  it('reports each flag as unsupported for the local provider', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-resources-cli-'));
+    try {
+      for (const flag of ['--timeout', '--vcpus']) {
+        const stdin = new PassThrough();
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        let err = '';
+        stderr.on('data', (chunk) => (err += chunk.toString()));
+        const args = flag === '--timeout'
+          ? ['feature/ui', '--provider', 'local', '--timeout', '90']
+          : ['feature/ui', '--provider', 'local', '--vcpus', '4'];
+        const code = await dispatch(
+          args,
+          { stdin, stdout, stderr },
+          { repoRoot: process.cwd(), stateHome, env: {}, tty: false },
+        );
+
+        expect(code).toBe(2);
+        expect(err).toContain(`${flag} is not supported by the local provider`);
+      }
+    } finally {
+      await rm(stateHome, { recursive: true, force: true });
+    }
+  });
+
+  it('documents the flags in the boot and global help', async () => {
+    const global = await run(['--help']);
+    const boot = await run(['feature/ui', '--help']);
+
+    expect(global.stdout + global.stderr).toContain('--timeout <minutes>');
+    expect(global.stdout + global.stderr).toContain('--vcpus <n>');
+    expect(boot.stdout + boot.stderr).toContain('--timeout <minutes>');
+    expect(boot.stdout + boot.stderr).toContain('--vcpus <n>');
+  });
+});

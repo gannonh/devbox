@@ -1,3 +1,5 @@
+import { assertSandboxVcpus } from './resources.js';
+
 export interface VercelIdentityTags {
   provider: string;
   repository: string;
@@ -35,6 +37,7 @@ export interface VercelCreateConfiguration {
   persistent: true;
   keepLastSnapshots: 1;
   timeoutMs: number;
+  vcpus?: number;
 }
 
 export interface VercelMetadataInput {
@@ -178,7 +181,7 @@ const STORED_FIELDS = [
 const IDENTITY_FIELDS = ['name', 'repository', 'branch', 'packageVersion', 'tags'] as const;
 const TAG_FIELDS = ['provider', 'repository', 'branch', 'version', 'identity'] as const;
 const RESIDUAL_FIELDS = ['sandboxIds', 'snapshotIds', 'reason'] as const;
-const CONFIGURATION_FIELDS = [
+const REQUIRED_CONFIGURATION_FIELDS = [
   'imageReference',
   'sourceUrl',
   'sourceRevision',
@@ -188,6 +191,8 @@ const CONFIGURATION_FIELDS = [
   'keepLastSnapshots',
   'timeoutMs',
 ] as const;
+const OPTIONAL_CONFIGURATION_FIELDS = ['vcpus'] as const;
+const ALL_CONFIGURATION_FIELDS = [...REQUIRED_CONFIGURATION_FIELDS, ...OPTIONAL_CONFIGURATION_FIELDS] as const;
 
 export function validateMetadataInput(value: unknown): VercelMetadataInput {
   const input = expectRecord(value, 'Vercel metadata input');
@@ -509,8 +514,8 @@ function parseConfiguration(value: unknown): VercelCreateConfiguration {
   const configuration = expectRecord(value, 'Vercel metadata configuration');
   assertExactKeys(
     configuration,
-    CONFIGURATION_FIELDS,
-    CONFIGURATION_FIELDS,
+    ALL_CONFIGURATION_FIELDS,
+    REQUIRED_CONFIGURATION_FIELDS,
     'Vercel metadata configuration',
   );
   if (configuration.needsBranchSetup !== true && configuration.needsBranchSetup !== false) {
@@ -529,6 +534,14 @@ function parseConfiguration(value: unknown): VercelCreateConfiguration {
   ) {
     throw new Error('Metadata configuration.timeoutMs must be positive');
   }
+  let vcpus: number | undefined;
+  if (configuration.vcpus !== undefined) {
+    if (typeof configuration.vcpus !== 'number') {
+      throw new Error('Metadata configuration.vcpus must be a positive integer');
+    }
+    assertSandboxVcpus(configuration.vcpus);
+    vcpus = configuration.vcpus;
+  }
   const sourceUrl = requireString(configuration.sourceUrl, 'configuration.sourceUrl');
   assertSecretFreeSourceUrl(sourceUrl);
   return {
@@ -540,6 +553,7 @@ function parseConfiguration(value: unknown): VercelCreateConfiguration {
     persistent: true,
     keepLastSnapshots: 1,
     timeoutMs: configuration.timeoutMs,
+    ...(vcpus === undefined ? {} : { vcpus }),
   };
 }
 
