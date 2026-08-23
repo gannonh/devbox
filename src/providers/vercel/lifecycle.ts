@@ -311,6 +311,9 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
       return metadataStore.withLock(async () => {
         const metadata = await metadataStore.read();
         const identity = requireStoredIdentity(metadata, context);
+        if (metadata?.configuration && context.configuration) {
+          assertConfiguration(metadata.configuration, context.configuration);
+        }
         const sandbox = await getExistingSandbox(context, context.credentials, identity.name, true);
         validateSandboxIdentity(sandbox, context, identity);
         return sandbox;

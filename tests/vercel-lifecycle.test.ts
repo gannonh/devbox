@@ -1926,4 +1926,52 @@ describe('Vercel lifecycle', () => {
     await expect(lifecycle.up()).rejects.toThrow(/Vercel Sandbox resources conflict/);
     await expect(metadata.read()).resolves.toBeNull();
   });
+
+  it('rejects an attach whose requested configuration conflicts with stored create-only values', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-attach-conflict-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const identity = createVercelIdentity({
+      remote: source.remote.canonical,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      scope: { teamId: credentials.teamId, projectId: credentials.projectId },
+    });
+    await metadata.write({
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: { ...identity.tags },
+      },
+      sandboxId: identity.name,
+      configuration: {
+        imageReference: TEST_IMAGE_REFERENCE,
+        sourceUrl: source.source.url,
+        sourceRevision: source.source.revision,
+        requestedBranch: source.requestedBranch,
+        needsBranchSetup: source.needsBranchSetup,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+    });
+    const client = {
+      get: vi.fn(async () => sandbox()),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      timeoutMs: 5_400_000,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.attach()).rejects.toMatchObject({ code: 'identity_conflict' });
+    expect(client.get).not.toHaveBeenCalled();
+  });
 });
