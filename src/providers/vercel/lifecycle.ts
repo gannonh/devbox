@@ -36,6 +36,7 @@ import {
   type GitHubSourcePlan,
 } from './source.js';
 import { redactSecrets } from './redaction.js';
+import { assertSandboxVcpus } from './resources.js';
 import { assertSdkPorts, resolveDevcontainerPorts } from './ports.js';
 import type { ShellRunner } from '../../lib/shell.js';
 
@@ -749,8 +750,8 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');
   }
-  if (options.vcpus !== undefined && (!Number.isInteger(options.vcpus) || options.vcpus <= 0)) {
-    throw new Error('Vercel Sandbox vcpus must be a positive integer');
+  if (options.vcpus !== undefined) {
+    assertSandboxVcpus(options.vcpus);
   }
   const metadataStore = options.listOnly ? undefined : options.branchMetadataStore;
   const client = options.client;

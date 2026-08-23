@@ -57,10 +57,10 @@ OPTIONS
                             comma-separated app ports as public routes without
                             the interactive prompt
   --timeout <minutes>       Vercel only, with a boot or --attach: Sandbox
-                            timeout in minutes; default 60, max 1440 (24h)
+                            timeout in minutes (1-1440); default 60
   --vcpus <n>               Vercel only, with a boot or --attach: Sandbox
-                            vCPUs; memory is 2048 MB per vCPU and Vercel
-                            defaults to 2
+                            vCPUs, 1 or even up to 32; memory is 2048 MB per
+                            vCPU and Vercel defaults to 2
 
 EXAMPLES
   devbox init                        # set up .devbox/ in the current repo
@@ -117,10 +117,10 @@ FLAGS
                             copied into the box or host worktree
   --expose-ports <list>     Vercel only: expose these comma-separated app ports
                             as public routes instead of prompting
-  --timeout <minutes>       Vercel only: Sandbox timeout in minutes; default 60,
-                            max 1440 (24h)
-  --vcpus <n>               Vercel only: Sandbox vCPUs; memory is 2048 MB per
-                            vCPU and Vercel defaults to 2
+  --timeout <minutes>       Vercel only: Sandbox timeout in minutes
+                            (1-1440); default 60
+  --vcpus <n>               Vercel only: Sandbox vCPUs, 1 or even up to 32;
+                            memory is 2048 MB per vCPU and Vercel defaults to 2
 
 EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box

@@ -761,6 +761,8 @@ describe('Vercel Sandbox client adapter', () => {
     ['zero', 0],
     ['negative', -2],
     ['fractional', 1.5],
+    ['odd', 3],
+    ['over the cap', 33],
   ])('refuses %s vcpus', (_label, vcpus) => {
     expect(() => buildVercelSandboxCreateRequest({
       name: 'devbox-vercel-repo-main',
@@ -775,7 +777,7 @@ describe('Vercel Sandbox client adapter', () => {
       timeoutMs: 1_800_000,
       tags: {},
       vcpus,
-    })).toThrow(/Vercel Sandbox vcpus must be a positive integer/);
+    })).toThrow(/Vercel Sandbox vcpus must be 1 or an even integer up to 32/);
   });
 });
 

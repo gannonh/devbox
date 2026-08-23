@@ -1,6 +1,7 @@
 import { Command, CommandFinished, Sandbox, Snapshot } from '@vercel/sandbox';
 import type { VercelCredentials } from './auth.js';
 import { parseVercelImageReference } from './image.js';
+import { assertSandboxVcpus } from './resources.js';
 import type { GitSource } from './source.js';
 import { redactSecrets } from './redaction.js';
 
@@ -164,11 +165,8 @@ export function buildVercelSandboxCreateRequest(
   if (!Number.isFinite(input.timeoutMs) || input.timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');
   }
-  if (
-    input.vcpus !== undefined &&
-    (!Number.isFinite(input.vcpus) || !Number.isInteger(input.vcpus) || input.vcpus <= 0)
-  ) {
-    throw new Error('Vercel Sandbox vcpus must be a positive integer');
+  if (input.vcpus !== undefined) {
+    assertSandboxVcpus(input.vcpus);
   }
   // Throws unless the reference is fully qualified and digest-pinned.
   parseVercelImageReference(input.image);

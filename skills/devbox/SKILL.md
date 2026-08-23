@@ -79,7 +79,7 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 | `devbox <branch> --rm` | Remove container, worktree, and branch. Uncommitted worktree work is lost. |
 | `devbox <branch> --url` | Print the noVNC URL. Add `--open` `-o` to launch a browser. |
 | `devbox <branch> --provider vercel --expose-ports <list>` | Vercel only, on boot or `--attach`: expose these comma-separated app ports as public routes without the interactive prompt. |
-| `devbox <branch> --provider vercel --timeout <minutes> --vcpus <n>` | Vercel only, on boot or `--attach`: Sandbox timeout in minutes (default 60, max 1440) and vCPU count (2048 MB memory per vCPU; Vercel defaults to 2). Stored per branch; changing one later conflicts instead of updating. |
+| `devbox <branch> --provider vercel --timeout <minutes> --vcpus <n>` | Vercel only, on boot or `--attach`: Sandbox timeout in minutes (1-1440, default 60) and vCPU count (1 or even up to 32; 2048 MB memory per vCPU). Stored per branch; changing one later conflicts instead of updating. |
 | `devbox --list` `-l` | List all devbox containers for this repo with state + noVNC URLs. |
 | `devbox --help` `-h` | Show usage. |
 

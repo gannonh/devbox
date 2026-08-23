@@ -122,6 +122,8 @@ describe('Vercel metadata', () => {
     ['zero', 0],
     ['negative', -4],
     ['fractional', 2.5],
+    ['odd', 3],
+    ['over the cap', 33],
   ])('rejects %s vcpus in branch create configuration', async (_label, vcpus) => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-vcpus-invalid-'));
     const store = createVercelBranchMetadataStore({
@@ -142,7 +144,7 @@ describe('Vercel metadata', () => {
         timeoutMs: 3_600_000,
         vcpus,
       },
-    })).rejects.toThrow(/configuration\.vcpus must be a positive integer/);
+    })).rejects.toThrow(/vcpus must be 1 or an even integer up to 32/);
   });
   it('writes and reads non-secret scope metadata with mode 0600', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));

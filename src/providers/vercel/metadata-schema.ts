@@ -1,3 +1,5 @@
+import { assertSandboxVcpus } from './resources.js';
+
 export interface VercelIdentityTags {
   provider: string;
   repository: string;
@@ -534,13 +536,10 @@ function parseConfiguration(value: unknown): VercelCreateConfiguration {
   }
   let vcpus: number | undefined;
   if (configuration.vcpus !== undefined) {
-    if (
-      typeof configuration.vcpus !== 'number' ||
-      !Number.isInteger(configuration.vcpus) ||
-      configuration.vcpus <= 0
-    ) {
+    if (typeof configuration.vcpus !== 'number') {
       throw new Error('Metadata configuration.vcpus must be a positive integer');
     }
+    assertSandboxVcpus(configuration.vcpus);
     vcpus = configuration.vcpus;
   }
   const sourceUrl = requireString(configuration.sourceUrl, 'configuration.sourceUrl');
