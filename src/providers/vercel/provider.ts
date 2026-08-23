@@ -63,9 +63,10 @@ import {
 import { prepareSandboxRuntime, RUNTIME_PREPARATION_TIMEOUT_MS } from './runtime.js';
 import { assertSafeEnvironmentKeys } from '../local/env.js';
 import { addSecrets, redactSecrets } from './redaction.js';
-import { DEVBOX_NOVNC_PROXY_PORT } from './ports.js';
+import { DEVBOX_NOVNC_PROXY_PORT, appPortsOf, buildDesiredPortSet, samePortSet } from './ports.js';
 import {
   applyAppPorts,
+  reconcilePendingAppPorts,
   type AppPortFlowMode,
   type AppPortFlowResult,
   type AppPortPrompt,
@@ -204,7 +205,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
       };
-      const setupStatus = await prepareSandboxRuntime(runtimeOptions);
+      const setupStatus = (await prepareSandboxRuntime(runtimeOptions)).setupStatus;
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
       const appPorts = await resolveAppPorts(
         request,
@@ -256,23 +257,29 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore!,
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
+        mode: 'attach' as const,
       };
-      const setupStatus = await prepareSandboxRuntime(runtimeOptions);
+      const runtime = await prepareSandboxRuntime(runtimeOptions);
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
-      const appPorts = await resolveAppPorts(
-        request,
-        options,
-        client,
-        sandbox,
-        prepared.branchStore!,
-        repository,
-        secrets,
-        'resume',
-      );
+      const appPorts = runtime.reused && request.exposePorts === undefined
+        ? await reuseRecordedAppPorts(request, client, sandbox, prepared.branchStore!, repository, secrets)
+        : await resolveAppPorts(
+          request,
+          options,
+          client,
+          sandbox,
+          prepared.branchStore!,
+          repository,
+          secrets,
+          'resume',
+        );
+      if (runtime.reused) {
+        request.stderr.write('Re-entering the prepared sandbox (no re-provisioning)\n');
+      }
       await renderVercelAttachNotice(
         request,
         sandbox,
-        setupStatus,
+        runtime.setupStatus,
         await displayToken(prepared.branchStore, secrets),
         appPorts,
       );
@@ -849,6 +856,52 @@ async function resolveAppPorts(
       `app ports: ${redactSecrets(error, secrets)}; continuing with configured routes only\n`,
     );
     return undefined;
+  }
+}
+
+async function reuseRecordedAppPorts(
+  request: ProviderBranchRequest,
+  client: VercelSandboxClient,
+  sandbox: VercelSandboxHandle,
+  branchStore: VercelBranchMetadataStore,
+  repository: string,
+  secrets: readonly string[],
+): Promise<AppPortFlowResult> {
+  const actual = buildDesiredPortSet(appPortsOf((sandbox.routes ?? []).map((route) => route.port)), []);
+  try {
+    const selection = await branchStore.withLock(async () => {
+      let metadata = await branchStore.read();
+      if (metadata?.pendingAppPorts) {
+        // An interrupted route update must reconcile before any recorded
+        // selection is restored; the flow owns that reconciliation.
+        metadata = await reconcilePendingAppPorts({
+          sandbox,
+          client,
+          branchStore,
+          repoRoot: request.repoRoot,
+          workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
+          branch: request.branch,
+          tty: request.tty,
+          stdin: request.stdin,
+          stderr: request.stderr,
+          secrets,
+        }, metadata);
+      }
+      return metadata?.appPorts;
+    });
+    if (selection?.applied && !samePortSet(actual, selection.applied)) {
+      await client.updatePorts(sandbox, selection.applied);
+      return {
+        selected: [...selection.selected],
+        applied: [...selection.applied],
+        updated: true,
+        labels: {},
+      };
+    }
+    return { selected: [...(selection?.selected ?? [])], applied: actual, updated: false, labels: {} };
+  } catch (error) {
+    request.stderr.write(`app ports: ${redactSecrets(error, secrets)}; continuing with current routes\n`);
+    return { selected: [], applied: actual, updated: false, labels: {} };
   }
 }
 

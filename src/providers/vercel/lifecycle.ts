@@ -1001,7 +1001,7 @@ function sameTags(actual: Record<string, string> | TagSet, expected: Readonly<Re
     actualKeys.every((key, index) => key === expectedKeys[index] && actualValues[key] === expectedValues[key]);
 }
 
-function sandboxIdentifier(sandbox: VercelSandboxHandle): string {
+export function sandboxIdentifier(sandbox: VercelSandboxHandle): string {
   const candidate = sandbox as VercelSandboxHandle & { id?: unknown };
   return typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id : sandbox.name;
 }

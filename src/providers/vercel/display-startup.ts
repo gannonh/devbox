@@ -195,6 +195,39 @@ export async function startDisplayStack(options: DisplayStartupOptions): Promise
   }
 }
 
+/**
+ * Verified-running check for re-entry paths: true only when one status poll
+ * reports every required service running. Any failure reads as not running so
+ * callers fall back to full startup.
+ */
+export async function isDisplayStackRunning(options: {
+  sandbox: VercelSandboxHandle;
+  client: VercelSandboxClient;
+  secrets?: readonly string[];
+  signal?: AbortSignal;
+}): Promise<boolean> {
+  let result: VercelCommandResult;
+  try {
+    result = await options.client.runCommand(options.sandbox, {
+      cmd: DISPLAY_STATUS_COMMAND,
+      timeoutMs: DISPLAY_STARTUP_TIMEOUT_MS,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+  } catch {
+    return false;
+  }
+  if (result.exitCode !== 0 || !result.stdout) return false;
+  try {
+    const output = await result.stdout(
+      options.signal === undefined ? undefined : { signal: options.signal },
+    );
+    const safe = redactSecrets(output, options.secrets ?? []);
+    return REQUIRED_SERVICES.every((service) => hasRunningService(safe, service));
+  } catch {
+    return false;
+  }
+}
+
 async function runCommand(
   options: DisplayStartupOptions,
   request: VercelRunCommandRequest,

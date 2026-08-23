@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import { access, chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -717,6 +718,374 @@ describe('Vercel provider', () => {
     );
     expect(confirmation).not.toHaveBeenCalled();
     expect(execQuiet).not.toHaveBeenCalled();
+  });
+
+  it('cheaply re-enters a prepared sandbox without prompting and restores drifted routes', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-reattach-'));
+    const remote = 'github.com/acme/repo';
+    const head = 'b'.repeat(40);
+    const identity = createVercelIdentity({ remote, branch: 'feature/ui', packageVersion: '0.1.2' });
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: remote });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
+    await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
+    await metadata.write({
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: { ...identity.tags },
+      },
+      sandboxId: 'sandbox-id',
+      configuration: {
+        imageReference: TEST_IMAGE_REFERENCE,
+        sourceUrl: 'https://github.com/acme/repo.git',
+        sourceRevision: 'main',
+        requestedBranch: 'feature/ui',
+        needsBranchSetup: false,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+      displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
+      appPorts: {
+        selected: [3000],
+        applied: [3000],
+        fingerprint: 'f'.repeat(64),
+        detectorVersion: 2,
+        revision: head,
+      },
+    });
+    const marker = {
+      sandboxId: 'sandbox-id',
+      revision: head,
+      githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
+      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
+    };
+    const commands: Array<{ cmd?: string; args?: string[] }> = [];
+    const updatedPorts: number[][] = [];
+    const client = {
+      runCommand: async (_sandbox: unknown, request: { cmd?: string; args?: string[] }) => {
+        commands.push(request);
+        if (request.cmd === 'cat' && request.args?.[0] === '/vercel/.devbox/runtime/setup.status') {
+          return {
+            exitCode: 0,
+            stdout: async () => JSON.stringify({ status: 'succeeded', startedAt: 1, finishedAt: 2 }),
+          };
+        }
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
+        }
+        const script = request.cmd === 'sh' ? request.args?.[1] ?? '' : '';
+        if (script.includes('cat /vercel/.devbox/runtime/preparation.json')) {
+          return {
+            exitCode: 0,
+            stdout: async () => `${JSON.stringify(marker)}\n--DEVBOX--\n${head}\n`,
+          };
+        }
+        return { exitCode: 0 };
+      },
+      writeFiles: async () => {},
+      updatePorts: async (_sandbox: unknown, ports: number[]) => {
+        updatedPorts.push([...ports]);
+      },
+    } as unknown as VercelSandboxClient;
+    const box = {
+      ...sandbox(),
+      routes: [
+        { port: 6080, subdomain: '', url: 'https://sandbox.example/6080' },
+        { port: 6082, subdomain: '', url: 'https://sandbox.example/6082' },
+      ],
+      domain: (port: number) => `https://sandbox.example/${port}`,
+    };
+    const currentLifecycle = lifecycle();
+    currentLifecycle.attach = vi.fn(async () => box as unknown as VercelSandboxHandle);
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+    };
+    const prompt = vi.fn(() => {
+      throw new Error('app-port prompt must never appear on a cheap attach');
+    });
+    const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
+      runner: runner(),
+      stateHome,
+      lifecycle: currentLifecycle,
+      terminal,
+      client,
+      appPortPrompt: prompt,
+    });
+    const stderr = new PassThrough();
+    let stderrText = '';
+    stderr.on('data', (chunk: Buffer) => {
+      stderrText += chunk.toString('utf8');
+    });
+
+    const code = await provider.attach(request({
+      env: {
+        HOME: '/tmp/devbox-vercel-provider-no-pi',
+        GH_TOKEN: 'github-secret',
+        VERCEL_TOKEN: 'stored-token',
+        VERCEL_TEAM_ID: 'stored-team',
+        VERCEL_PROJECT_ID: 'stored-project',
+      },
+      runtimeEnvironment: { API_KEY: 'dotenv-secret' },
+      stderr,
+    }));
+
+    expect(code).toEqual({ exitCode: 0 });
+    expect(stderrText).toContain('Re-entering the prepared sandbox (no re-provisioning)');
+    expect(prompt).not.toHaveBeenCalled();
+    expect(updatedPorts).toEqual([[3000]]);
+    expect(commands.every((command) =>
+      command.cmd === '/usr/local/bin/devbox-status'
+      || command.cmd === 'cat'
+      || (command.args?.[1] ?? '').includes('cat /vercel/.devbox/runtime/preparation.json')))
+      .toBe(true);
+    expect(terminal.attach).toHaveBeenCalledOnce();
+  });
+
+  it('honors --expose-ports on an otherwise cheap attach', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-reattach-'));
+    const remote = 'github.com/acme/repo';
+    const head = 'b'.repeat(40);
+    const identity = createVercelIdentity({ remote, branch: 'feature/ui', packageVersion: '0.1.2' });
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: remote });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
+    await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
+    await metadata.write({
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: { ...identity.tags },
+      },
+      sandboxId: 'sandbox-id',
+      configuration: {
+        imageReference: TEST_IMAGE_REFERENCE,
+        sourceUrl: 'https://github.com/acme/repo.git',
+        sourceRevision: 'main',
+        requestedBranch: 'feature/ui',
+        needsBranchSetup: false,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+      displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
+      appPorts: {
+        selected: [3000],
+        applied: [3000],
+        fingerprint: 'f'.repeat(64),
+        detectorVersion: 2,
+        revision: head,
+      },
+    });
+    const marker = {
+      sandboxId: 'sandbox-id',
+      revision: head,
+      githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
+      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
+    };
+    const updatedPorts: number[][] = [];
+    const client = {
+      runCommand: async (_sandbox: unknown, request: { cmd?: string; args?: string[] }) => {
+        if (request.cmd === 'cat' && request.args?.[0] === '/vercel/.devbox/runtime/setup.status') {
+          return {
+            exitCode: 0,
+            stdout: async () => JSON.stringify({ status: 'succeeded', startedAt: 1, finishedAt: 2 }),
+          };
+        }
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
+        }
+        const script = request.cmd === 'sh' ? request.args?.[1] ?? '' : '';
+        if (script.includes('cat /vercel/.devbox/runtime/preparation.json')) {
+          return {
+            exitCode: 0,
+            stdout: async () => `${JSON.stringify(marker)}\n--DEVBOX--\n${head}\n`,
+          };
+        }
+        if (request.cmd === 'git' && request.args?.includes('rev-parse')) {
+          return { exitCode: 0, stdout: async () => `${head}\n` };
+        }
+        return { exitCode: 0 };
+      },
+      writeFiles: async () => {},
+      updatePorts: async (_sandbox: unknown, ports: number[]) => {
+        updatedPorts.push([...ports]);
+      },
+    } as unknown as VercelSandboxClient;
+    const box = {
+      ...sandbox(),
+      routes: [{ port: 6080, subdomain: '', url: 'https://sandbox.example/6080' }],
+      domain: (port: number) => `https://sandbox.example/${port}`,
+    };
+    const currentLifecycle = lifecycle();
+    currentLifecycle.attach = vi.fn(async () => box as unknown as VercelSandboxHandle);
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+    };
+    const prompt = vi.fn(() => {
+      throw new Error('app-port prompt must never appear on a cheap attach');
+    });
+    const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
+      runner: runner(),
+      stateHome,
+      lifecycle: currentLifecycle,
+      terminal,
+      client,
+      appPortPrompt: prompt,
+    });
+    const stderr = new PassThrough();
+    let stderrText = '';
+    stderr.on('data', (chunk: Buffer) => {
+      stderrText += chunk.toString('utf8');
+    });
+
+    const code = await provider.attach(request({
+      env: {
+        HOME: '/tmp/devbox-vercel-provider-no-pi',
+        GH_TOKEN: 'github-secret',
+        VERCEL_TOKEN: 'stored-token',
+        VERCEL_TEAM_ID: 'stored-team',
+        VERCEL_PROJECT_ID: 'stored-project',
+      },
+      runtimeEnvironment: { API_KEY: 'dotenv-secret' },
+      exposePorts: [4000],
+      stderr,
+    }));
+
+    expect(code).toEqual({ exitCode: 0 });
+    expect(stderrText).toContain('exposing 4000 from --expose-ports');
+    expect(prompt).not.toHaveBeenCalled();
+    expect(updatedPorts).toEqual([[4000, 6080]]);
+    expect(terminal.attach).toHaveBeenCalledOnce();
+  });
+
+  it('reconciles an interrupted route update before reusing recorded routes', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-reattach-'));
+    const remote = 'github.com/acme/repo';
+    const head = 'b'.repeat(40);
+    const identity = createVercelIdentity({ remote, branch: 'feature/ui', packageVersion: '0.1.2' });
+    const scope = createVercelScopeMetadataStore({ stateHome, repoKey: remote });
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: remote, branch: 'feature/ui' });
+    await scope.write({ teamId: 'stored-team', projectId: 'stored-project' });
+    await metadata.write({
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: { ...identity.tags },
+      },
+      sandboxId: 'sandbox-id',
+      configuration: {
+        imageReference: TEST_IMAGE_REFERENCE,
+        sourceUrl: 'https://github.com/acme/repo.git',
+        sourceRevision: 'main',
+        requestedBranch: 'feature/ui',
+        needsBranchSetup: false,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+      displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
+      appPorts: {
+        selected: [],
+        applied: [],
+        fingerprint: 'f'.repeat(64),
+        detectorVersion: 2,
+        revision: head,
+      },
+      pendingAppPorts: {
+        previous: [],
+        desired: [3000, 6080],
+        selected: [3000],
+        fingerprint: 'f'.repeat(64),
+        detectorVersion: 2,
+        revision: head,
+      },
+    });
+    const marker = {
+      sandboxId: 'sandbox-id',
+      revision: head,
+      githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
+      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
+    };
+    const updatedPorts: number[][] = [];
+    const client = {
+      runCommand: async (_sandbox: unknown, request: { cmd?: string; args?: string[] }) => {
+        if (request.cmd === 'cat' && request.args?.[0] === '/vercel/.devbox/runtime/setup.status') {
+          return {
+            exitCode: 0,
+            stdout: async () => JSON.stringify({ status: 'succeeded', startedAt: 1, finishedAt: 2 }),
+          };
+        }
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
+        }
+        const script = request.cmd === 'sh' ? request.args?.[1] ?? '' : '';
+        if (script.includes('cat /vercel/.devbox/runtime/preparation.json')) {
+          return {
+            exitCode: 0,
+            stdout: async () => `${JSON.stringify(marker)}\n--DEVBOX--\n${head}\n`,
+          };
+        }
+        return { exitCode: 0 };
+      },
+      writeFiles: async () => {},
+      updatePorts: async (_sandbox: unknown, ports: number[]) => {
+        updatedPorts.push([...ports]);
+      },
+    } as unknown as VercelSandboxClient;
+    // Live routes already match pending.desired: reconciliation commits it.
+    const box = {
+      ...sandbox(),
+      routes: [
+        { port: 3000, subdomain: '', url: 'https://sandbox.example/3000' },
+        { port: 6080, subdomain: '', url: 'https://sandbox.example/6080' },
+      ],
+      domain: (port: number) => `https://sandbox.example/${port}`,
+    };
+    const currentLifecycle = lifecycle();
+    currentLifecycle.attach = vi.fn(async () => box as unknown as VercelSandboxHandle);
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+    };
+    const provider = createVercelProvider({
+      resolveImage: resolveTestImage,
+      runner: runner(),
+      stateHome,
+      lifecycle: currentLifecycle,
+      terminal,
+      client,
+    });
+    const stderr = new PassThrough();
+    let stderrText = '';
+    stderr.on('data', (chunk: Buffer) => {
+      stderrText += chunk.toString('utf8');
+    });
+
+    const code = await provider.attach(request({
+      env: {
+        HOME: '/tmp/devbox-vercel-provider-no-pi',
+        GH_TOKEN: 'github-secret',
+        VERCEL_TOKEN: 'stored-token',
+        VERCEL_TEAM_ID: 'stored-team',
+        VERCEL_PROJECT_ID: 'stored-project',
+      },
+      runtimeEnvironment: { API_KEY: 'dotenv-secret' },
+      stderr,
+    }));
+
+    expect(code).toEqual({ exitCode: 0 });
+    expect(stderrText).toContain('committing the interrupted route update');
+    expect(updatedPorts).toEqual([]);
+    const stored = await metadata.read();
+    expect(stored?.pendingAppPorts).toBeUndefined();
+    expect(stored?.appPorts?.applied).toEqual([3000, 6080]);
   });
 
   it('renders only concise stop usage output', async () => {
