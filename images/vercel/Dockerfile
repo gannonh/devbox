@@ -128,7 +128,9 @@ RUN set -eux; \
     rm -f /usr/lib/python3*/EXTERNALLY-MANAGED; \
     python -m pip install --no-cache-dir "pip==25.1.1" "uv==0.12.2"; \
     rm -rf /root/.cache/pip /var/lib/apt/lists/*; \
-    git lfs install --system; \
+    git lfs install --system
+
+RUN set -eux; \
     agent_version() { jq -r --arg agent "$1" '.agents[$agent].version' /usr/local/share/devbox/agents.json; }; \
     install_source="$(jq -r '.installSource' /usr/local/share/devbox/agents.json)"; \
     npm install -g --registry "${install_source}" \
