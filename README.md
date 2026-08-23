@@ -113,7 +113,7 @@ After checkout, devbox reads `package.json` files without executing them and sug
 npx @gannonh/devbox --provider vercel my-branch --expose-ports 5173
 ```
 
-On boot or `--attach`, `--timeout <minutes>` sets the Sandbox timeout (1-1440 minutes; default 60) and `--vcpus <n>` sets the Sandbox vCPUs (1 or an even number up to 32; 2048 MB of memory per vCPU; Vercel defaults to 2). Both are stored per branch like the image, so changing one later conflicts instead of updating:
+On the boot that creates the sandbox, `--timeout <minutes>` sets the Sandbox timeout (1-1440 minutes; default 60) and `--vcpus <n>` sets the Sandbox vCPUs (1 or an even number up to 32; 2048 MB of memory per vCPU; Vercel defaults to 2). Both are stored per branch like the image, so neither resizes an existing box: changing one later conflicts, and `--rm` plus a fresh boot is the way to change them.
 
 ```bash
 npx @gannonh/devbox --provider vercel my-branch --timeout 90 --vcpus 4

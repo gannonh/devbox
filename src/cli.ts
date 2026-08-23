@@ -56,11 +56,13 @@ OPTIONS
   --expose-ports <list>     Vercel only, with a boot or --attach: expose these
                             comma-separated app ports as public routes without
                             the interactive prompt
-  --timeout <minutes>       Vercel only, with a boot or --attach: Sandbox
+  --timeout <minutes>       Vercel only, on the boot that creates the sandbox:
                             timeout in minutes (1-1440); default 60
-  --vcpus <n>               Vercel only, with a boot or --attach: Sandbox
+  --vcpus <n>               Vercel only, on the boot that creates the sandbox:
                             vCPUs, 1 or even up to 32; memory is 2048 MB per
-                            vCPU and Vercel defaults to 2
+                            vCPU and Vercel defaults to 2. Both are stored per
+                            branch; changing either later conflicts instead of
+                            resizing, so re-create the box with --rm
 
 EXAMPLES
   devbox init                        # set up .devbox/ in the current repo
@@ -117,10 +119,12 @@ FLAGS
                             copied into the box or host worktree
   --expose-ports <list>     Vercel only: expose these comma-separated app ports
                             as public routes instead of prompting
-  --timeout <minutes>       Vercel only: Sandbox timeout in minutes
-                            (1-1440); default 60
-  --vcpus <n>               Vercel only: Sandbox vCPUs, 1 or even up to 32;
-                            memory is 2048 MB per vCPU and Vercel defaults to 2
+  --timeout <minutes>       Vercel only, create-only: Sandbox timeout in
+                            minutes (1-1440); default 60
+  --vcpus <n>               Vercel only, create-only: Sandbox vCPUs, 1 or even
+                            up to 32; memory is 2048 MB per vCPU and Vercel
+                            defaults to 2. Neither resizes an existing box;
+                            --rm and boot again to change them
 
 EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box
