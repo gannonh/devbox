@@ -113,6 +113,9 @@ describe('Vercel Universal mirror provenance', () => {
     }
     expect(dockerfile).toContain(`pip==${provenance.runtimePackages.pip}`);
     expect(dockerfile).toContain(`uv==${provenance.runtimePackages.uv}`);
+    expect(dockerfile).toContain('      g++ \\\n');
+    expect(dockerfile).toContain('      make \\\n');
+    expect(dockerfile).toContain('      python3 \\\n');
     for (const line of dockerfile.match(/^FROM\s+\S+/gm) ?? []) {
       const reference = line.split(/\s+/)[1];
       if (reference === 'ubuntu-base') continue;
