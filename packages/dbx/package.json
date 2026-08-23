@@ -1,6 +1,6 @@
 {
   "name": "@gannonh/dbx",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Short-name alias for @gannonh/devbox. npx @gannonh/dbx <branch> == npx @gannonh/devbox <branch>.",
   "type": "module",
   "bin": {
@@ -27,6 +27,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@gannonh/devbox": "0.1.5"
+    "@gannonh/devbox": "0.1.6"
   }
 }
