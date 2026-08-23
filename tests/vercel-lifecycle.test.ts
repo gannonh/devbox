@@ -444,7 +444,7 @@ describe('Vercel lifecycle', () => {
         needsBranchSetup: source.needsBranchSetup,
         persistent: true,
         keepLastSnapshots: 1,
-        timeoutMs: 1_800_000,
+        timeoutMs: DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
       },
     });
 
@@ -523,7 +523,7 @@ describe('Vercel lifecycle', () => {
         needsBranchSetup: source.needsBranchSetup,
         persistent: true,
         keepLastSnapshots: 1,
-        timeoutMs: 1_800_000,
+        timeoutMs: DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
       },
     });
 
@@ -1257,7 +1257,7 @@ describe('Vercel lifecycle', () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
     const handle = sandbox() as VercelSandboxHandle & { timeout: number };
-    handle.timeout = 1_800_000;
+    handle.timeout = DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS;
     const client = {
       getOrCreate: vi.fn(async () => handle),
     } as unknown as VercelSandboxClient;
@@ -1793,5 +1793,137 @@ describe('Vercel lifecycle', () => {
       args: ['switch', '--force-create', 'main', '--'],
       cwd: '/vercel/sandbox/repo',
     });
+  });
+
+  it('defaults the create timeout to sixty minutes and persists it without vcpus', async () => {
+    expect(DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS).toBe(3_600_000);
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-default-timeout-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await lifecycle.up();
+    expect(client.getOrCreate).toHaveBeenCalledTimes(1);
+    expect((client.getOrCreate.mock.calls[0] as unknown[])[0]).toMatchObject({
+      timeout: DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
+    });
+    const stored = (await metadata.read())!.configuration!;
+    expect(stored.timeoutMs).toBe(DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS);
+    expect('vcpus' in stored).toBe(false);
+  });
+
+  it('lets an explicit timeout option override the default', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-explicit-timeout-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      timeoutMs: 90 * 60 * 1000,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await lifecycle.up();
+    expect((client.getOrCreate.mock.calls[0] as unknown[])[0]).toMatchObject({ timeout: 5_400_000 });
+    await expect(metadata.read()).resolves.toMatchObject({ configuration: { timeoutMs: 5_400_000 } });
+  });
+
+  it('passes requested vcpus into resources and persists them in configuration', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-vcpus-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      vcpus: 4,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await lifecycle.up();
+    expect((client.getOrCreate.mock.calls[0] as unknown[])[0]).toMatchObject({
+      resources: { vcpus: 4 },
+    });
+    await expect(metadata.read()).resolves.toMatchObject({ configuration: { vcpus: 4 } });
+  });
+
+  it('rejects changed vcpus as an identity conflict without recreating the sandbox', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox() as VercelSandboxHandle & { vcpus: number };
+    handle.vcpus = 4;
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      runCommand: vi.fn(async () => ({ exitCode: 0 })),
+    } as unknown as VercelSandboxClient;
+    const common = {
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      branchMetadataStore: metadata,
+      client,
+    } as const;
+    await createVercelLifecycle(common).up();
+
+    await expect(createVercelLifecycle({ ...common, vcpus: 2 }).up())
+      .rejects.toMatchObject({ code: 'identity_conflict' });
+    expect(client.getOrCreate).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a live Sandbox whose vcpus differ from the requested resources', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-live-vcpus-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox() as VercelSandboxHandle & { vcpus: number };
+    handle.vcpus = 8;
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      vcpus: 4,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.up()).rejects.toThrow(/Vercel Sandbox resources conflict/);
+    await expect(metadata.read()).resolves.toBeNull();
   });
 });

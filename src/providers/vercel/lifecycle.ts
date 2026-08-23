@@ -39,7 +39,7 @@ import { redactSecrets } from './redaction.js';
 import { assertSdkPorts, resolveDevcontainerPorts } from './ports.js';
 import type { ShellRunner } from '../../lib/shell.js';
 
-export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 30 * 60 * 1000;
+export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 60 * 60 * 1000;
 export class VercelLifecycleError extends Error {
   readonly code: string;
 
@@ -166,6 +166,7 @@ export interface VercelLifecycleOptions {
   recovery?: VercelRecoveryInput;
   client?: VercelSandboxClient;
   timeoutMs?: number;
+  vcpus?: number;
   onNotice?: (notice: string) => void | Promise<void>;
   cleanup?: Pick<VercelCleanupOptions, 'timeoutMs' | 'maxAttempts' | 'backoffMs' | 'sleep'>;
 }
@@ -216,6 +217,7 @@ interface PreparedContext {
   client: VercelSandboxClient;
   imageReference: string;
   timeoutMs: number;
+  vcpus?: number;
   configuration?: VercelCreateConfiguration;
 }
 
@@ -255,6 +257,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           ports,
           tags: { ...effectiveIdentity.tags },
           ...(context.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: context.runtimeEnvironment }),
+          ...(context.vcpus === undefined ? {} : { vcpus: context.vcpus }),
           onCreate: async (sandbox) => {
             createdSandbox = sandbox;
             await switchToRequestedBranch(sandbox, context);
@@ -743,6 +746,9 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Vercel Sandbox timeout must be positive');
   }
+  if (options.vcpus !== undefined && (!Number.isInteger(options.vcpus) || options.vcpus <= 0)) {
+    throw new Error('Vercel Sandbox vcpus must be a positive integer');
+  }
   const metadataStore = options.listOnly ? undefined : options.branchMetadataStore;
   const client = options.client;
   if (!client) throw new Error('Vercel Sandbox client is required');
@@ -758,6 +764,7 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
     client,
     imageReference,
     timeoutMs,
+    ...(options.vcpus === undefined ? {} : { vcpus: options.vcpus }),
     ...(source === undefined ? {} : {
       configuration: {
         imageReference,
@@ -768,6 +775,7 @@ async function prepareContext(options: VercelLifecycleOptions): Promise<Prepared
         persistent: true as const,
         keepLastSnapshots: 1 as const,
         timeoutMs,
+        ...(options.vcpus === undefined ? {} : { vcpus: options.vcpus }),
       },
     }),
   };
@@ -860,7 +868,8 @@ function assertConfiguration(
     actual.sourceUrl !== expected.sourceUrl ||
     actual.persistent !== expected.persistent ||
     actual.keepLastSnapshots !== expected.keepLastSnapshots ||
-    actual.timeoutMs !== expected.timeoutMs
+    actual.timeoutMs !== expected.timeoutMs ||
+    actual.vcpus !== expected.vcpus
   ) {
     throw new VercelIdentityConflictError('Stored Vercel Sandbox create-only configuration conflicts with this request');
   }
@@ -886,6 +895,9 @@ function validateSandboxIdentity(
   }
   if (sandbox.timeout !== undefined && sandbox.timeout !== context.timeoutMs) {
     throw new VercelIdentityConflictError(`Vercel Sandbox timeout conflicts for ${expectedName}`);
+  }
+  if (context.vcpus !== undefined && sandbox.vcpus !== undefined && sandbox.vcpus !== context.vcpus) {
+    throw new VercelIdentityConflictError(`Vercel Sandbox resources conflict for ${expectedName}`);
   }
   if (sandbox.persistent === false) {
     throw new VercelIdentityConflictError(`Vercel Sandbox persistence conflicts for ${expectedName}`);

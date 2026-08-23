@@ -91,6 +91,59 @@ describe('Vercel metadata', () => {
       },
     });
   });
+
+  it('round-trips optional vcpus in branch create configuration', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-vcpus-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/new',
+    });
+    const baseConfiguration = {
+      imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
+      sourceUrl: 'https://github.com/acme/repo.git',
+      sourceRevision: 'main',
+      requestedBranch: 'feature/new',
+      needsBranchSetup: true,
+      persistent: true,
+      keepLastSnapshots: 1,
+      timeoutMs: 3_600_000,
+    };
+
+    await store.write({ configuration: { ...baseConfiguration, vcpus: 4 } });
+    await expect(store.read()).resolves.toMatchObject({ configuration: { vcpus: 4 } });
+
+    await store.write({ configuration: { ...baseConfiguration } });
+    const stored = (await store.read())!.configuration!;
+    expect('vcpus' in stored).toBe(false);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -4],
+    ['fractional', 2.5],
+  ])('rejects %s vcpus in branch create configuration', async (_label, vcpus) => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-vcpus-invalid-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/new',
+    });
+
+    await expect(store.write({
+      configuration: {
+        imageReference: 'vcr.vercel.com/team/project/image@sha256:digest',
+        sourceUrl: 'https://github.com/acme/repo.git',
+        sourceRevision: 'main',
+        requestedBranch: 'feature/new',
+        needsBranchSetup: true,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 3_600_000,
+        vcpus,
+      },
+    })).rejects.toThrow(/configuration\.vcpus must be a positive integer/);
+  });
   it('writes and reads non-secret scope metadata with mode 0600', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-'));
     const store = createVercelMetadataStore({

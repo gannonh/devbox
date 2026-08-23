@@ -40,6 +40,10 @@ export interface ProviderBranchRequest extends ProviderRequestContext {
    * for providers that expose public app routes.
    */
   exposePorts?: number[];
+  /** Validated `--timeout` minutes converted to milliseconds; boot/attach only. */
+  timeoutMs?: number;
+  /** Validated `--vcpus` Sandbox resource count; boot/attach only. */
+  vcpus?: number;
 }
 
 export type ProviderListRequest = ProviderRequestContext;
