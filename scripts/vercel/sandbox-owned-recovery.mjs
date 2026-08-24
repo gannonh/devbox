@@ -77,9 +77,11 @@ export function applyOwnedRecoveryEvidence(report, recovery, redact = (value) =>
  *
  * Discovery deliberately runs through a bounded grace window. A create request
  * can be accepted remotely after the local create promise is aborted, so one
- * empty list is never treated as conclusive. Collection discovery failures,
- * including broad API 404s, remain errors rather than being interpreted as an
- * empty collection.
+ * empty list is never treated as conclusive. Intermediate collection-discovery
+ * failures (timeouts, transient API errors) are retried across the grace
+ * window and cleared when the independent final listing succeeds — matching
+ * cleanupVercelSandbox. A failed final listing, including a broad API 404, is
+ * never treated as an empty collection and fails the gate closed.
  */
 export async function recoverOwnedResources({
   listSandboxes,
@@ -113,8 +115,6 @@ export async function recoverOwnedResources({
   let lastSnapshots = [];
   let finalSandboxes = [];
   let finalSnapshots = [];
-  let sandboxDiscoveryErrors = 0;
-  let snapshotDiscoveryErrors = 0;
   let finalSandboxListingSucceeded = false;
   let finalSnapshotListingSucceeded = false;
   let attempts = 0;
@@ -141,8 +141,9 @@ export async function recoverOwnedResources({
       );
       return { ok: true, items: Array.isArray(result) ? result : [] };
     } catch (error) {
-      sandboxDiscoveryErrors += 1;
-      recordError(final ? 'final sandbox discovery' : 'sandbox discovery', error);
+      // Intermediate discovery failures are retried; only the final listing is
+      // authoritative and may fail the gate closed.
+      if (final) recordError('final sandbox discovery', error);
       return { ok: false, items: [] };
     }
   }
@@ -155,8 +156,7 @@ export async function recoverOwnedResources({
       );
       return { ok: true, items: Array.isArray(result) ? result : [] };
     } catch (error) {
-      snapshotDiscoveryErrors += 1;
-      recordError(final ? 'final snapshot discovery' : 'snapshot discovery', error);
+      if (final) recordError('final snapshot discovery', error);
       return { ok: false, items: [] };
     }
   }
@@ -288,7 +288,7 @@ export async function recoverOwnedResources({
 
   return {
     attempts,
-    discoveryConverged: attempts > 0 && finalSandboxListingSucceeded && sandboxDiscoveryErrors === 0 && malformedFinalSandboxes.length === 0 && residualSandboxes.length === 0,
+    discoveryConverged: attempts > 0 && finalSandboxListingSucceeded && malformedFinalSandboxes.length === 0 && residualSandboxes.length === 0,
     recoveredSandboxes,
     sessionProof: sessionProofSandboxes.size > 0,
     sessionProofSandboxes: [...sessionProofSandboxes],
@@ -298,7 +298,7 @@ export async function recoverOwnedResources({
     deletedSnapshots,
     finalSnapshots,
     residualSnapshots,
-    snapshotsCleaned: attempts > 0 && finalSnapshotListingSucceeded && snapshotDiscoveryErrors === 0 && malformedFinalSnapshots.length === 0 && residualSnapshots.length === 0,
+    snapshotsCleaned: attempts > 0 && finalSnapshotListingSucceeded && malformedFinalSnapshots.length === 0 && residualSnapshots.length === 0,
     errors,
   };
 }

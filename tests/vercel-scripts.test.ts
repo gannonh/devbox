@@ -319,7 +319,7 @@ describe('Vercel supply-chain script boundaries', () => {
       isNotFound: (error: unknown) => Boolean((error as { notFound?: boolean }).notFound),
     });
     expect(result.discoveryConverged).toBe(false);
-    expect(result.errors.join(' ')).toMatch(/sandbox discovery/);
+    expect(result.errors.join(' ')).toMatch(/final sandbox discovery/);
   });
 
   it('keeps repeated sandbox-list 400 diagnostics stable and bounded', async () => {
@@ -333,7 +333,9 @@ describe('Vercel supply-chain script boundaries', () => {
       deleteSnapshot: async () => {},
     });
     expect(result.discoveryConverged).toBe(false);
-    expect(result.errors.filter((error) => error === 'sandbox discovery: Status code 400 is not ok')).toHaveLength(1);
+    // Intermediate discovery failures are retried; only the authoritative final
+    // listing failure is retained in the permanent error set.
+    expect(result.errors.filter((error) => error === 'sandbox discovery: Status code 400 is not ok')).toHaveLength(0);
     expect(result.errors.filter((error) => error === 'final sandbox discovery: Status code 400 is not ok')).toHaveLength(1);
   });
 
@@ -349,7 +351,51 @@ describe('Vercel supply-chain script boundaries', () => {
       isNotFound: (error: unknown) => Boolean((error as { notFound?: boolean }).notFound),
     });
     expect(result.snapshotsCleaned).toBe(false);
-    expect(result.errors.join(' ')).toMatch(/snapshot discovery/);
+    expect(result.errors.join(' ')).toMatch(/final snapshot discovery/);
+  });
+
+  it('recovers from a transient intermediate snapshot discovery timeout when the final listing is empty', async () => {
+    let listCalls = 0;
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 3,
+      backoffMs: 0,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => {
+        listCalls += 1;
+        if (listCalls === 1) throw new Error('owned snapshot discovery timed out after 30000ms');
+        return [];
+      },
+      deleteSnapshot: async () => {},
+      sleep: async () => {},
+    });
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    expect(result.snapshotsCleaned).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.residualSnapshots).toEqual([]);
+  });
+
+  it('recovers from a transient intermediate sandbox discovery failure when the final listing is empty', async () => {
+    let listCalls = 0;
+    const result = await recoverOwnedResources({
+      timeoutMs: 1_000,
+      maxAttempts: 3,
+      backoffMs: 0,
+      listSandboxes: async () => {
+        listCalls += 1;
+        if (listCalls === 1) throw new Error('owned Sandbox discovery timed out after 30000ms');
+        return [];
+      },
+      recoverSandbox: async () => {},
+      listSnapshots: async () => [],
+      deleteSnapshot: async () => {},
+      sleep: async () => {},
+    });
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    expect(result.discoveryConverged).toBe(true);
+    expect(result.errors).toEqual([]);
+    expect(result.residualSandboxes).toEqual([]);
   });
 
   it('fails closed when a recovered Sandbox remains in the final independent listing', async () => {
