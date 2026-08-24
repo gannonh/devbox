@@ -398,6 +398,52 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(result.residualSandboxes).toEqual([]);
   });
 
+  it('retains the last snapshot discovery error when the deadline prevents a final listing', async () => {
+    const result = await recoverOwnedResources({
+      timeoutMs: 30,
+      operationTimeoutMs: 30,
+      maxAttempts: 1,
+      backoffMs: 0,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        throw new Error('should not resolve after the operation timeout');
+      },
+      deleteSnapshot: async () => {},
+      sleep: async () => {},
+    });
+    expect(result.snapshotsCleaned).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/snapshot discovery/);
+    expect(result.errors.join(' ')).toMatch(/timed out|deadline exhausted/);
+  });
+
+  it('records deadline exhaustion when discovery succeeded but the final listing cannot run', async () => {
+    let snapshotLists = 0;
+    const result = await recoverOwnedResources({
+      timeoutMs: 40,
+      operationTimeoutMs: 30,
+      maxAttempts: 2,
+      backoffMs: 100,
+      listSandboxes: async () => [],
+      recoverSandbox: async () => {},
+      listSnapshots: async () => {
+        snapshotLists += 1;
+        return [];
+      },
+      deleteSnapshot: async () => {},
+      // Real delay so the retry backoff can exhaust the remaining deadline
+      // after a successful intermediate listing.
+      sleep: async (ms: number) => {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+      },
+    });
+    expect(snapshotLists).toBe(1);
+    expect(result.snapshotsCleaned).toBe(false);
+    expect(result.discoveryConverged).toBe(false);
+    expect(result.errors.join(' ')).toMatch(/deadline exhausted before the final listing/);
+  });
+
   it('fails closed when a recovered Sandbox remains in the final independent listing', async () => {
     const result = await recoverOwnedResources({
       timeoutMs: 1_000,

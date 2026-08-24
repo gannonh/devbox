@@ -79,9 +79,12 @@ export function applyOwnedRecoveryEvidence(report, recovery, redact = (value) =>
  * can be accepted remotely after the local create promise is aborted, so one
  * empty list is never treated as conclusive. Intermediate collection-discovery
  * failures (timeouts, transient API errors) are retried across the grace
- * window and cleared when the independent final listing succeeds — matching
- * cleanupVercelSandbox. A failed final listing, including a broad API 404, is
- * never treated as an empty collection and fails the gate closed.
+ * window and cleared when a later listing succeeds — matching
+ * cleanupVercelSandbox. If the deadline expires before the independent final
+ * listing can run, the last discovery error is retained (or deadline
+ * exhaustion is recorded) so the gate still fails with a reason. A failed
+ * final listing, including a broad API 404, is never treated as an empty
+ * collection and fails the gate closed.
  */
 export async function recoverOwnedResources({
   listSandboxes,
@@ -117,6 +120,8 @@ export async function recoverOwnedResources({
   let finalSnapshots = [];
   let finalSandboxListingSucceeded = false;
   let finalSnapshotListingSucceeded = false;
+  let lastSandboxDiscoveryError;
+  let lastSnapshotDiscoveryError;
   let attempts = 0;
 
   const remaining = () => Math.max(0, deadline - Date.now());
@@ -139,10 +144,14 @@ export async function recoverOwnedResources({
         (requestSignal) => listSandboxes({ signal: requestSignal, attempt: attempts, final }),
         final ? 'final owned Sandbox discovery' : 'owned Sandbox discovery',
       );
+      lastSandboxDiscoveryError = undefined;
       return { ok: true, items: Array.isArray(result) ? result : [] };
     } catch (error) {
-      // Intermediate discovery failures are retried; only the final listing is
-      // authoritative and may fail the gate closed.
+      // Intermediate discovery failures are retained until a later listing
+      // succeeds; only the authoritative final observation may clear them for
+      // good. A failed final listing also records permanently below.
+      const detail = `${final ? 'final sandbox discovery' : 'sandbox discovery'}: ${errorMessage(error)}`.slice(0, 500);
+      lastSandboxDiscoveryError = detail;
       if (final) recordError('final sandbox discovery', error);
       return { ok: false, items: [] };
     }
@@ -154,8 +163,11 @@ export async function recoverOwnedResources({
         (requestSignal) => listSnapshots({ signal: requestSignal, attempt: attempts, final }),
         final ? 'final owned snapshot discovery' : 'owned snapshot discovery',
       );
+      lastSnapshotDiscoveryError = undefined;
       return { ok: true, items: Array.isArray(result) ? result : [] };
     } catch (error) {
+      const detail = `${final ? 'final snapshot discovery' : 'snapshot discovery'}: ${errorMessage(error)}`.slice(0, 500);
+      lastSnapshotDiscoveryError = detail;
       if (final) recordError('final snapshot discovery', error);
       return { ok: false, items: [] };
     }
@@ -250,6 +262,27 @@ export async function recoverOwnedResources({
     const finalSnapshotResult = await listOwnedSnapshots(true);
     finalSnapshots = finalSnapshotResult.items;
     finalSnapshotListingSucceeded = finalSnapshotResult.ok;
+  } else {
+    // An intermediate call may have exhausted the deadline before the
+    // authoritative final listings could run. Record deadline exhaustion when
+    // there is no retained discovery error for operators to inspect.
+    if (lastSandboxDiscoveryError === undefined) {
+      recordError('final sandbox discovery', new Error('recovery deadline exhausted before the final listing'));
+    }
+    if (lastSnapshotDiscoveryError === undefined) {
+      recordError('final snapshot discovery', new Error('recovery deadline exhausted before the final listing'));
+    }
+  }
+
+  // Retain the last uncleared discovery error when the final listing never
+  // succeeded (failed final call, or deadline skip above).
+  if (!finalSandboxListingSucceeded && lastSandboxDiscoveryError !== undefined &&
+      !permanentErrors.includes(lastSandboxDiscoveryError)) {
+    permanentErrors.push(lastSandboxDiscoveryError);
+  }
+  if (!finalSnapshotListingSucceeded && lastSnapshotDiscoveryError !== undefined &&
+      !permanentErrors.includes(lastSnapshotDiscoveryError)) {
+    permanentErrors.push(lastSnapshotDiscoveryError);
   }
 
   const malformedFinalSandboxes = finalSandboxes.filter(
