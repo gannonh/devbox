@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "address-pr-comments": {
+      "source": "gannonh/skills",
+      "sourceType": "github",
+      "skillPath": "address-pr-comments/SKILL.md",
+      "computedHash": "0670bef9964b1f922cebd5887bfefef7763925ca85b5318254e836ee9bf2d630"
+    },
     "plan-build-verify": {
       "source": "gannonh/skills",
       "sourceType": "github",
