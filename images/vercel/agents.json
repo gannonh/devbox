@@ -18,7 +18,7 @@
     "codex": {
       "package": "@openai/codex",
       "binary": "codex",
-      "version": "0.149.0",
+      "version": "0.149.1",
       "versionFlag": "--version"
     },
     "opencode": {
