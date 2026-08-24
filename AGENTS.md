@@ -29,3 +29,21 @@ A simple vite app exists as a private repo for testing: `gannonh/uat-devbox`.
 Available locally and linked to a vercel project at `../uat-runs/devbox/uat-devbox/`
 
 Clean-up by deleting remnant sandboxes when finished.
+
+## Skills
+
+Specs are GitHub Issues, not files under `docs/specs/`. List open ones with `gh issue list --label kind:spec --state open`. Build against them with `plan-build-verify`.
+
+Install the product OS skills project-locally (no `-g`):
+
+```bash
+bash scripts/install-skills.sh
+```
+
+Same command without the wrapper:
+
+```bash
+npx skills add gannonh/skills --skill plan-build-verify --skill address-pr-comments -y
+```
+
+Do not install the whole `gannonh/skills` pack. Cursor engineering execution uses the pstack plugin; do not npx-install `ps`. Skills already in `.agents/skills/` (`sandbox`, `readme`, and currently `ps`) stay as-is. This script only ensures the product OS.
