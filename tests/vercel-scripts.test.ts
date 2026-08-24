@@ -420,25 +420,33 @@ describe('Vercel supply-chain script boundaries', () => {
 
   it('records deadline exhaustion when discovery succeeded but the final listing cannot run', async () => {
     let snapshotLists = 0;
+    let finalSnapshotLists = 0;
+    const timeoutMs = 200;
+    const startedAt = Date.now();
     const result = await recoverOwnedResources({
-      timeoutMs: 40,
-      operationTimeoutMs: 30,
+      timeoutMs,
+      operationTimeoutMs: 100,
       maxAttempts: 2,
-      backoffMs: 100,
+      backoffMs: 50,
       listSandboxes: async () => [],
       recoverSandbox: async () => {},
-      listSnapshots: async () => {
+      listSnapshots: async (params?: { final?: boolean }) => {
         snapshotLists += 1;
+        if (params?.final === true) finalSnapshotLists += 1;
         return [];
       },
       deleteSnapshot: async () => {},
-      // Real delay so the retry backoff can exhaust the remaining deadline
-      // after a successful intermediate listing.
-      sleep: async (ms: number) => {
-        await new Promise((resolve) => setTimeout(resolve, ms));
+      // Exhaust the recovery deadline during the first retry delay so a second
+      // intermediate attempt and the independent final listing cannot run.
+      // Cap-to-remaining sleep alone is flaky under timer skew (CI saw 3 lists).
+      sleep: async () => {
+        const until = startedAt + timeoutMs + 25;
+        const waitMs = Math.max(0, until - Date.now());
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
       },
     });
     expect(snapshotLists).toBe(1);
+    expect(finalSnapshotLists).toBe(0);
     expect(result.snapshotsCleaned).toBe(false);
     expect(result.discoveryConverged).toBe(false);
     expect(result.errors.join(' ')).toMatch(/deadline exhausted before the final listing/);
