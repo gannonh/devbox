@@ -225,7 +225,7 @@ async function viteScenario({ env, stateHome, credentials, realClient }) {
 
   // --- live service port limit boundary ------------------------------------
   // The three available sources disagree about the maximum, so measure it:
-  // the installed SDK declaration comments "up to 4 ports", the public docs
+  // the installed SDK declaration comments "up to 15 ports", the public docs
   // say 15, and the request schema refuses a 16th. Only the service knows.
   const boundary = [];
   for (const total of [MAX_VERCEL_SANDBOX_PORTS, MAX_VERCEL_SANDBOX_PORTS + 1, MAX_VERCEL_SANDBOX_PORTS + 2]) {

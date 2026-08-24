@@ -35,7 +35,7 @@
     "packages/dbx"
   ],
   "dependencies": {
-    "@vercel/sandbox": "3.0.0",
+    "@vercel/sandbox": "3.1.0",
     "proper-lockfile": "^4.1.2",
     "ws": "^8.21.3"
   },
@@ -44,7 +44,7 @@
     "@types/node": "^26.0.1",
     "@types/proper-lockfile": "^4.1.4",
     "@types/ws": "^8.18.1",
-    "@vercel/sandbox-mock": "^3.0.0",
+    "@vercel/sandbox-mock": "^3.1.0",
     "eslint": "^9.0.0",
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.0.0",

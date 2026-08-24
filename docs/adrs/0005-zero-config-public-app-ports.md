@@ -78,7 +78,7 @@ Three sources disagreed:
 
 | Source | Says |
 | --- | --- |
-| The installed `@vercel/sandbox@3.0.0` declaration comment | up to 4 |
+| The installed `@vercel/sandbox@3.1.0` declaration comment | up to 15 |
 | The request schema | refuses a 16th: `` `ports` should NOT have more than 15 items `` |
 | The live service | provisions 14; exactly 15 fails with an opaque 500 |
 
@@ -148,7 +148,7 @@ recorded next to it.
   non-interactive behavior, and every recovery branch:
   [`tests/vercel-app-port-flow.test.ts`](../../tests/vercel-app-port-flow.test.ts).
 - The exact `update({ ports })` request, full-list replacement against the mock
-  server, and the pinned `3.0.0` contract:
+  server, and the pinned `3.1.0` contract:
   [`tests/vercel-client.test.ts`](../../tests/vercel-client.test.ts).
 - Real Vercel end to end, including the measured port boundary and
   metadata-failure compensation:
