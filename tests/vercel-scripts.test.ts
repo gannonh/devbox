@@ -422,7 +422,6 @@ describe('Vercel supply-chain script boundaries', () => {
     let snapshotLists = 0;
     let finalSnapshotLists = 0;
     const timeoutMs = 200;
-    const startedAt = Date.now();
     const result = await recoverOwnedResources({
       timeoutMs,
       operationTimeoutMs: 100,
@@ -438,11 +437,11 @@ describe('Vercel supply-chain script boundaries', () => {
       deleteSnapshot: async () => {},
       // Exhaust the recovery deadline during the first retry delay so a second
       // intermediate attempt and the independent final listing cannot run.
-      // Cap-to-remaining sleep alone is flaky under timer skew (CI saw 3 lists).
+      // Delay from this invocation (not a pre-call timestamp) so preemption
+      // before recoverOwnedResources sets its deadline cannot leave remaining
+      // time after sleep returns.
       sleep: async () => {
-        const until = startedAt + timeoutMs + 25;
-        const waitMs = Math.max(0, until - Date.now());
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        await new Promise((resolve) => setTimeout(resolve, timeoutMs + 25));
       },
     });
     expect(snapshotLists).toBe(1);
