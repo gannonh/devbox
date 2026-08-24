@@ -3,7 +3,7 @@
   "platform": "linux/amd64",
   "upstream": {
     "repository": "https://github.com/vercel/sandbox",
-    "commit": "90fa48d5728d46d40fbfb6495c2d720aeb3f7a0f",
+    "commit": "81d725b74f188ce95dd0969cbd652399d2bbd6ee",
     "ubuntuDockerfileSha256": "afaa5535d925d4e6344ca2971c041c68a3f49722531115c9ab63462333f0656a",
     "universalDockerfileSha256": "e53e28f8c8d7b502340073127d0cc8c29f0b5765b10ba961a0ad6d153fabc69a"
   },
