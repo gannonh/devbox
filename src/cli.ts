@@ -37,6 +37,7 @@ const PACKAGE_VERSION = (createRequire(import.meta.url)('../package.json') as { 
 const USAGE = `devbox — one-command isolated worktree dev containers
 
 USAGE
+  devbox init [--force]                                        scaffold .devbox/ (required for local)
   devbox [--provider local|vercel] <branch>                    create/boot a box
   devbox [--provider local|vercel] <branch> --attach|-a        re-enter a running box
   devbox [--provider local|vercel] <branch> --url [--open|-o]  print or open provider routes
@@ -65,10 +66,11 @@ OPTIONS
                             resizing, so re-create the box with --rm
 
 EXAMPLES
-  devbox init                        # set up .devbox/ in the current repo
+  devbox init                        # required once for local boxes
   devbox my-feature                  # boot a local box for my-feature
   devbox --provider local my-feature --attach
   devbox my-feature --url --open    # open the local noVNC view
+  devbox --provider vercel my-feature
   devbox --provider local --list    # list local boxes
 
 NOTE
@@ -79,10 +81,11 @@ NOTE
   detaches without stopping the sandbox. App routes are plain HTTPS; the noVNC
   link carries a one-use access code that pairs the browser on click and is then
   dropped from the URL. --password prints that code for the pairing form.
-  Vercel detects Vite/Next app ports in the remote checkout and asks once before
+  Vercel does not require init. Missing .devbox/ and .devcontainer/ are fine.
+  It detects Vite/Next app ports in the remote checkout and asks once before
   exposing them as public routes; --expose-ports is the non-interactive opt-in.
-  Configured devcontainer forwardPorts are always retained, paired noVNC 6080 is
-  always exposed, and VNC 5900 and internal 6081 stay private. Setup
+  Configured devcontainer forwardPorts are always retained when present, paired
+  noVNC 6080 is always exposed, and VNC 5900 and internal 6081 stay private. Setup
   status/retry lives under /vercel/.devbox/runtime/. Cleanup retains retry
   metadata until Sandbox sessions and snapshots are verified absent. Review
   Vercel pricing and limits before choosing ports or timeouts.`;
@@ -98,6 +101,8 @@ FLAGS
 DESCRIPTION
   Copies template files (Dockerfile, provision.sh, start-display.sh,
   post-create.sh stub, README.md, devcontainer.json) into the current repo.
+  Local boxes require this. Vercel boxes do not; run init there only for a
+  post-create hook or explicit forwardPorts.
   Provider selection applies to branch lifecycle and list operations, not init.`;
 
 const UP_HELP = (branch: string) => `devbox ${branch} — create/boot a box for a branch
@@ -131,11 +136,12 @@ EXAMPLES
   devbox ${branch} --attach              # re-enter the running box
   devbox ${branch} --stop                # stop it
   devbox ${branch} --password            # print the display access code
-  devbox --provider vercel ${branch}     # remote Vercel sandbox; confirm scope on first use
+  devbox --provider vercel ${branch}     # no init; remote sandbox, confirm scope on first use
 
 VERCEL CORE
   Uses the authenticated GitHub origin; local dirty files and unpushed commits
-  are not copied. First use confirms the displayed team/project in a TTY.
+  are not copied. No .devbox/ or .devcontainer/ is required.
+  First use confirms the displayed team/project in a TTY.
   Without a complete credential triad, OIDC token, or cached Vercel auth, device
   auth prints the verification URL and user code. Ctrl-C is sent to the remote process.
   Ctrl-] detaches without stopping it.

@@ -70,7 +70,7 @@
         </div>
 
         <p class="hero-note">
-          <code>npx @gannonh/dbx init</code> writes its config to your repo ·
+          Local boxes need <code>npx @gannonh/dbx init</code> first. Vercel boxes do not. ·
           <a href="#install">full install instructions ↓</a>
         </p>
       </section>
@@ -87,7 +87,7 @@
             </p>
             <ul class="checks">
               <li>one sandbox and network namespace per git worktree</li>
-              <li>standard devcontainer format, also supported by Codespaces and Cursor</li>
+              <li>init writes a standard devcontainer config, also used by Codespaces and Cursor</li>
               <li>manage each box with <code>--attach</code>, <code>--stop</code>, or <code>--rm</code></li>
             </ul>
           </div>
@@ -214,6 +214,11 @@
             <span>authenticated GitHub origin, pushed commits only</span>
           </div>
           <div class="prow">
+            <span class="plabel">repo config</span>
+            <span>.devbox/ and .devcontainer/ from init</span>
+            <span>not required</span>
+          </div>
+          <div class="prow">
             <span class="plabel">display</span>
             <span>browser tab over noVNC</span>
             <span>HTTPS display link with a one-time pairing code</span>
@@ -233,9 +238,9 @@
         <div class="cligrid">
           <div class="clicol">
             <h3>setup &amp; boot</h3>
-            <div class="cmdrow"><code>npx @gannonh/dbx init</code><span>write .devbox/ and .devcontainer/ to this repo</span></div>
+            <div class="cmdrow"><code>npx @gannonh/dbx init</code><span>write .devbox/ and .devcontainer/; required for local</span></div>
             <div class="cmdrow"><code>npx @gannonh/dbx &lt;branch&gt;</code><span>start a local box and open its shell</span></div>
-            <div class="cmdrow"><code>--provider vercel</code><span>start the box in a Vercel Sandbox</span></div>
+            <div class="cmdrow"><code>--provider vercel</code><span>start a Vercel Sandbox; no init</span></div>
             <div class="cmdrow"><code>--env PATH</code><span>load dotenv values for this run</span></div>
             <div class="cmdrow"><code>--timeout 90</code><span>Sandbox lifetime in minutes (1-1440); default 60</span></div>
             <div class="cmdrow"><code>--vcpus 4</code><span>Sandbox vCPUs, 1 or even up to 32; 2048 MB memory each</span></div>
@@ -262,7 +267,7 @@
         <div class="fnum">06 <span class="fnum-tag">trust</span></div>
         <h2>What devbox accesses</h2>
         <div class="secgrid">
-          <div class="seccard"><h4>files</h4><p><code>init</code> writes <code>.devbox/</code> and <code>.devcontainer/</code>. devbox stores its own state under <code>~/.local/state</code>. Delete the two repo directories to undo <code>init</code>.</p></div>
+          <div class="seccard"><h4>files</h4><p><code>init</code> writes <code>.devbox/</code> and <code>.devcontainer/</code>. The local provider requires them. Vercel does not. devbox stores its own state under <code>~/.local/state</code>. Delete the two repo directories to undo <code>init</code>.</p></div>
           <div class="seccard"><h4>execution</h4><p>The local provider runs Docker <code>build</code> and <code>exec</code> using your devcontainer config. It also runs shell hooks from <code>.devbox/provision.sh</code>. Both files live in your repo.</p></div>
           <div class="seccard"><h4>credentials</h4><p>devbox copies your host <code>gh</code> token into the box for pushes and GitHub commands. It also copies Pi config from <code>~/.pi</code>, excluding sessions and npm cache. It loads project dotenv values only when you pass <code>--env</code>.</p></div>
           <div class="seccard"><h4>network</h4><p>Boxes pull base images and install project dependencies. Vercel also clones your GitHub origin and publishes the routes you approve. devbox sends no telemetry.</p></div>
@@ -281,9 +286,11 @@
                 <span class="term-title">install</span>
               </div>
               <div class="term-body">
-                <div class="tline dim"># run it straight from npm</div>
+                <div class="tline dim"># local boxes need init</div>
                 <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx init</div>
                 <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx my-branch</div>
+                <div class="tline gap dim"># Vercel Sandbox; no init</div>
+                <div class="tline"><span class="prompt">$</span> npx @gannonh/dbx --provider vercel my-branch</div>
                 <div class="tline gap dim"># or install globally</div>
                 <div class="tline"><span class="prompt">$</span> npm i -g @gannonh/devbox</div>
                 <div class="tline"><span class="prompt">$</span> devbox my-branch</div>
@@ -293,8 +300,8 @@
           <div class="reqs">
             <h3>requirements</h3>
             <ul>
-              <li><b>OrbStack</b> or any Docker runtime. OrbStack provides <code>&lt;container&gt;.orb.local</code> URLs</li>
-              <li><b>@devcontainers/cli</b>, installed with <code>npm i -g @devcontainers/cli</code></li>
+              <li><b>OrbStack</b> or any Docker runtime, for local boxes. OrbStack provides <code>&lt;container&gt;.orb.local</code> URLs</li>
+              <li><b>@devcontainers/cli</b> for local boxes, installed with <code>npm i -g @devcontainers/cli</code></li>
               <li><b>gh</b> authenticated on the host with <code>gh auth login</code></li>
               <li><b>git</b> 2.45+</li>
               <li>optional: host <code>~/.pi</code> if you use the Pi agent</li>

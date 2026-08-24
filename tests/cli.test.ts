@@ -36,6 +36,9 @@ describe('cli dispatch', () => {
     expect(output).toContain('--password');
     expect(output).toContain('--env <path>');
     expect(output).toContain('--version');
+    expect(output).toContain('scaffold .devbox/ (required for local)');
+    expect(output).toContain('Vercel does not require init');
+    expect(output).toContain('devbox --provider vercel my-feature');
   });
 
   it('--version prints the installed package version and exits 0', async () => {
@@ -71,6 +74,8 @@ describe('cli dispatch', () => {
     const output = stdout + stderr;
     expect(output).toContain('init');
     expect(output).toContain('--force');
+    expect(output).toContain('Local boxes require this');
+    expect(output).toContain('Vercel boxes do not');
   });
 
   it('init creates .devbox/ files and exits 0', async () => {
@@ -98,6 +103,7 @@ describe('cli dispatch', () => {
     expect(output).toContain('--provider local|vercel');
     expect(output).toContain('Ctrl-]');
     expect(output).toContain('VERCEL CORE');
+    expect(output).toContain('No .devbox/ or .devcontainer/ is required');
   });
 
   it('--list --help prints list usage and exits 0', async () => {

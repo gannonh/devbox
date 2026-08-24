@@ -23,8 +23,8 @@ devbox is **not** the right tool for running the project's unit tests on the hos
 
 These live on the host, not in the box. Check them before booting a box for the first time in a repo:
 
-- **Docker / OrbStack** — OrbStack on macOS is recommended (auto-exposes container ports at `<container>.orb.local:<port>`). Any Docker runtime works.
-- **@devcontainers/cli** — `npm install -g @devcontainers/cli` (provides the `devcontainer` command devbox drives).
+- **Docker / OrbStack** — local boxes only. OrbStack on macOS is recommended (auto-exposes container ports at `<container>.orb.local:<port>`). Any Docker runtime works.
+- **@devcontainers/cli** — local boxes only. `npm install -g @devcontainers/cli` (provides the `devcontainer` command devbox drives).
 - **gh (GitHub CLI)** — `gh auth login` on the host. devbox forwards `gh auth token` into the box so `gh` and `git push` work without re-auth. Without it, the box still boots but `git push` will need in-box auth.
 - **~/.pi (optional)** — only if using the Pi agent (the default). Claude Code and Codex don't need it.
 
@@ -32,7 +32,7 @@ If a prerequisite is missing, tell the user exactly what to install and don't at
 
 ## First time in a repo: `devbox init`
 
-If the repo has no `.devbox/` directory, run init first. It scaffolds `.devbox/` (Dockerfile, provision.sh, start-display.sh, post-create.sh, README.md) and `.devcontainer/devcontainer.json`.
+Local boxes need this. Vercel boxes do not. If you are booting locally and the repo has no `.devbox/` directory, run init first. It scaffolds `.devbox/` (Dockerfile, provision.sh, start-display.sh, post-create.sh, README.md) and `.devcontainer/devcontainer.json`.
 
 ```sh
 npx @gannonh/devbox init
@@ -72,14 +72,14 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 
 | Command | What it does |
 |---------|--------------|
-| `devbox init [--force]` | Scaffold `.devbox/` + `.devcontainer/` in the current repo. `--force` overwrites differing files. |
+| `devbox init [--force]` | Scaffold `.devbox/` + `.devcontainer/`. Required for local boxes. `--force` overwrites differing files. |
 | `devbox <branch>` | Boot a box for a branch (or re-enter if running). |
 | `devbox <branch> --attach` `-a` | Re-enter a running box. Starts + re-brings display if stopped. |
 | `devbox <branch> --stop` | Stop the box (keeps worktree + container on disk). |
 | `devbox <branch> --rm` | Remove container, worktree, and branch. Uncommitted worktree work is lost. |
 | `devbox <branch> --url` | Print the noVNC URL. Add `--open` `-o` to launch a browser. |
 | `devbox <branch> --provider vercel --expose-ports <list>` | Vercel only, on boot or `--attach`: expose these comma-separated app ports as public routes without the interactive prompt. |
-| `devbox <branch> --provider vercel --timeout <minutes> --vcpus <n>` | Vercel only, on boot or `--attach`: Sandbox timeout in minutes (1-1440, default 60) and vCPU count (1 or even up to 32; 2048 MB memory per vCPU). Stored per branch; changing one later conflicts instead of updating. |
+| `devbox <branch> --provider vercel --timeout <minutes> --vcpus <n>` | Vercel only, on the boot that creates the sandbox: timeout in minutes (1-1440, default 60) and vCPU count (1 or even up to 32; 2048 MB memory per vCPU). Stored per branch; changing one later conflicts instead of updating. |
 | `devbox --list` `-l` | List all devbox containers for this repo with state + noVNC URLs. |
 | `devbox --help` `-h` | Show usage. |
 
@@ -108,8 +108,8 @@ Re-provision by removing the box (`devbox <branch> --rm`) and booting again, sin
 
 If the user is vague ("set up a dev environment for this branch"), walk the decision:
 
-1. No `.devbox/`? Run `init` first.
-2. Want to work on branch `X`? `devbox X`.
+1. Local box and no `.devbox/`? Run `init` first. Skip this for Vercel.
+2. Want to work on branch `X`? `devbox X`. Use `--provider vercel` when that is the provider.
 3. Need to see a GUI? `devbox X --url --open`.
 4. Done with the branch? `devbox X --rm` (warn that uncommitted worktree work is lost).
 
