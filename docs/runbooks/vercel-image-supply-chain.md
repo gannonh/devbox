@@ -91,7 +91,7 @@ from the default branch.
 With the promoted pin, the gate validates that the fixture is private, the
 API `full_name` and default branch match, and the requested branch has the
 expected existence. It passes the private Git source to the pinned
-`@vercel/sandbox@3.0.0` production client; it does not invoke `vercel`, `gh`, or
+`@vercel/sandbox@3.1.0` production client; it does not invoke `vercel`, `gh`, or
 a host shell-out. The pinned SDK README seeds a Git source into a directory
 named for the repository (its create/resume examples run with
 `cwd: "sandbox-example-next"`), while the v3 declaration documents the session

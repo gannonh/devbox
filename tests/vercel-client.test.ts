@@ -794,10 +794,10 @@ describe('Vercel Sandbox port update contract', () => {
       await readFile(new URL('node_modules/@vercel/sandbox/package.json', root), 'utf8'),
     ) as { version: string };
 
-    expect(manifest.dependencies['@vercel/sandbox']).toBe('3.0.0');
-    expect(lock.packages['']?.dependencies?.['@vercel/sandbox']).toBe('3.0.0');
-    expect(lock.packages['node_modules/@vercel/sandbox']?.version).toBe('3.0.0');
-    expect(installed.version).toBe('3.0.0');
+    expect(manifest.dependencies['@vercel/sandbox']).toBe('3.1.0');
+    expect(lock.packages['']?.dependencies?.['@vercel/sandbox']).toBe('3.1.0');
+    expect(lock.packages['node_modules/@vercel/sandbox']?.version).toBe('3.1.0');
+    expect(installed.version).toBe('3.1.0');
   });
 
   it('sends the complete desired port list as a single update request', async () => {

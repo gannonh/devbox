@@ -7,8 +7,8 @@ export const DEVBOX_NOVNC_INTERNAL_PORT = 6081;
 /**
  * Total ports a Sandbox can actually expose, verified against the live API.
  *
- * Three sources disagree, so this is the measured one. The installed 3.0.0
- * declaration comments "up to 4 ports"; the request schema refuses more than
+ * Three sources disagree, so this is the measured one. The installed 3.1.0
+ * declaration comments "up to 15 ports"; the request schema refuses more than
  * 15 with a clean 400 ("`ports` should NOT have more than 15 items"); and an
  * update carrying exactly 15 fails with an opaque 500 every time, with any
  * port values. 14 is the largest set the service provisions, so devbox refuses

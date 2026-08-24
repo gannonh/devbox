@@ -134,7 +134,7 @@ uses the one that was measured against the live API:
 
 | Source | Says |
 | --- | --- |
-| The installed `@vercel/sandbox@3.0.0` declaration comment | up to 4 |
+| The installed `@vercel/sandbox@3.1.0` declaration comment | up to 15 |
 | The request schema | refuses a 16th with `` `ports` should NOT have more than 15 items `` |
 | The service | provisions 14; an update carrying exactly 15 fails with an opaque 500, repeatably and with any port values |
 
