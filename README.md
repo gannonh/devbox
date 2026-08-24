@@ -4,13 +4,15 @@
 
 The default image includes Node, Bun, git, `gh`, ripgrep, fd, fzf, tmux, Chromium, and Pi. You can switch the coding agent to Claude Code or Codex. The generated configuration follows the devcontainer specification and also works in Codespaces and Cursor.
 
-Devbox runs containers on your machine by default. It can also run them in a Vercel Sandbox. See [Providers](#providers).
+Devbox runs containers on your machine by default. It can also run them in a Vercel Sandbox. See [Providers](#providers). Local boxes need `devbox init` first. Vercel boxes do not.
 
 ## Quick start
 
 ```bash
-npx @gannonh/devbox init      # create .devbox/ and .devcontainer/
-npx @gannonh/devbox my-branch # create the worktree and open a shell in its container
+npx @gannonh/devbox init                         # required for local boxes
+npx @gannonh/devbox my-branch                    # worktree + local container shell
+
+npx @gannonh/devbox --provider vercel my-branch  # Vercel Sandbox; no init
 ```
 
 `init` lists each file it creates. Booting a local box prints its display URL. With OrbStack, the URL has the form `http://<container>.orb.local:6080/vnc.html`. Vercel boxes print an HTTPS URL.
@@ -26,14 +28,14 @@ node dist/cli.js --help
 
 - Node.js 22 or newer
 - OrbStack or another Docker runtime for local boxes. OrbStack provides the `<container>.orb.local` URLs.
-- `@devcontainers/cli`, installed with `npm install -g @devcontainers/cli`
+- `@devcontainers/cli` for local boxes, installed with `npm install -g @devcontainers/cli`
 - Git 2.45 or newer for `worktree --relative-paths`
 - An authenticated GitHub CLI, set up with `gh auth login`
 - Host configuration in `~/.pi` if you use Pi
 
 ## What devbox changes
 
-- `init` writes `.devbox/` and `.devcontainer/` in the current repository. Delete both directories to undo it.
+- `init` writes `.devbox/` and `.devcontainer/` in the current repository. The local provider requires them. Vercel does not. Delete both directories to undo it.
 - The local provider runs `docker build` and `docker exec` from the devcontainer configuration. It runs `.devbox/provision.sh` inside the container.
 - Devbox copies the token from `gh auth token` into the box so Git can push. It also copies Pi configuration from `~/.pi`, excluding sessions and the npm cache.
 - Devbox loads project environment variables only when you pass `--env PATH`. It does not copy the dotenv file itself.
@@ -46,7 +48,7 @@ Run `npx @gannonh/devbox <branch> --rm` to remove a box, its worktree, and its b
 ## Commands
 
 ```bash
-npx @gannonh/devbox init                              # create config in this repo
+npx @gannonh/devbox init                              # required for local boxes
 npx @gannonh/devbox <branch>                          # boot a local box
 npx @gannonh/devbox <branch> --env PATH               # load dotenv values for this run
 npx @gannonh/devbox <branch> --attach                 # enter a running box
@@ -88,7 +90,7 @@ Devbox remembers the provider for each repository until you pass `--provider` ag
 
 ### Vercel Sandbox
 
-The Vercel provider runs without a local Docker runtime and makes the display available over HTTPS.
+The Vercel provider runs without a local Docker runtime and makes the display available over HTTPS. Run `init` only if you want `.devbox/post-create.sh` or explicit `forwardPorts`. A missing `devcontainer.json` still exposes noVNC `6080`.
 
 ```bash
 npx @gannonh/devbox --provider vercel my-branch
