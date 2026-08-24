@@ -4,12 +4,12 @@
 
 The default image includes Node, Bun, git, `gh`, ripgrep, fd, fzf, tmux, Chromium, and Pi. You can switch the coding agent to Claude Code or Codex. The generated configuration follows the devcontainer specification and also works in Codespaces and Cursor.
 
-Devbox runs containers on your machine by default. It can also run them in a Vercel Sandbox. See [Providers](#providers). Local boxes need `devbox init` first. Vercel boxes do not.
+Devbox runs containers on your machine by default. It can also run them in a Vercel Sandbox. See [Providers](#providers). Local boxes need `.devcontainer/devcontainer.json`. Run `init` when you want the generated `.devbox/` + `.devcontainer/` default. Vercel boxes need neither.
 
 ## Quick start
 
 ```bash
-npx @gannonh/devbox init                         # required for local boxes
+npx @gannonh/devbox init                         # generate default .devbox/ + .devcontainer/
 npx @gannonh/devbox my-branch                    # worktree + local container shell
 
 npx @gannonh/devbox --provider vercel my-branch  # Vercel Sandbox; no init
@@ -35,7 +35,7 @@ node dist/cli.js --help
 
 ## What devbox changes
 
-- `init` writes `.devbox/` and `.devcontainer/` in the current repository. The local provider requires them. Vercel does not. Delete both directories to undo it.
+- `init` writes `.devbox/` and `.devcontainer/` in the current repository. That pair is the generated local default, not a local-provider requirement. Local boxes need `.devcontainer/devcontainer.json`; they do not need `.devbox/`. If `.devbox/` is missing, `init` overwrites an existing `devcontainer.json`. Vercel boxes need neither. Delete both directories to undo `init`.
 - The local provider runs `docker build` and `docker exec` from the devcontainer configuration. It runs `.devbox/provision.sh` inside the container.
 - Devbox copies the token from `gh auth token` into the box so Git can push. It also copies Pi configuration from `~/.pi`, excluding sessions and the npm cache.
 - Devbox loads project environment variables only when you pass `--env PATH`. It does not copy the dotenv file itself.
@@ -48,7 +48,7 @@ Run `npx @gannonh/devbox <branch> --rm` to remove a box, its worktree, and its b
 ## Commands
 
 ```bash
-npx @gannonh/devbox init                              # required for local boxes
+npx @gannonh/devbox init                              # generate default .devbox/ + .devcontainer/
 npx @gannonh/devbox <branch>                          # boot a local box
 npx @gannonh/devbox <branch> --env PATH               # load dotenv values for this run
 npx @gannonh/devbox <branch> --attach                 # enter a running box
