@@ -5,4 +5,3 @@ npx skills add gannonh/skills --skill plan-build-verify --skill address-pr-comme
 npx skills add https://github.com/cursor/plugins --skill thermo-nuclear-code-quality-review -y
 npx skills add https://github.com/cursor/plugins --skill thermo-nuclear-review -y
 npx skills add https://github.com/cursor/plugins --skill unslop -y
-npx skills add https://github.com/vercel/sandbox --skill sandbox -y
