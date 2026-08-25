@@ -10,3 +10,5 @@ uat-evidence/
 .vercel
 .env*
 devbox.code-workspace
+.agents/skills/
+.claude/skills/

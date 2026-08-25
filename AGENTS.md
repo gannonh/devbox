@@ -46,4 +46,4 @@ Same command without the wrapper:
 npx skills add gannonh/skills --skill plan-build-verify --skill address-pr-comments -y
 ```
 
-Do not install the whole `gannonh/skills` pack. Cursor engineering execution uses the pstack plugin; do not npx-install `ps`. Skills already in `.agents/skills/` (`sandbox`, `readme`, and currently `ps`) stay as-is. This script only ensures the product OS.
+Do not install the whole `gannonh/skills` pack. Cursor engineering execution uses the pstack plugin; do not npx-install `ps`. `.agents/skills/` and `.claude/skills/` are generated locally by this script and are not tracked.
