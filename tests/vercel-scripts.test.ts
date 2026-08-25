@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -709,6 +709,32 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(smoke).toContain(probe);
     }
     expect(status).toContain('timeout');
+  });
+
+  it('checks display processes without running slow image probes in display mode', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-display-status-'));
+    const bin = join(temp, 'bin');
+    const fakePgrep = join(bin, 'pgrep');
+    try {
+      await mkdir(bin);
+      await writeFile(fakePgrep, '#!/bin/sh\nprintf "123\\n"\n');
+      await chmod(fakePgrep, 0o755);
+
+      const { stdout, stderr } = await execFileAsync('bash', ['images/vercel/status-devbox.sh'], {
+        env: {
+          ...process.env,
+          DEVBOX_STATUS_MODE: 'display',
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        },
+      });
+
+      expect(stderr).toBe('');
+      expect(stdout).toBe('[devbox-status] display=running\n');
+      expect(stdout).not.toContain('=working');
+      expect(stdout).not.toContain('image checks passed');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
   });
 
   it('proves every layer in an exact selected manifest uses OCI zstd media types', async () => {

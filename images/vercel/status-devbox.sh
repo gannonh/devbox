@@ -86,11 +86,22 @@ if [[ "${1:-}" == '--check-image' ]]; then
   exit 1
 fi
 
-if ! check_image; then
-  exit 1
-fi
+display_only=false
+case "${DEVBOX_STATUS_MODE:-full}" in
+  display) display_only=true ;;
+  full)
+    if ! check_image; then
+      exit 1
+    fi
+    ;;
+  *)
+    printf '[devbox-status] FAIL: unsupported status mode\n' >&2
+    exit 2
+    ;;
+esac
 
 failed=0
+missing=()
 for process in Xvfb fluxbox x11vnc websockify; do
   if [[ "${process}" == 'websockify' ]]; then
     process_running="$(pgrep -f '[w]ebsockify' || true)"
@@ -98,17 +109,36 @@ for process in Xvfb fluxbox x11vnc websockify; do
     process_running="$(pgrep -x "${process}" || true)"
   fi
   if [[ -n "${process_running}" ]]; then
-    printf '[devbox-status] %s=running\n' "${process}"
+    if [[ "${display_only}" == false ]]; then
+      printf '[devbox-status] %s=running\n' "${process}"
+    fi
   else
-    printf '[devbox-status] %s=stopped\n' "${process}"
+    missing+=("${process}")
+    if [[ "${display_only}" == false ]]; then
+      printf '[devbox-status] %s=stopped\n' "${process}"
+    fi
     failed=1
   fi
 done
 if pgrep -f '[n]ovnc-proxy.mjs' >/dev/null 2>&1; then
-  printf '[devbox-status] auth-proxy=running\n'
+  if [[ "${display_only}" == false ]]; then
+    printf '[devbox-status] auth-proxy=running\n'
+  fi
 else
-  printf '[devbox-status] auth-proxy=stopped\n'
+  missing+=(auth-proxy)
+  if [[ "${display_only}" == false ]]; then
+    printf '[devbox-status] auth-proxy=stopped\n'
+  fi
   failed=1
+fi
+
+if [[ "${display_only}" == true ]]; then
+  if [[ "${failed}" -eq 0 ]]; then
+    printf '[devbox-status] display=running\n'
+  else
+    joined="$(IFS=,; printf '%s' "${missing[*]}")"
+    printf '[devbox-status] display=stopped missing=%s\n' "${joined}"
+  fi
 fi
 
 exit "${failed}"
