@@ -10,8 +10,10 @@
 # `npm publish` succeeds. A failed publish leaves no tag and no release page,
 # so there is no "release" pointing at an unpublished version. Re-runs that find
 # the target version already on npm skip republish and only finish tag/release.
-# The version-bump commit rebases onto the current default-branch tip so pushes
-# survive commits that land during the long smoke/UAT/benchmark gates.
+# The release tag always points at the commit that produced the published
+# tarball. If the default branch moved during the long smoke/UAT/benchmark
+# gates, the version manifests are applied as a separate tip commit so the tag
+# is not rewritten onto untested intervening changes.
 #
 # Version resolution:
 #   - Resolve the current npm nightly prerelease that supplies the proven pin.
@@ -176,8 +178,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history so the version-bump commit can rebase onto commits that
-          # land on the default branch during the long smoke/UAT/benchmark gates.
+          # Keep enough history that the published release commit stays reachable
+          # when applying version manifests onto a moved default-branch tip.
           fetch-depth: 0
 
       - name: Setup Node 22
@@ -334,24 +336,38 @@ jobs:
             git commit -m "chore(release): v${TARGET_VERSION}"
           fi
 
-          # Smoke/UAT/benchmark can take long enough for other work to land on
-          # the default branch. Rebase onto the current tip before pushing so
-          # the version bump is a fast-forward rather than a rejected push.
-          git fetch origin "${DEFAULT_BRANCH}"
-          git rebase "origin/${DEFAULT_BRANCH}"
-
+          # Tag the tree that produced the published tarball. Do not rebase this
+          # commit onto later default-branch tips: intervening changes were not
+          # in the packed artifact and were not exercised by this run's gates.
+          RELEASE_COMMIT="$(git rev-parse HEAD)"
           if git rev-parse -q --verify "refs/tags/v${TARGET_VERSION}" >/dev/null; then
             git tag -d "v${TARGET_VERSION}"
           fi
-          git tag "v${TARGET_VERSION}"
+          git tag "v${TARGET_VERSION}" "${RELEASE_COMMIT}"
 
-          git push origin "HEAD:${DEFAULT_BRANCH}"
           if git ls-remote --exit-code --tags origin "refs/tags/v${TARGET_VERSION}" >/dev/null 2>&1; then
             echo "Tag v${TARGET_VERSION} already on origin"
           else
             git push origin "v${TARGET_VERSION}"
           fi
-          echo "Pushed commit + tag v${TARGET_VERSION}"
+
+          git fetch origin "${DEFAULT_BRANCH}"
+          if git push origin "${RELEASE_COMMIT}:refs/heads/${DEFAULT_BRANCH}"; then
+            echo "Fast-forwarded ${DEFAULT_BRANCH} to release commit ${RELEASE_COMMIT}"
+          else
+            echo "${DEFAULT_BRANCH} moved during the release gates; applying version manifests onto the current tip without moving the tag"
+            git switch --force-create "release-version-bump" "origin/${DEFAULT_BRANCH}"
+            git checkout "${RELEASE_COMMIT}" -- package.json package-lock.json packages/dbx/package.json
+            git add package.json package-lock.json packages/dbx/package.json
+            if git diff --cached --quiet; then
+              echo "${DEFAULT_BRANCH} already carries version ${TARGET_VERSION}"
+            else
+              git commit -m "chore(release): v${TARGET_VERSION}"
+              git push origin "HEAD:${DEFAULT_BRANCH}"
+            fi
+          fi
+
+          echo "Pushed tag v${TARGET_VERSION} at ${RELEASE_COMMIT}"
           echo "tag=v${TARGET_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
