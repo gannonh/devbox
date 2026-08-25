@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { createHash, randomBytes } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import { boundedCall } from './sandbox-cleanup.mjs';
 
@@ -66,6 +67,168 @@ export function waitForOutput(
     }
     if (output.includes(marker)) finish();
   });
+}
+
+function terminalLongevityMarkers() {
+  const nonce = randomBytes(12).toString('hex');
+  return {
+    server: `provider-smoke-idle-server-${nonce}`,
+    input: `provider-smoke-idle-input-${nonce}`,
+    echoPrefix: `provider-smoke-idle-echo-${nonce}:`,
+  };
+}
+
+function sandboxObservation(sandbox) {
+  const identity = `${sandbox.id ?? ''}\0${sandbox.name ?? ''}`;
+  const expiresAt = sandbox.expiresAt instanceof Date && Number.isFinite(sandbox.expiresAt.getTime())
+    ? sandbox.expiresAt.toISOString()
+    : null;
+  return {
+    sandboxFingerprint: createHash('sha256').update(identity).digest('hex').slice(0, 16),
+    status: typeof sandbox.status === 'string' ? sandbox.status : 'unknown',
+    expiresAt,
+  };
+}
+
+export function assertTerminalLongevityBudget({
+  deadlineAt,
+  idleMs,
+  timeoutMs,
+  now = Date.now,
+}) {
+  const requiredMs = idleMs + timeoutMs;
+  const remainingMs = deadlineAt - now();
+  if (remainingMs < requiredMs) {
+    throw new Error(`remaining smoke budget ${remainingMs}ms is below the required ${requiredMs}ms; raise SMOKE_TIMEOUT_MS`);
+  }
+}
+
+export async function runTerminalLongevity({
+  sandbox,
+  refreshSandbox,
+  report,
+  signal,
+  terminalAdapter,
+  idleMs,
+  terminalTimeoutMs,
+  recordCheck,
+  now = Date.now,
+  markers = terminalLongevityMarkers(),
+}) {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const signalSource = new EventEmitter();
+  const output = [];
+  let terminalError;
+  stdout.on('data', (chunk) => output.push(chunk.toString()));
+  stderr.on('data', (chunk) => output.push(chunk.toString()));
+
+  const before = sandboxObservation(await refreshSandbox());
+  const attachmentController = new AbortController();
+  const abortAttachment = () => attachmentController.abort(signal?.reason);
+  if (signal?.aborted) abortAttachment();
+  else signal?.addEventListener('abort', abortAttachment, { once: true });
+  let attach;
+  try {
+    attach = terminalAdapter.attach(sandbox, {
+      streams: { stdin, stdout, stderr },
+      tty: false,
+      signal: attachmentController.signal,
+      signalSource,
+      timeoutExtension: false,
+      getSize: () => ({ cols: 100, rows: 30 }),
+      onError: (failure) => {
+        terminalError = failure.message;
+        return true;
+      },
+    });
+    const capturedOutput = () => output.join('');
+    const idleSeconds = Math.ceil(idleMs / 1_000);
+    const encodedServerMarker = Buffer.from(markers.server).toString('base64');
+    const encodedEchoPrefix = Buffer.from(markers.echoPrefix).toString('base64');
+    const serverWait = waitForOutput(
+      stdout,
+      markers.server,
+      idleMs + terminalTimeoutMs,
+      attachmentController.signal,
+      capturedOutput,
+    );
+    const idleStartedAtMs = now();
+    stdin.write(
+      `stty -echo; sleep ${idleSeconds}; printf "%s\\n" "$(printf "%s" "${encodedServerMarker}" | base64 -d)"; `
+      + `IFS= read -r line; printf "%s%s\\n" "$(printf "%s" "${encodedEchoPrefix}" | base64 -d)" "$line"; stty echo\n`,
+    );
+    await serverWait;
+    const serverObservedAtMs = now();
+    const idleObservedMs = serverObservedAtMs - idleStartedAtMs;
+    recordCheck(report, 'six-minute terminal idle interval', idleObservedMs >= idleMs, `observed ${idleObservedMs}ms without terminal input`);
+    recordCheck(report, 'post-idle server marker', true, 'unique server marker arrived through the original attachment');
+
+    const expectedEcho = `${markers.echoPrefix}${markers.input}`;
+    const echoWait = waitForOutput(
+      stdout,
+      expectedEcho,
+      terminalTimeoutMs,
+      attachmentController.signal,
+      capturedOutput,
+    );
+    const inputSentAtMs = now();
+    stdin.write(`${markers.input}\n`);
+    await echoWait;
+    const echoObservedAtMs = now();
+    recordCheck(report, 'post-idle client input echo', true, 'unique client input was processed and echoed by the original attachment');
+
+    const after = sandboxObservation(await refreshSandbox());
+    const sandboxEvidenceValid = before.sandboxFingerprint === after.sandboxFingerprint
+      && before.status === 'running'
+      && after.status === 'running'
+      && before.expiresAt !== null
+      && after.expiresAt !== null;
+    recordCheck(
+      report,
+      'terminal longevity Sandbox evidence',
+      sandboxEvidenceValid,
+      'sanitized identity, status, and expiresAt were recorded before and after the idle interval',
+    );
+
+    stdin.write(Buffer.from([0x1d]));
+    const result = await boundedCall(
+      () => attach,
+      'terminal longevity completion',
+      { signal, timeoutMs: terminalTimeoutMs },
+    );
+    const detachedByEscape = result.status === 'detached' && result.reason === 'escape';
+    recordCheck(report, 'terminal longevity clean detach', detachedByEscape, terminalError ?? `terminal status=${result.status}`);
+    report.terminalLongevity = {
+      idleTargetMs: idleMs,
+      idleStartedAt: new Date(idleStartedAtMs).toISOString(),
+      idleObservedMs,
+      serverObservedAt: new Date(serverObservedAtMs).toISOString(),
+      inputSentAt: new Date(inputSentAtMs).toISOString(),
+      echoObservedAt: new Date(echoObservedAtMs).toISOString(),
+      serverMarkerObserved: true,
+      clientInputEchoObserved: true,
+      before,
+      after,
+      terminal: {
+        status: result.status,
+        ...(result.status === 'exited' ? { exitCode: result.code } : { reason: result.reason }),
+      },
+    };
+  } catch (error) {
+    attachmentController.abort(error);
+    if (attach !== undefined) {
+      await boundedCall(
+        () => attach,
+        'terminal longevity failure detach',
+        { timeoutMs: terminalTimeoutMs },
+      ).catch(() => {});
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abortAttachment);
+  }
 }
 
 /** Run the production terminal adapter through the smoke's ready/interrupt path. */

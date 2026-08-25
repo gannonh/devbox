@@ -24,6 +24,10 @@ import {
   recoverOwnedResources,
 } from './sandbox-owned-recovery.mjs';
 import { deleteListedSnapshot } from './snapshot-cleanup.mjs';
+import {
+  assertTerminalLongevityBudget,
+  runTerminalLongevity,
+} from './smoke-terminal.mjs';
 
 const role = process.env.SMOKE_ROLE;
 const image = process.env.IMAGE_REF;
@@ -51,6 +55,13 @@ const commandTimeoutMs = positiveTimeout('SMOKE_COMMAND_TIMEOUT_MS', 60_000);
 const httpTimeoutMs = positiveTimeout('SMOKE_HTTP_TIMEOUT_MS', 10_000);
 const cleanupTimeoutMs = positiveTimeout('SMOKE_CLEANUP_TIMEOUT_MS', 120_000);
 const deleteVerifyTimeoutMs = positiveTimeout('SMOKE_DELETE_VERIFY_TIMEOUT_MS', 30_000);
+const terminalLongevityIdleMs = process.env.SMOKE_TERMINAL_LONGEVITY_IDLE_MS === undefined
+  ? 0
+  : positiveTimeout('SMOKE_TERMINAL_LONGEVITY_IDLE_MS', 360_000);
+const terminalTimeoutMs = positiveTimeout('SMOKE_TERMINAL_TIMEOUT_MS', 90_000);
+if (terminalLongevityIdleMs > 0 && terminalLongevityIdleMs < 360_000) {
+  throw new Error('SMOKE_TERMINAL_LONGEVITY_IDLE_MS must be at least 360000ms when enabled');
+}
 const imageInfo = parseFullyQualifiedVcrReference(image);
 if (imageInfo.digest !== expectedDigest) {
   throw new Error('Sandbox smoke must use the exact candidate digest, not a tag or different reference');
@@ -377,7 +388,7 @@ try {
     name: ownedName,
     ports: [6080],
     persistent: false,
-    timeout: 10 * 60 * 1000,
+    timeout: smokeTimeoutMs,
     tags: { 'devbox-image': `smoke-${role}`, 'devbox-run': ownedTag },
     signal,
   }), { timeoutMs: smokeTimeoutMs });
@@ -547,6 +558,24 @@ try {
     state: terminalRun.result.exitCode === 0 ? 'completed' : 'failed',
   };
   await timed('session-terminal', (signal) => listSessions('after-terminal', sandbox, signal));
+  if (terminalLongevityIdleMs > 0) {
+    assertTerminalLongevityBudget({
+      deadlineAt: smokeDeadlineAt,
+      idleMs: terminalLongevityIdleMs,
+      timeoutMs: terminalTimeoutMs,
+    });
+    const { createVercelTerminalAdapter } = await import('../../dist/providers/vercel/terminal.js');
+    await timed('terminal-longevity', (signal) => runTerminalLongevity({
+      sandbox,
+      refreshSandbox: () => Sandbox.get({ ...credentials, name: sandbox.name, signal }),
+      report,
+      signal,
+      terminalAdapter: createVercelTerminalAdapter(),
+      idleMs: terminalLongevityIdleMs,
+      terminalTimeoutMs,
+      recordCheck: (_target, name, ok, detail) => check(name, ok, detail),
+    }), { timeoutMs: terminalLongevityIdleMs + terminalTimeoutMs });
+  }
 } catch (error) {
   report.error = error instanceof Error ? error.message : String(error);
   report.failed = true;

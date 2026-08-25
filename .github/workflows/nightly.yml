@@ -51,7 +51,7 @@ jobs:
       github.event_name != 'workflow_dispatch' ||
       github.actor == github.repository_owner
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
       contents: read
     outputs:
@@ -74,6 +74,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build production terminal adapter
+        run: npm run build
 
       - name: Install audited Vercel CLI
         # Keep VCR JSON/scope behavior reproducible; update only with a reviewed audit.
@@ -448,6 +451,25 @@ jobs:
           export READINESS_TIMEOUT_MS="$((READINESS_TIMEOUT_MINUTES * 60 * 1000))"
           node scripts/vercel/wait-vcr-ready.mjs
 
+      - name: Resolve the image for this run
+        id: resolved
+        env:
+          REUSE_SKIP: ${{ steps.drift.outputs.skip }}
+          REUSE_DIGEST: ${{ steps.drift.outputs.reuse_digest }}
+          MANIFEST_DIGEST: ${{ steps.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ "${REUSE_SKIP}" == 'true' ]]; then
+            digest="${REUSE_DIGEST}"
+          else
+            digest="${MANIFEST_DIGEST}"
+          fi
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo 'no image digest was resolved for this run' >&2
+            exit 1
+          }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
       # smoke-sandbox records terminal session state and snapshot statuses;
       # cleanup requires the Sandbox deleted and no non-deleted snapshot residual.
       - name: Publisher Sandbox smoke gate
@@ -473,19 +495,19 @@ jobs:
           VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
         run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
 
-      # This is the independent cross-project public-consumption gate; it is
-      # intentionally separate from the publisher Sandbox credentials.
-      - name: Independent consumer Sandbox smoke gate
-        if: ${{ success() && steps.drift.outputs.skip != 'true' }}
+      - name: Independent cross-project consumer Sandbox smoke gate
+        if: ${{ success() }}
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
-          IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.manifest.outputs.digest }}
-          EXPECTED_IMAGE_DIGEST: ${{ steps.manifest.outputs.digest }}
+          IMAGE_REF: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ steps.resolved.outputs.digest }}
+          EXPECTED_IMAGE_DIGEST: ${{ steps.resolved.outputs.digest }}
           EXPECTED_IMAGE_TEAM_SLUG: ${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}
           EXPECTED_IMAGE_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           SMOKE_ROLE: consumer
+          SMOKE_TIMEOUT_MS: '1200000'
+          SMOKE_TERMINAL_LONGEVITY_IDLE_MS: '360000'
           SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#consumer-smoke
           SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/consumer-smoke.json
         run: node scripts/vercel/smoke-sandbox.mjs
@@ -510,22 +532,6 @@ jobs:
           repository="vcr.vercel.com/${PUBLISHER_TEAM_SLUG}/${PUBLISHER_PROJECT_SLUG}/${VERCEL_IMAGE_REPOSITORY}"
           node scripts/vercel/retag-image.mjs \
             --repository "${repository}" --digest "${CANDIDATE_DIGEST}" --tag "${CONTENT_TAG}"
-
-      # Resolve the one digest this run stands behind, however it was obtained.
-      - name: Resolve the image for this run
-        id: resolved
-        run: |
-          set -euo pipefail
-          if [[ '${{ steps.drift.outputs.skip }}' == 'true' ]]; then
-            digest='${{ steps.drift.outputs.reuse_digest }}'
-          else
-            digest='${{ steps.manifest.outputs.digest }}'
-          fi
-          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || {
-            echo 'no image digest was resolved for this run' >&2
-            exit 1
-          }
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Promote the proven digest to the nightly channel
         if: ${{ success() && github.ref_name == github.event.repository.default_branch }}
