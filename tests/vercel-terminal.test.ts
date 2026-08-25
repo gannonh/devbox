@@ -334,6 +334,8 @@ describe('Vercel terminal adapter', () => {
         error: { message: expect.stringContaining('[REDACTED]') },
       });
       expect(failures).toHaveLength(1);
+      expect(failures[0].cause.message).toContain('[REDACTED]');
+      expect(failures[0].cause.message).not.toContain(token);
       expect(JSON.stringify({ result, failures })).not.toContain(token);
       expect(activeHeartbeats(timers)).toHaveLength(0);
       expect(sockets[0].closeCount).toBe(1);
