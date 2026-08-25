@@ -18,7 +18,15 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    ignores: ['dist/', 'node_modules/', 'templates/', '.agents/', 'site/.astro/', 'site/dist/'],
+    ignores: [
+      'dist/',
+      'node_modules/',
+      'templates/',
+      '.agents/',
+      '.claude/',
+      'site/.astro/',
+      'site/dist/',
+    ],
   },
   {
     files: ['scripts/**/*.mjs', 'images/vercel/**/*.mjs', 'packages/dbx/**/*.js'],
