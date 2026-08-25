@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  assertTerminalLongevityBudget,
   runInteractiveTerminal,
   runTerminalLongevity,
   waitForOutput,
@@ -144,6 +145,49 @@ describe('provider smoke output waiting', () => {
     expect(attachmentSignal).not.toBe(callerController.signal);
     expect(attachmentSignal?.aborted).toBe(true);
     expect(attachmentSettled).toBe(true);
+  });
+
+  it('preserves the verification failure when attachment cleanup also fails', async () => {
+    const terminalAdapter = {
+      attach: vi.fn(async (_sandbox: unknown, options: VercelTerminalOptions = {}) => new Promise<VercelTerminalResult>((_resolve, reject) => {
+        const streams = options.streams!;
+        streams.stdin.once('data', () => streams.stdout.write('server-marker\n'));
+        options.signal!.addEventListener('abort', () => reject(new Error('attachment cleanup failed')), { once: true });
+      })),
+    };
+
+    await expect(runTerminalLongevity({
+      sandbox: {},
+      refreshSandbox: async () => ({ status: 'running', expiresAt: new Date() }),
+      report: {},
+      terminalAdapter,
+      idleMs: 1,
+      terminalTimeoutMs: 100,
+      now: (() => {
+        let current = 0;
+        return () => ++current;
+      })(),
+      markers: { server: 'server-marker', input: 'input-marker', echoPrefix: 'echo:' },
+      recordCheck: () => {
+        throw new Error('longevity verification failed');
+      },
+    })).rejects.toThrow('longevity verification failed');
+  });
+
+  it('rejects a terminal longevity run that cannot fit inside the smoke deadline', () => {
+    expect(() => assertTerminalLongevityBudget({
+      deadlineAt: 10_000,
+      idleMs: 6_000,
+      timeoutMs: 3_000,
+      now: () => 2_000,
+    })).toThrow('remaining smoke budget 8000ms is below the required 9000ms');
+
+    expect(() => assertTerminalLongevityBudget({
+      deadlineAt: 11_000,
+      idleMs: 6_000,
+      timeoutMs: 3_000,
+      now: () => 2_000,
+    })).not.toThrow();
   });
 
   it('uses exactly one production terminal adapter call for the ready/interrupt flow', async () => {

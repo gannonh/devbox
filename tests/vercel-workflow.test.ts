@@ -312,12 +312,17 @@ describe('Vercel image and release workflows', () => {
     const workflow = await workflowText();
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
     const consumerStep = workflow.match(/- name: Independent cross-project consumer Sandbox smoke gate[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    const resolveStep = workflow.match(/- name: Resolve the image for this run[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
     const resolveIndex = workflow.indexOf('- name: Resolve the image for this run');
     const consumerIndex = workflow.indexOf('- name: Independent cross-project consumer Sandbox smoke gate');
 
     expect(workflow).toContain('- name: Build production terminal adapter');
     expect(resolveIndex).toBeGreaterThan(-1);
     expect(resolveIndex).toBeLessThan(consumerIndex);
+    expect(resolveStep).toContain('REUSE_SKIP: ${{ steps.drift.outputs.skip }}');
+    expect(resolveStep).toContain('REUSE_DIGEST: ${{ steps.drift.outputs.reuse_digest }}');
+    expect(resolveStep).toContain('MANIFEST_DIGEST: ${{ steps.manifest.outputs.digest }}');
+    expect(resolveStep.match(/run: \|([\s\S]*)/)?.[1]).not.toContain('${{');
     expect(consumerStep).not.toContain("steps.drift.outputs.skip != 'true'");
     expect(consumerStep).toContain('steps.resolved.outputs.digest');
     expect(consumerStep).toContain("SMOKE_TERMINAL_LONGEVITY_IDLE_MS: '360000'");
