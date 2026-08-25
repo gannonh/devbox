@@ -12,3 +12,4 @@ uat-evidence/
 devbox.code-workspace
 .agents/skills/
 .claude/skills/
+skills-lock.json
