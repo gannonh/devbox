@@ -95,6 +95,51 @@ describe('provider smoke output waiting', () => {
     ]);
   });
 
+  it('aborts and awaits the attachment when longevity verification fails', async () => {
+    const callerController = new AbortController();
+    let attachmentSignal: AbortSignal | undefined;
+    let attachmentSettled = false;
+    const terminalAdapter = {
+      attach: vi.fn(async (_sandbox: unknown, options: VercelTerminalOptions = {}) => new Promise<VercelTerminalResult>((resolve) => {
+        const streams = options.streams;
+        const signal = options.signal;
+        if (!streams || !signal) throw new Error('terminal attachment options are required');
+        attachmentSignal = signal;
+        streams.stdin.once('data', () => {
+          streams.stdout.write('server-marker\n');
+        });
+        signal.addEventListener('abort', () => {
+          setImmediate(() => {
+            attachmentSettled = true;
+            resolve({ status: 'detached', reason: 'abort' });
+          });
+        }, { once: true });
+      })),
+    };
+
+    await expect(runTerminalLongevity({
+      sandbox: {},
+      refreshSandbox: async () => ({ status: 'running', expiresAt: new Date() }),
+      report: {},
+      signal: callerController.signal,
+      terminalAdapter,
+      idleMs: 1,
+      terminalTimeoutMs: 100,
+      now: (() => {
+        let current = 0;
+        return () => ++current;
+      })(),
+      markers: { server: 'server-marker', input: 'input-marker', echoPrefix: 'echo:' },
+      recordCheck: () => {
+        throw new Error('longevity verification failed');
+      },
+    })).rejects.toThrow('longevity verification failed');
+
+    expect(attachmentSignal).not.toBe(callerController.signal);
+    expect(attachmentSignal?.aborted).toBe(true);
+    expect(attachmentSettled).toBe(true);
+  });
+
   it('uses exactly one production terminal adapter call for the ready/interrupt flow', async () => {
     const signalController = new AbortController();
     const pathReport = { label: 'existing', checks: [] as unknown[] };

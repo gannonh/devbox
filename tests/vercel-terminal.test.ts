@@ -23,7 +23,7 @@ class FakeWebSocket extends EventEmitter implements VercelTerminalWebSocket {
   pingException?: Error;
   resumeCount = 0;
   private paused = false;
-  private readonly pendingCallbacks: Array<() => void> = [];
+  private readonly pendingCallbacks: Array<(error?: Error) => void> = [];
   private readonly pendingPingCallbacks: Array<(error?: Error) => void> = [];
 
   constructor(url: string) {
@@ -38,14 +38,14 @@ class FakeWebSocket extends EventEmitter implements VercelTerminalWebSocket {
   send(data: Buffer | string, callback?: (error?: Error) => void): void {
     this.sent.push(data);
     if (this.blockSends && callback) {
-      this.pendingCallbacks.push(() => callback());
+      this.pendingCallbacks.push(callback);
       return;
     }
     callback?.();
   }
 
-  releaseSend(): void {
-    this.pendingCallbacks.shift()?.();
+  releaseSend(error?: Error): void {
+    this.pendingCallbacks.shift()?.(error);
   }
 
   ping(callback?: (error?: Error) => void): void {
@@ -168,6 +168,25 @@ function fireHeartbeat(timer: ManualHeartbeatTimer): void {
 function activeHeartbeats(timers: readonly ManualHeartbeatTimer[]): ManualHeartbeatTimer[] {
   return timers.filter((timer) => !timer.cancelled && !timer.fired);
 }
+
+type HeartbeatCleanupPath =
+  | 'escape'
+  | 'eof'
+  | 'abort'
+  | 'socket-error'
+  | 'socket-close'
+  | 'remote-completion'
+  | 'startup-failure';
+
+const heartbeatCleanupPaths: readonly HeartbeatCleanupPath[] = [
+  'escape',
+  'eof',
+  'abort',
+  'socket-error',
+  'socket-close',
+  'remote-completion',
+  'startup-failure',
+];
 
 describe('Vercel terminal adapter', () => {
   it('opens an interactive endpoint and sends the official shell start frame', async () => {
@@ -324,6 +343,63 @@ describe('Vercel terminal adapter', () => {
       expect(failures).toHaveLength(1);
     },
   );
+
+  it.each(heartbeatCleanupPaths)('cancels heartbeat work on %s', async (path) => {
+    const sockets: FakeWebSocket[] = [];
+    const { scheduler, timers } = manualHeartbeatScheduler();
+    const terminalStreams = streams();
+    const controller = new AbortController();
+    const onError = vi.fn(() => true);
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        socket.deferPings = true;
+        socket.blockSends = path === 'startup-failure';
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const resultPromise = terminal.attach({
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: terminalStreams,
+      signal: controller.signal,
+      signalSource: new EventEmitter(),
+      heartbeatIntervalMs: 25_000,
+      heartbeatScheduler: scheduler,
+      getSize: () => ({ cols: 80, rows: 24 }),
+      onError,
+    });
+    await vi.waitFor(() => expect(timers).toHaveLength(1));
+
+    const socket = sockets[0];
+    fireHeartbeat(timers[0]);
+    expect(timers).toHaveLength(2);
+    switch (path) {
+      case 'escape': terminalStreams.input.emit('data', Buffer.from([0x1d])); break;
+      case 'eof': terminalStreams.input.emit('end'); break;
+      case 'abort': controller.abort(); break;
+      case 'socket-error': socket.emit('error', new Error('socket failed')); break;
+      case 'socket-close': socket.close(); break;
+      case 'remote-completion': socket.emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false); break;
+      case 'startup-failure': socket.releaseSend(new Error('start frame failed')); break;
+      default: {
+        const exhaustive: never = path;
+        throw new Error(`Unhandled heartbeat cleanup path: ${exhaustive}`);
+      }
+    }
+
+    const result = await resultPromise;
+    expect(result.status).toBe(path === 'remote-completion' ? 'exited' : 'detached');
+    expect(timers[1].cancelled).toBe(true);
+    const failureCount = onError.mock.calls.length;
+    timers[1].callback();
+    socket.releasePing(new Error('late heartbeat failure'));
+    expect(socket.pingCount).toBe(1);
+    expect(onError).toHaveBeenCalledTimes(failureCount);
+    expect(activeHeartbeats(timers)).toHaveLength(0);
+  });
 
   it('detaches cleanly when the WebSocket closes before opening', async () => {
     const sockets: FakeWebSocket[] = [];

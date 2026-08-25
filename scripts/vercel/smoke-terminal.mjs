@@ -117,85 +117,110 @@ export async function runTerminalLongevity({
   stderr.on('data', (chunk) => output.push(chunk.toString()));
 
   const before = sandboxObservation(await refreshSandbox());
-  const attach = terminalAdapter.attach(sandbox, {
-    streams: { stdin, stdout, stderr },
-    tty: false,
-    signal,
-    signalSource,
-    timeoutExtension: false,
-    getSize: () => ({ cols: 100, rows: 30 }),
-    onError: (failure) => {
-      terminalError = failure.message;
-      return true;
-    },
-  });
-  const capturedOutput = () => output.join('');
-  const idleSeconds = Math.ceil(idleMs / 1_000);
-  const encodedServerMarker = Buffer.from(markers.server).toString('base64');
-  const encodedEchoPrefix = Buffer.from(markers.echoPrefix).toString('base64');
-  const serverWait = waitForOutput(
-    stdout,
-    markers.server,
-    idleMs + terminalTimeoutMs,
-    signal,
-    capturedOutput,
-  );
-  const idleStartedAtMs = now();
-  stdin.write(
-    `stty -echo; sleep ${idleSeconds}; printf "%s\\n" "$(printf "%s" "${encodedServerMarker}" | base64 -d)"; `
-    + `IFS= read -r line; printf "%s%s\\n" "$(printf "%s" "${encodedEchoPrefix}" | base64 -d)" "$line"; stty echo\n`,
-  );
-  await serverWait;
-  const serverObservedAtMs = now();
-  const idleObservedMs = serverObservedAtMs - idleStartedAtMs;
-  recordCheck(report, 'six-minute terminal idle interval', idleObservedMs >= idleMs, `observed ${idleObservedMs}ms without terminal input`);
-  recordCheck(report, 'post-idle server marker', true, 'unique server marker arrived through the original attachment');
+  const attachmentController = new AbortController();
+  const abortAttachment = () => attachmentController.abort(signal?.reason);
+  if (signal?.aborted) abortAttachment();
+  else signal?.addEventListener('abort', abortAttachment, { once: true });
+  let attach;
+  try {
+    attach = terminalAdapter.attach(sandbox, {
+      streams: { stdin, stdout, stderr },
+      tty: false,
+      signal: attachmentController.signal,
+      signalSource,
+      timeoutExtension: false,
+      getSize: () => ({ cols: 100, rows: 30 }),
+      onError: (failure) => {
+        terminalError = failure.message;
+        return true;
+      },
+    });
+    const capturedOutput = () => output.join('');
+    const idleSeconds = Math.ceil(idleMs / 1_000);
+    const encodedServerMarker = Buffer.from(markers.server).toString('base64');
+    const encodedEchoPrefix = Buffer.from(markers.echoPrefix).toString('base64');
+    const serverWait = waitForOutput(
+      stdout,
+      markers.server,
+      idleMs + terminalTimeoutMs,
+      attachmentController.signal,
+      capturedOutput,
+    );
+    const idleStartedAtMs = now();
+    stdin.write(
+      `stty -echo; sleep ${idleSeconds}; printf "%s\\n" "$(printf "%s" "${encodedServerMarker}" | base64 -d)"; `
+      + `IFS= read -r line; printf "%s%s\\n" "$(printf "%s" "${encodedEchoPrefix}" | base64 -d)" "$line"; stty echo\n`,
+    );
+    await serverWait;
+    const serverObservedAtMs = now();
+    const idleObservedMs = serverObservedAtMs - idleStartedAtMs;
+    recordCheck(report, 'six-minute terminal idle interval', idleObservedMs >= idleMs, `observed ${idleObservedMs}ms without terminal input`);
+    recordCheck(report, 'post-idle server marker', true, 'unique server marker arrived through the original attachment');
 
-  const expectedEcho = `${markers.echoPrefix}${markers.input}`;
-  const echoWait = waitForOutput(stdout, expectedEcho, terminalTimeoutMs, signal, capturedOutput);
-  const inputSentAtMs = now();
-  stdin.write(`${markers.input}\n`);
-  await echoWait;
-  const echoObservedAtMs = now();
-  recordCheck(report, 'post-idle client input echo', true, 'unique client input was processed and echoed by the original attachment');
+    const expectedEcho = `${markers.echoPrefix}${markers.input}`;
+    const echoWait = waitForOutput(
+      stdout,
+      expectedEcho,
+      terminalTimeoutMs,
+      attachmentController.signal,
+      capturedOutput,
+    );
+    const inputSentAtMs = now();
+    stdin.write(`${markers.input}\n`);
+    await echoWait;
+    const echoObservedAtMs = now();
+    recordCheck(report, 'post-idle client input echo', true, 'unique client input was processed and echoed by the original attachment');
 
-  const after = sandboxObservation(await refreshSandbox());
-  const sandboxEvidenceValid = before.sandboxFingerprint === after.sandboxFingerprint
-    && before.status === 'running'
-    && after.status === 'running'
-    && before.expiresAt !== null
-    && after.expiresAt !== null;
-  recordCheck(
-    report,
-    'terminal longevity Sandbox evidence',
-    sandboxEvidenceValid,
-    'sanitized identity, status, and expiresAt were recorded before and after the idle interval',
-  );
+    const after = sandboxObservation(await refreshSandbox());
+    const sandboxEvidenceValid = before.sandboxFingerprint === after.sandboxFingerprint
+      && before.status === 'running'
+      && after.status === 'running'
+      && before.expiresAt !== null
+      && after.expiresAt !== null;
+    recordCheck(
+      report,
+      'terminal longevity Sandbox evidence',
+      sandboxEvidenceValid,
+      'sanitized identity, status, and expiresAt were recorded before and after the idle interval',
+    );
 
-  stdin.write(Buffer.from([0x1d]));
-  const result = await boundedCall(
-    () => attach,
-    'terminal longevity completion',
-    { signal, timeoutMs: terminalTimeoutMs },
-  );
-  const detachedByEscape = result.status === 'detached' && result.reason === 'escape';
-  recordCheck(report, 'terminal longevity clean detach', detachedByEscape, terminalError ?? `terminal status=${result.status}`);
-  report.terminalLongevity = {
-    idleTargetMs: idleMs,
-    idleStartedAt: new Date(idleStartedAtMs).toISOString(),
-    idleObservedMs,
-    serverObservedAt: new Date(serverObservedAtMs).toISOString(),
-    inputSentAt: new Date(inputSentAtMs).toISOString(),
-    echoObservedAt: new Date(echoObservedAtMs).toISOString(),
-    serverMarkerObserved: true,
-    clientInputEchoObserved: true,
-    before,
-    after,
-    terminal: {
-      status: result.status,
-      ...(result.status === 'exited' ? { exitCode: result.code } : { reason: result.reason }),
-    },
-  };
+    stdin.write(Buffer.from([0x1d]));
+    const result = await boundedCall(
+      () => attach,
+      'terminal longevity completion',
+      { signal, timeoutMs: terminalTimeoutMs },
+    );
+    const detachedByEscape = result.status === 'detached' && result.reason === 'escape';
+    recordCheck(report, 'terminal longevity clean detach', detachedByEscape, terminalError ?? `terminal status=${result.status}`);
+    report.terminalLongevity = {
+      idleTargetMs: idleMs,
+      idleStartedAt: new Date(idleStartedAtMs).toISOString(),
+      idleObservedMs,
+      serverObservedAt: new Date(serverObservedAtMs).toISOString(),
+      inputSentAt: new Date(inputSentAtMs).toISOString(),
+      echoObservedAt: new Date(echoObservedAtMs).toISOString(),
+      serverMarkerObserved: true,
+      clientInputEchoObserved: true,
+      before,
+      after,
+      terminal: {
+        status: result.status,
+        ...(result.status === 'exited' ? { exitCode: result.code } : { reason: result.reason }),
+      },
+    };
+  } catch (error) {
+    attachmentController.abort(error);
+    if (attach !== undefined) {
+      await boundedCall(
+        () => attach,
+        'terminal longevity failure detach',
+        { timeoutMs: terminalTimeoutMs },
+      );
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', abortAttachment);
+  }
 }
 
 /** Run the production terminal adapter through the smoke's ready/interrupt path. */
