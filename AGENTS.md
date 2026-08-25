@@ -40,7 +40,7 @@ Install the product OS skills project-locally (no `-g`):
 bash scripts/install-skills.sh
 ```
 
-Same command without the wrapper:
+The script also installs thermo-run, readme, thermo-nuclear-*, and unslop. Core product-OS skills without the wrapper:
 
 ```bash
 npx skills add gannonh/skills --skill plan-build-verify --skill address-pr-comments -y

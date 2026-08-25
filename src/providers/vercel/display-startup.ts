@@ -24,8 +24,17 @@ const DISPLAY_STATUS_COMMAND = '/usr/local/bin/devbox-status';
 const DISPLAY_PROXY_OVERLAY_PATH = '/vercel/.devbox/runtime/novnc-proxy.mjs';
 const DISPLAY_PROXY_IMAGE_PATH = '/usr/local/lib/devbox/novnc-proxy.mjs';
 const DISPLAY_PROXY_SOURCE = fileURLToPath(new URL('../../../images/vercel/novnc-proxy.mjs', import.meta.url));
-const DISPLAY_PROXY_INSTALL_SCRIPT = [
+const DISPLAY_STATUS_OVERLAY_PATH = '/vercel/.devbox/runtime/status-devbox.sh';
+const DISPLAY_STATUS_IMAGE_PATH = DISPLAY_STATUS_COMMAND;
+const DISPLAY_STATUS_SOURCE = fileURLToPath(new URL('../../../images/vercel/status-devbox.sh', import.meta.url));
+const DISPLAY_RUNTIME_INSTALL_SCRIPT = [
   `cp '${DISPLAY_PROXY_OVERLAY_PATH}' '${DISPLAY_PROXY_IMAGE_PATH}'`,
+  `status_tmp='${DISPLAY_STATUS_IMAGE_PATH}.tmp.$$'`,
+  'trap \'rm -f "${status_tmp}"\' EXIT',
+  `cp '${DISPLAY_STATUS_OVERLAY_PATH}' "\${status_tmp}"`,
+  'chmod 0755 "${status_tmp}"',
+  `mv -f "\${status_tmp}" '${DISPLAY_STATUS_IMAGE_PATH}'`,
+  'trap - EXIT',
 ].join('\n');
 const DISPLAY_SERVICE_NAMES = 'auth-proxy websockify x11vnc fluxbox xvfb';
 const DISPLAY_SERVICE_RESET_SCRIPT = [
@@ -125,19 +134,22 @@ export async function startDisplayStack(options: DisplayStartupOptions): Promise
   try {
     await options.client.writeFiles(
       options.sandbox,
-      [{ path: DISPLAY_PROXY_OVERLAY_PATH, content: await readFile(DISPLAY_PROXY_SOURCE), mode: 0o755 }],
+      [
+        { path: DISPLAY_PROXY_OVERLAY_PATH, content: await readFile(DISPLAY_PROXY_SOURCE), mode: 0o755 },
+        { path: DISPLAY_STATUS_OVERLAY_PATH, content: await readFile(DISPLAY_STATUS_SOURCE), mode: 0o755 },
+      ],
       options.signal === undefined ? undefined : { signal: options.signal },
     );
   } catch (error) {
-    throw startupError(`display proxy overlay failed: ${redactSecrets(error, options.secrets)}`, options.secrets);
+    throw startupError(`display runtime overlay failed: ${redactSecrets(error, options.secrets)}`, options.secrets);
   }
   const install = await runCommand(options, {
     cmd: 'sudo',
-    args: ['-n', 'sh', '-c', DISPLAY_PROXY_INSTALL_SCRIPT],
-  }, 'display proxy install');
+    args: ['-n', 'sh', '-c', DISPLAY_RUNTIME_INSTALL_SCRIPT],
+  }, 'display runtime install');
   if (install.exitCode !== 0) {
     throw startupError(
-      `display proxy install failed${install.output ? `: ${install.output}` : ` with exit code ${install.exitCode}`}`,
+      `display runtime install failed${install.output ? `: ${install.output}` : ` with exit code ${install.exitCode}`}`,
       options.secrets,
     );
   }
@@ -171,12 +183,12 @@ export async function startDisplayStack(options: DisplayStartupOptions): Promise
     );
   }
 
-  const status = await runCommand(options, { cmd: DISPLAY_STATUS_COMMAND }, 'display status');
-  const missing = REQUIRED_SERVICES.filter((service) => !hasRunningService(status.output, service));
-  if (status.exitCode !== 0 || missing.length > 0) {
-    const detail = missing.length > 0
+  const status = await runCommand(options, displayStatusRequest(), 'display status');
+  const missing = missingDisplayServices(status.rawOutput);
+  if (status.exitCode !== 0 || !hasRunningDisplay(status.rawOutput)) {
+    const detail = missing.length > 0 && missing.length < REQUIRED_SERVICES.length
       ? `services not running: ${missing.join(', ')}`
-      : `status exited with code ${status.exitCode}`;
+      : 'display services are not running';
     throw startupError(
       `display readiness failed; ${detail}${status.output ? `; status: ${status.output}` : ''}`,
       options.secrets,
@@ -209,7 +221,7 @@ export async function isDisplayStackRunning(options: {
   let result: VercelCommandResult;
   try {
     result = await options.client.runCommand(options.sandbox, {
-      cmd: DISPLAY_STATUS_COMMAND,
+      ...displayStatusRequest(),
       timeoutMs: DISPLAY_STARTUP_TIMEOUT_MS,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
@@ -221,18 +233,24 @@ export async function isDisplayStackRunning(options: {
     const output = await result.stdout(
       options.signal === undefined ? undefined : { signal: options.signal },
     );
-    const safe = redactSecrets(output, options.secrets ?? []);
-    return REQUIRED_SERVICES.every((service) => hasRunningService(safe, service));
+    return hasRunningDisplay(output);
   } catch {
     return false;
   }
+}
+
+function displayStatusRequest(): VercelRunCommandRequest {
+  return {
+    cmd: DISPLAY_STATUS_COMMAND,
+    env: { DEVBOX_STATUS_MODE: 'display' },
+  };
 }
 
 async function runCommand(
   options: DisplayStartupOptions,
   request: VercelRunCommandRequest,
   operation: string,
-): Promise<{ exitCode: number; output: string }> {
+): Promise<{ exitCode: number; output: string; rawOutput: string }> {
   let result: VercelCommandResult;
   try {
     result = await options.client.runCommand(options.sandbox, {
@@ -243,28 +261,42 @@ async function runCommand(
   } catch (error) {
     throw startupError(`${operation} command failed: ${redactSecrets(error, options.secrets)}`, options.secrets);
   }
-  let output: string;
+  let rawOutput: string;
   try {
-    output = await commandOutput(result, options.signal, options.secrets);
+    rawOutput = await commandOutput(result, options.signal);
   } catch (error) {
     throw startupError(`${operation} output failed: ${redactSecrets(error, options.secrets)}`, options.secrets);
   }
-  return { exitCode: result.exitCode ?? -1, output };
+  return {
+    exitCode: result.exitCode ?? -1,
+    output: redactSecrets(rawOutput, options.secrets),
+    rawOutput,
+  };
 }
 
 async function commandOutput(
   result: VercelCommandResult,
   signal: AbortSignal | undefined,
-  secrets: readonly string[],
 ): Promise<string> {
   const output: string[] = [];
   if (result.stdout) output.push(await result.stdout(signal === undefined ? undefined : { signal }));
   if (result.stderr) output.push(await result.stderr(signal === undefined ? undefined : { signal }));
-  return redactSecrets(output.join('\n').trim(), secrets);
+  return output.join('\n').trim();
+}
+
+function missingDisplayServices(output: string): readonly string[] {
+  const match = output.match(/^\[devbox-status\] display=stopped missing=([^\r\n]*)$/m);
+  if (match?.[1] !== undefined) return match[1].split(',').filter(Boolean);
+  return REQUIRED_SERVICES.filter((service) => !hasRunningService(output, service));
 }
 
 function hasRunningService(output: string, service: string): boolean {
   return output.split(/\r?\n/).some((line) => line.trim() === `[devbox-status] ${service}=running`);
+}
+
+function hasRunningDisplay(output: string): boolean {
+  return hasRunningService(output, 'display')
+    || REQUIRED_SERVICES.every((service) => hasRunningService(output, service));
 }
 
 function startupError(message: string, secrets: readonly string[]): VercelDisplayStartupError {

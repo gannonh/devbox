@@ -55,12 +55,12 @@ describe('Vercel display startup', () => {
       runCommand: vi.fn(async (_sandbox, request) => {
         commands.push(request);
         if (request.cmd === '/usr/local/bin/devbox-status') {
-          return { exitCode: 0, stdout: async () => STATUS_OUTPUT };
+          return { exitCode: 0, stdout: async () => '[devbox-status] display=running\n' };
         }
         return { exitCode: 0 };
       }),
     } as unknown as VercelSandboxClient;
-    const secrets: string[] = [];
+    const secrets: string[] = ['devbox'];
 
     await startDisplayStack({
       sandbox: sandbox(),
@@ -70,13 +70,20 @@ describe('Vercel display startup', () => {
     });
 
     const start = commands.find((request) => request.cmd === '/usr/local/bin/devbox-start');
-    const overlay = (uploads[0] as Array<{ path: string; content: Buffer }>)[0];
-    expect(overlay.path).toBe('/vercel/.devbox/runtime/novnc-proxy.mjs');
-    expect(overlay.content.equals(await readFile('images/vercel/novnc-proxy.mjs'))).toBe(true);
+    const [proxyOverlay, statusOverlay] = uploads[0] as Array<{ path: string; content: Buffer }>;
+    expect(proxyOverlay.path).toBe('/vercel/.devbox/runtime/novnc-proxy.mjs');
+    expect(proxyOverlay.content.equals(await readFile('images/vercel/novnc-proxy.mjs'))).toBe(true);
+    expect(statusOverlay.path).toBe('/vercel/.devbox/runtime/status-devbox.sh');
+    expect(statusOverlay.content.equals(await readFile('images/vercel/status-devbox.sh'))).toBe(true);
     expect(commands[0]).toMatchObject({
       cmd: 'sudo',
       args: ['-n', 'sh', '-c', expect.stringContaining("cp '/vercel/.devbox/runtime/novnc-proxy.mjs' '/usr/local/lib/devbox/novnc-proxy.mjs'")],
     });
+    expect(commands[0]?.args?.[3]).toContain(
+      "cp '/vercel/.devbox/runtime/status-devbox.sh' \"${status_tmp}\"",
+    );
+    expect(commands[0]?.args?.[3]).toContain('chmod 0755 "${status_tmp}"');
+    expect(commands[0]?.args?.[3]).toContain('mv -f "${status_tmp}" \'/usr/local/bin/devbox-status\'');
     expect(start).toMatchObject({
       cmd: '/usr/local/bin/devbox-start',
       env: {
@@ -97,7 +104,10 @@ describe('Vercel display startup', () => {
     expect(start?.cmd).not.toContain(start?.env?.DEVBOX_NOVNC_PASSWORD ?? '');
     expect(start?.args ?? []).not.toContain(start?.env?.DEVBOX_NOVNC_PASSWORD);
     expect(secrets).toContain(start?.env?.DEVBOX_NOVNC_PASSWORD);
-    expect(commands.at(-1)?.cmd).toBe('/usr/local/bin/devbox-status');
+    expect(commands.at(-1)).toMatchObject({
+      cmd: '/usr/local/bin/devbox-status',
+      env: { DEVBOX_STATUS_MODE: 'display' },
+    });
   });
 
   it('clears the pending rotation marker after successful startup', async () => {
@@ -326,6 +336,34 @@ describe('Vercel display startup', () => {
       message: expect.stringContaining('auth-proxy'),
     });
     expect(String(error)).not.toContain(password);
+  });
+
+  it('names only display-mode missing= services when readiness fails', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-status-missing-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/display',
+    });
+    await store.write({ displayCredentials: { username: DISPLAY_USERNAME, password: 'display-missing-password' } });
+    const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async (_sandbox, request) => {
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return {
+            exitCode: 1,
+            stdout: async () => '[devbox-status] display=stopped missing=auth-proxy\n',
+          };
+        }
+        return { exitCode: 0 };
+      }),
+    } as unknown as VercelSandboxClient;
+
+    await expect(startDisplayStack({ sandbox: sandbox(), client, store, secrets: [] }))
+      .rejects.toMatchObject({
+        code: 'display_startup_failed',
+        message: expect.stringMatching(/services not running: auth-proxy/),
+      });
   });
 
   it('rejects malformed readiness markers instead of accepting substring matches', async () => {

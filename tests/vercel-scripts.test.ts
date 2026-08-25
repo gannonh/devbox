@@ -711,6 +711,32 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(status).toContain('timeout');
   });
 
+  it('checks display processes without running slow image probes in display mode', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-display-status-'));
+    const bin = join(temp, 'bin');
+    const fakePgrep = join(bin, 'pgrep');
+    try {
+      await mkdir(bin);
+      await writeFile(fakePgrep, '#!/bin/sh\nprintf "123\\n"\n');
+      await chmod(fakePgrep, 0o755);
+
+      const { stdout, stderr } = await execFileAsync('bash', ['images/vercel/status-devbox.sh'], {
+        env: {
+          ...process.env,
+          DEVBOX_STATUS_MODE: 'display',
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+        },
+      });
+
+      expect(stderr).toBe('');
+      expect(stdout).toBe('[devbox-status] display=running\n');
+      expect(stdout).not.toContain('=working');
+      expect(stdout).not.toContain('image checks passed');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it('proves every layer in an exact selected manifest uses OCI zstd media types', async () => {
     const manifest = {
       schemaVersion: 2,
@@ -882,7 +908,7 @@ describe('Vercel supply-chain script boundaries', () => {
   });
 
   it('requires publisher team scope for readiness polling', async () => {
-    const result = await runNode('scripts/vercel/wait-vcr-ready.mjs', {
+    const env = {
       ...process.env,
       VERCEL_IMAGE_REPOSITORY: 'devbox',
       VERCEL_IMAGE_TAG: 'fixture',
@@ -890,7 +916,9 @@ describe('Vercel supply-chain script boundaries', () => {
       VCR_READINESS_FIXTURE: '["Ready"]',
       READINESS_TIMEOUT_MS: '100',
       READINESS_POLL_MS: '1',
-    });
+    };
+    delete env.VERCEL_PUBLISHER_TEAM_SLUG;
+    const result = await runNode('scripts/vercel/wait-vcr-ready.mjs', env);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain('VERCEL_PUBLISHER_TEAM_SLUG');
   });
