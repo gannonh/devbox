@@ -225,7 +225,7 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).not.toContain('resolve-universal-digest.mjs');
     expect(workflow).not.toContain('universal_digest');
     expect(workflow).toContain('wait-vcr-ready.mjs');
-    expect(workflow).toContain('timeout-minutes: 60');
+    expect(workflow).toContain('timeout-minutes: 75');
     expect(workflow).toContain('SMOKE_TIMEOUT_MS:');
     expect(workflow).toContain('SMOKE_HTTP_TIMEOUT_MS:');
     expect(workflow).toContain('ARTIFACT_DIR=${artifact_dir}');
@@ -306,6 +306,27 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain('assert-zstd-manifest.mjs');
     const zstdAssertion = await readFile('scripts/vercel/assert-zstd-manifest.mjs', 'utf8');
     expect(zstdAssertion).toContain('application/vnd.oci.image.layer.v1.tar+zstd');
+  });
+
+  it('runs the six-minute production terminal adapter smoke for reused and rebuilt images', async () => {
+    const workflow = await workflowText();
+    const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
+    const consumerStep = workflow.match(/- name: Independent consumer Sandbox smoke gate[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    const resolveIndex = workflow.indexOf('- name: Resolve the image for this run');
+    const consumerIndex = workflow.indexOf('- name: Independent consumer Sandbox smoke gate');
+
+    expect(workflow).toContain('- name: Build production terminal adapter');
+    expect(resolveIndex).toBeGreaterThan(-1);
+    expect(resolveIndex).toBeLessThan(consumerIndex);
+    expect(consumerStep).not.toContain("steps.drift.outputs.skip != 'true'");
+    expect(consumerStep).toContain('steps.resolved.outputs.digest');
+    expect(consumerStep).toContain("SMOKE_TERMINAL_LONGEVITY_IDLE_MS: '360000'");
+    expect(consumerStep).toContain("SMOKE_TIMEOUT_MS: '1200000'");
+    expect(workflow).toContain('timeout-minutes: 75');
+    expect(smoke).toContain("../../dist/providers/vercel/terminal.js");
+    expect(smoke).toContain('runTerminalLongevity');
+    expect(smoke).toContain("timed('terminal-longevity'");
+    expect(smoke).toContain('Sandbox.get({ ...credentials, name: sandbox.name');
   });
 
   it('redacts workflow evidence and emits a pin only after both smoke gates', async () => {

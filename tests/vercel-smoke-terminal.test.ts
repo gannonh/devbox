@@ -1,9 +1,100 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
-import { runInteractiveTerminal, waitForOutput } from '../scripts/vercel/smoke-terminal.mjs';
+import {
+  runInteractiveTerminal,
+  runTerminalLongevity,
+  waitForOutput,
+} from '../scripts/vercel/smoke-terminal.mjs';
 import type { VercelTerminalOptions, VercelTerminalResult } from '../src/providers/vercel/terminal.js';
 
 describe('provider smoke output waiting', () => {
+  it('holds one attachment idle for six minutes before proving server output and client input', async () => {
+    const signalController = new AbortController();
+    const report: Record<string, unknown> = {};
+    const writes: string[] = [];
+    const observedAtWrite: number[] = [];
+    let nowMs = 1_000;
+    const terminalAdapter = {
+      attach: vi.fn(async (_sandbox: unknown, options: VercelTerminalOptions = {}) => new Promise<VercelTerminalResult>((resolve) => {
+        const streams = options.streams!;
+        streams.stdin.on('data', (chunk: Buffer) => {
+          const input = Buffer.from(chunk);
+          if (input.includes(0x1d)) {
+            resolve({ status: 'detached', reason: 'escape' });
+            return;
+          }
+          writes.push(input.toString());
+          observedAtWrite.push(nowMs);
+          if (writes.length === 1) {
+            expect(input.toString()).toContain('sleep 360');
+            expect(input.toString()).not.toContain('client-input-unique');
+            nowMs += 360_001;
+            streams.stdout.write('server-marker-unique\n');
+          } else {
+            streams.stdout.write('server-echo:client-input-unique\n');
+          }
+        });
+      })),
+    };
+    const sandboxObservations = [
+      {
+        id: 'sbox_raw_identifier',
+        name: 'devbox-smoke-consumer-secret-name',
+        status: 'running',
+        expiresAt: new Date('2026-08-25T20:00:00.000Z'),
+      },
+      {
+        id: 'sbox_raw_identifier',
+        name: 'devbox-smoke-consumer-secret-name',
+        status: 'running',
+        expiresAt: new Date('2026-08-25T20:10:00.000Z'),
+      },
+    ];
+    let observationIndex = 0;
+    const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+
+    await runTerminalLongevity({
+      sandbox: sandboxObservations[0],
+      refreshSandbox: async () => sandboxObservations[observationIndex++],
+      report,
+      signal: signalController.signal,
+      terminalAdapter,
+      idleMs: 360_000,
+      terminalTimeoutMs: 1_000,
+      now: () => nowMs,
+      markers: {
+        server: 'server-marker-unique',
+        input: 'client-input-unique',
+        echoPrefix: 'server-echo:',
+      },
+      recordCheck: (_target: unknown, name: string, ok: boolean, detail: string) => {
+        checks.push({ name, ok, detail });
+        if (!ok) throw new Error(detail);
+      },
+    });
+
+    expect(terminalAdapter.attach).toHaveBeenCalledOnce();
+    expect(writes).toHaveLength(2);
+    expect(observedAtWrite).toEqual([1_000, 361_001]);
+    expect(JSON.stringify(report)).not.toContain('sbox_raw_identifier');
+    expect(JSON.stringify(report)).not.toContain('devbox-smoke-consumer-secret-name');
+    expect(report.terminalLongevity).toEqual(expect.objectContaining({
+      idleTargetMs: 360_000,
+      idleObservedMs: 360_001,
+      serverMarkerObserved: true,
+      clientInputEchoObserved: true,
+      before: expect.objectContaining({ status: 'running', expiresAt: '2026-08-25T20:00:00.000Z' }),
+      after: expect.objectContaining({ status: 'running', expiresAt: '2026-08-25T20:10:00.000Z' }),
+    }));
+    expect(checks.map((check) => check.name)).toEqual([
+      'six-minute terminal idle interval',
+      'post-idle server marker',
+      'post-idle client input echo',
+      'terminal longevity Sandbox evidence',
+      'terminal longevity clean detach',
+    ]);
+  });
+
   it('uses exactly one production terminal adapter call for the ready/interrupt flow', async () => {
     const signalController = new AbortController();
     const pathReport = { label: 'existing', checks: [] as unknown[] };
