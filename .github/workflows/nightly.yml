@@ -453,12 +453,16 @@ jobs:
 
       - name: Resolve the image for this run
         id: resolved
+        env:
+          REUSE_SKIP: ${{ steps.drift.outputs.skip }}
+          REUSE_DIGEST: ${{ steps.drift.outputs.reuse_digest }}
+          MANIFEST_DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
           set -euo pipefail
-          if [[ '${{ steps.drift.outputs.skip }}' == 'true' ]]; then
-            digest='${{ steps.drift.outputs.reuse_digest }}'
+          if [[ "${REUSE_SKIP}" == 'true' ]]; then
+            digest="${REUSE_DIGEST}"
           else
-            digest='${{ steps.manifest.outputs.digest }}'
+            digest="${MANIFEST_DIGEST}"
           fi
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || {
             echo 'no image digest was resolved for this run' >&2

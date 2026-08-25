@@ -90,6 +90,19 @@ function sandboxObservation(sandbox) {
   };
 }
 
+export function assertTerminalLongevityBudget({
+  deadlineAt,
+  idleMs,
+  timeoutMs,
+  now = Date.now,
+}) {
+  const requiredMs = idleMs + timeoutMs;
+  const remainingMs = deadlineAt - now();
+  if (remainingMs < requiredMs) {
+    throw new Error(`remaining smoke budget ${remainingMs}ms is below the required ${requiredMs}ms; raise SMOKE_TIMEOUT_MS`);
+  }
+}
+
 export async function runTerminalLongevity({
   sandbox,
   refreshSandbox,
@@ -210,7 +223,7 @@ export async function runTerminalLongevity({
         () => attach,
         'terminal longevity failure detach',
         { timeoutMs: terminalTimeoutMs },
-      );
+      ).catch(() => {});
     }
     throw error;
   } finally {

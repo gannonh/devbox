@@ -24,7 +24,10 @@ import {
   recoverOwnedResources,
 } from './sandbox-owned-recovery.mjs';
 import { deleteListedSnapshot } from './snapshot-cleanup.mjs';
-import { runTerminalLongevity } from './smoke-terminal.mjs';
+import {
+  assertTerminalLongevityBudget,
+  runTerminalLongevity,
+} from './smoke-terminal.mjs';
 
 const role = process.env.SMOKE_ROLE;
 const image = process.env.IMAGE_REF;
@@ -556,6 +559,11 @@ try {
   };
   await timed('session-terminal', (signal) => listSessions('after-terminal', sandbox, signal));
   if (terminalLongevityIdleMs > 0) {
+    assertTerminalLongevityBudget({
+      deadlineAt: smokeDeadlineAt,
+      idleMs: terminalLongevityIdleMs,
+      timeoutMs: terminalTimeoutMs,
+    });
     const { createVercelTerminalAdapter } = await import('../../dist/providers/vercel/terminal.js');
     await timed('terminal-longevity', (signal) => runTerminalLongevity({
       sandbox,
