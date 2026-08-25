@@ -171,6 +171,7 @@ export type {
   VercelTerminalAdapter,
   VercelTerminalAdapterDependencies,
   VercelTerminalFailure,
+  VercelTerminalHeartbeatScheduler,
   VercelTerminalInput,
   VercelTerminalOptions,
   VercelTerminalOutput,

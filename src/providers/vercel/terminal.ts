@@ -21,12 +21,14 @@ import {
 } from './terminal-flow.js';
 
 export type { VercelTerminalTimeoutOptions, VercelTerminalTimeoutScheduler } from './terminal-timeout.js';
+export type VercelTerminalHeartbeatScheduler = VercelTerminalTimeoutScheduler;
 
 const OPEN = 1;
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_DETACH_SIGNALS = ['SIGTERM', 'SIGHUP'] as const;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 30_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 const TERM = 'xterm-256color';
 const PS1 = `▲ \x01\x1b[2m\x02$PWD/\x01\x1b[0m\x02 `;
 
@@ -35,6 +37,7 @@ export interface VercelTerminalWebSocket extends EventEmitter {
   readonly bufferedAmount?: number;
   readonly isPaused?: boolean;
   send(data: Buffer | string, callback?: (error?: Error) => void): void | boolean;
+  ping(callback?: (error?: Error) => void): void;
   pause?: () => void;
   resume?: () => void;
   close(code?: number, reason?: string): void;
@@ -101,6 +104,8 @@ export interface VercelTerminalOptions {
   getSize?: () => VercelTerminalSize;
   connectionTimeoutMs?: number;
   connectionTimeoutScheduler?: VercelTerminalTimeoutScheduler;
+  heartbeatIntervalMs?: number;
+  heartbeatScheduler?: VercelTerminalHeartbeatScheduler;
   timeoutExtension?: VercelTerminalTimeoutOptions | false;
   /** Return true to suppress the adapter's direct stderr rendering. */
   onError?: (failure: VercelTerminalFailure) => boolean;
@@ -264,6 +269,7 @@ async function attachTerminal(input: {
   let maxPendingInputBytes: number;
   let maxPendingOutputBytes: number;
   let backpressureTimeoutMs: number;
+  let heartbeatIntervalMs: number;
   try {
     maxPendingInputBytes = validateByteLimit(
       options.maxPendingInputBytes ?? DEFAULT_MAX_PENDING_INPUT_BYTES,
@@ -276,6 +282,10 @@ async function attachTerminal(input: {
     backpressureTimeoutMs = validateTimeoutLimit(
       options.backpressureTimeoutMs ?? DEFAULT_BACKPRESSURE_TIMEOUT_MS,
     );
+    heartbeatIntervalMs = validateTimeoutLimit(
+      options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      'heartbeat interval',
+    );
   } catch (error) {
     const failure = reportFailure(error, [interactive.token]);
     removeEarlyMessageListener();
@@ -283,6 +293,10 @@ async function attachTerminal(input: {
     return failureResult(failure);
   }
   const detachSignals = options.detachSignals ?? DEFAULT_DETACH_SIGNALS;
+  const heartbeatScheduler = options.heartbeatScheduler ?? {
+    setTimeout: (callback: () => void, delay: number) => setTimeout(callback, delay),
+    clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  } satisfies VercelTerminalHeartbeatScheduler;
   if (Buffer.byteLength(startFrame) > MAX_CONTROL_FRAME_BYTES) {
     const failure = reportFailure(new Error('Terminal start frame exceeds control frame limit'), [interactive.token]);
     removeEarlyMessageListener();
@@ -293,6 +307,7 @@ async function attachTerminal(input: {
   return await new Promise<VercelTerminalResult>((resolve) => {
     let settled = false;
     let cleaned = false;
+    let stopHeartbeat = () => {};
     let stopTimeoutExtension = () => {};
     let outputDrainTimer: ReturnType<typeof setTimeout> | undefined;
     let inputSendTimer: ReturnType<typeof setTimeout> | undefined;
@@ -311,6 +326,7 @@ async function attachTerminal(input: {
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
+      stopHeartbeat();
       socket.removeListener('message', onMessage);
       socket.removeListener('error', onSocketError);
       socket.removeListener('close', onClose);
@@ -367,6 +383,7 @@ async function attachTerminal(input: {
     let pendingTerminalResult: Extract<VercelTerminalResult, { status: 'detached' }> | undefined;
     const hasPendingOutput = () => outputQueue.byteLength > 0 || blockedOutputBytes > 0 || outputBackpressured;
     const requestTerminal = (result: VercelTerminalResult) => {
+      stopHeartbeat();
       if (result.status === 'exited') {
         pendingExitCode = result.code;
       } else if (!pendingTerminalResult) {
@@ -599,6 +616,7 @@ async function attachTerminal(input: {
       }
       const escapeAt = input.indexOf(0x1d);
       if (escapeAt >= 0) {
+        stopHeartbeat();
         if (escapeAt > 0) sendInput(input.subarray(0, escapeAt));
         const result = { status: 'detached', reason: 'escape' } as const;
         if (sendInFlight || sendQueue.length > 0) pendingInputResult = result;
@@ -697,6 +715,16 @@ async function attachTerminal(input: {
       return;
     }
     if (settled) return;
+    stopHeartbeat = startTerminalHeartbeat({
+      socket,
+      intervalMs: heartbeatIntervalMs,
+      scheduler: heartbeatScheduler,
+      onError: (error) => {
+        reportError(error);
+        finish({ status: 'detached', reason: 'error' });
+      },
+    });
+    if (settled) return;
     if (options.timeoutExtension !== false) {
       try {
         stopTimeoutExtension = startTimeoutExtension(
@@ -724,6 +752,49 @@ async function attachTerminal(input: {
       onMessage(message.data, message.isBinary);
     }
   });
+}
+
+function startTerminalHeartbeat(input: {
+  socket: VercelTerminalWebSocket;
+  intervalMs: number;
+  scheduler: VercelTerminalHeartbeatScheduler;
+  onError: (error: unknown) => void;
+}): () => void {
+  let stopped = false;
+  let timer: unknown;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer !== undefined) input.scheduler.clearTimeout(timer);
+    timer = undefined;
+  };
+  const fail = (error: unknown) => {
+    if (stopped) return;
+    stop();
+    input.onError(error);
+  };
+  const schedule = () => {
+    if (stopped) return;
+    try {
+      timer = input.scheduler.setTimeout(() => {
+        timer = undefined;
+        if (stopped) return;
+        try {
+          input.socket.ping((error) => {
+            if (error) fail(error);
+          });
+        } catch (error) {
+          fail(error);
+          return;
+        }
+        schedule();
+      }, input.intervalMs);
+    } catch (error) {
+      fail(error);
+    }
+  };
+  schedule();
+  return stop;
 }
 
 function closeSocket(socket: VercelTerminalWebSocket | undefined): void {
