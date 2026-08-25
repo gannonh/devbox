@@ -8,7 +8,10 @@
 #
 # Publish-first ordering. The git tag and GitHub Release are created ONLY after
 # `npm publish` succeeds. A failed publish leaves no tag and no release page,
-# so there is no "release" pointing at an unpublished version.
+# so there is no "release" pointing at an unpublished version. Re-runs that find
+# the target version already on npm skip republish and only finish tag/release.
+# The version-bump commit rebases onto the current default-branch tip so pushes
+# survive commits that land during the long smoke/UAT/benchmark gates.
 #
 # Version resolution:
 #   - Resolve the current npm nightly prerelease that supplies the proven pin.
@@ -172,6 +175,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the version-bump commit can rebase onto commits that
+          # land on the default branch during the long smoke/UAT/benchmark gates.
+          fetch-depth: 0
 
       - name: Setup Node 22
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -258,6 +265,10 @@ jobs:
       # PUBLISH BEFORE TAG/RELEASE. If this step fails, the tag and GitHub
       # Release are never created, so there is no release pointing at an
       # unpublished version.
+      #
+      # Re-runs after a partial success (npm published, then git push rejected)
+      # must not fail with E403: skip publish when the exact version already
+      # exists and only ensure the latest dist-tag points at it.
       - name: Publish to npm
         if: ${{ github.event.inputs.dry_run != true }}
         env:
@@ -269,8 +280,14 @@ jobs:
             echo 'a stable release may only be cut from the default branch' >&2
             exit 1
           }
-          echo "Publishing @gannonh/devbox@$TARGET_VERSION to latest"
-          npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag latest
+          existing="$(npm view "@gannonh/devbox@${TARGET_VERSION}" version 2>/dev/null || true)"
+          if [[ "${existing}" == "${TARGET_VERSION}" ]]; then
+            echo "@gannonh/devbox@${TARGET_VERSION} already on the registry; ensuring dist-tag latest"
+            npm dist-tag add "@gannonh/devbox@${TARGET_VERSION}" latest
+          else
+            echo "Publishing @gannonh/devbox@$TARGET_VERSION to latest"
+            npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag latest
+          fi
 
       # The alias workspace pins @gannonh/devbox exactly, so it is versioned and
       # published here rather than in Nightly: npx @gannonh/dbx resolves latest,
@@ -285,8 +302,14 @@ jobs:
           cd packages/dbx
           npm version "$TARGET_VERSION" --no-git-tag-version --allow-same-version
           npm pkg set "dependencies.@gannonh/devbox=$TARGET_VERSION"
-          echo "Publishing @gannonh/dbx@$TARGET_VERSION -> @gannonh/devbox@$TARGET_VERSION"
-          npm publish --access public --tag latest
+          existing="$(npm view "@gannonh/dbx@${TARGET_VERSION}" version 2>/dev/null || true)"
+          if [[ "${existing}" == "${TARGET_VERSION}" ]]; then
+            echo "@gannonh/dbx@${TARGET_VERSION} already on the registry; ensuring dist-tag latest"
+            npm dist-tag add "@gannonh/dbx@${TARGET_VERSION}" latest
+          else
+            echo "Publishing @gannonh/dbx@$TARGET_VERSION -> @gannonh/devbox@$TARGET_VERSION"
+            npm publish --access public --tag latest
+          fi
 
       # --- Commit, tag, and GitHub Release ------------------------------------
       # Only after publish succeeds (or dry_run). Each step gates on the
@@ -297,6 +320,7 @@ jobs:
         run: |
           set -euo pipefail
           TARGET_VERSION="${{ steps.version.outputs.target_version }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -304,10 +328,29 @@ jobs:
           # packages/dbx/package.json is rewritten by the alias publish step,
           # so its committed manifest stays in lockstep with the release.
           git add package.json package-lock.json packages/dbx/package.json
-          git commit -m "chore(release): v${TARGET_VERSION}"
+          if git diff --cached --quiet; then
+            echo "Version manifests already at ${TARGET_VERSION}; reusing HEAD for the tag"
+          else
+            git commit -m "chore(release): v${TARGET_VERSION}"
+          fi
+
+          # Smoke/UAT/benchmark can take long enough for other work to land on
+          # the default branch. Rebase onto the current tip before pushing so
+          # the version bump is a fast-forward rather than a rejected push.
+          git fetch origin "${DEFAULT_BRANCH}"
+          git rebase "origin/${DEFAULT_BRANCH}"
+
+          if git rev-parse -q --verify "refs/tags/v${TARGET_VERSION}" >/dev/null; then
+            git tag -d "v${TARGET_VERSION}"
+          fi
           git tag "v${TARGET_VERSION}"
-          git push origin HEAD:main
-          git push origin "v${TARGET_VERSION}"
+
+          git push origin "HEAD:${DEFAULT_BRANCH}"
+          if git ls-remote --exit-code --tags origin "refs/tags/v${TARGET_VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${TARGET_VERSION} already on origin"
+          else
+            git push origin "v${TARGET_VERSION}"
+          fi
           echo "Pushed commit + tag v${TARGET_VERSION}"
           echo "tag=v${TARGET_VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -318,6 +361,10 @@ jobs:
         run: |
           set -euo pipefail
           TARGET_VERSION="${{ steps.version.outputs.target_version }}"
+          if gh release view "v${TARGET_VERSION}" >/dev/null 2>&1; then
+            echo "GitHub Release v${TARGET_VERSION} already exists"
+            exit 0
+          fi
           cat > /tmp/release-notes.md <<'EOF'
           ## Install
 
