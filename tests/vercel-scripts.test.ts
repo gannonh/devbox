@@ -908,7 +908,7 @@ describe('Vercel supply-chain script boundaries', () => {
   });
 
   it('requires publisher team scope for readiness polling', async () => {
-    const result = await runNode('scripts/vercel/wait-vcr-ready.mjs', {
+    const env = {
       ...process.env,
       VERCEL_IMAGE_REPOSITORY: 'devbox',
       VERCEL_IMAGE_TAG: 'fixture',
@@ -916,7 +916,9 @@ describe('Vercel supply-chain script boundaries', () => {
       VCR_READINESS_FIXTURE: '["Ready"]',
       READINESS_TIMEOUT_MS: '100',
       READINESS_POLL_MS: '1',
-    });
+    };
+    delete env.VERCEL_PUBLISHER_TEAM_SLUG;
+    const result = await runNode('scripts/vercel/wait-vcr-ready.mjs', env);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain('VERCEL_PUBLISHER_TEAM_SLUG');
   });
