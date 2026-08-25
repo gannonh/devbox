@@ -90,11 +90,6 @@ function sandboxObservation(sandbox) {
   };
 }
 
-/**
- * Hold one production terminal attachment without stdin traffic, then prove
- * both directions still work through that attachment. Raw Sandbox identity and
- * interactive endpoint material never enter the returned evidence.
- */
 export async function runTerminalLongevity({
   sandbox,
   refreshSandbox,

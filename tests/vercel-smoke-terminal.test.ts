@@ -40,12 +40,16 @@ describe('provider smoke output waiting', () => {
       {
         id: 'sbox_raw_identifier',
         name: 'devbox-smoke-consumer-secret-name',
+        interactiveUrl: 'wss://interactive.example/session?token=raw-endpoint-secret',
+        interactiveToken: 'raw-interactive-token',
         status: 'running',
         expiresAt: new Date('2026-08-25T20:00:00.000Z'),
       },
       {
         id: 'sbox_raw_identifier',
         name: 'devbox-smoke-consumer-secret-name',
+        interactiveUrl: 'wss://interactive.example/session?token=raw-endpoint-secret',
+        interactiveToken: 'raw-interactive-token',
         status: 'running',
         expiresAt: new Date('2026-08-25T20:10:00.000Z'),
       },
@@ -78,6 +82,8 @@ describe('provider smoke output waiting', () => {
     expect(observedAtWrite).toEqual([1_000, 361_001]);
     expect(JSON.stringify(report)).not.toContain('sbox_raw_identifier');
     expect(JSON.stringify(report)).not.toContain('devbox-smoke-consumer-secret-name');
+    expect(JSON.stringify(report)).not.toContain('raw-endpoint-secret');
+    expect(JSON.stringify(report)).not.toContain('raw-interactive-token');
     expect(report.terminalLongevity).toEqual(expect.objectContaining({
       idleTargetMs: 360_000,
       idleObservedMs: 360_001,

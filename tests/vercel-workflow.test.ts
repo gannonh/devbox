@@ -311,9 +311,9 @@ describe('Vercel image and release workflows', () => {
   it('runs the six-minute production terminal adapter smoke for reused and rebuilt images', async () => {
     const workflow = await workflowText();
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
-    const consumerStep = workflow.match(/- name: Independent consumer Sandbox smoke gate[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    const consumerStep = workflow.match(/- name: Independent cross-project consumer Sandbox smoke gate[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
     const resolveIndex = workflow.indexOf('- name: Resolve the image for this run');
-    const consumerIndex = workflow.indexOf('- name: Independent consumer Sandbox smoke gate');
+    const consumerIndex = workflow.indexOf('- name: Independent cross-project consumer Sandbox smoke gate');
 
     expect(workflow).toContain('- name: Build production terminal adapter');
     expect(resolveIndex).toBeGreaterThan(-1);

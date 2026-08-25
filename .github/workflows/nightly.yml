@@ -451,8 +451,6 @@ jobs:
           export READINESS_TIMEOUT_MS="$((READINESS_TIMEOUT_MINUTES * 60 * 1000))"
           node scripts/vercel/wait-vcr-ready.mjs
 
-      # Resolve before the consumer gate so code-only refs still exercise their
-      # built production adapter against the previously proven image digest.
       - name: Resolve the image for this run
         id: resolved
         run: |
@@ -493,11 +491,7 @@ jobs:
           VERCEL_CONSUMER_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
         run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
 
-      # This is the independent cross-project public-consumption gate; it is
-      # intentionally separate from the publisher Sandbox credentials. It runs
-      # for reused images too, because adapter-only changes do not rebuild the
-      # image and still need the six-minute real-provider proof.
-      - name: Independent consumer Sandbox smoke gate
+      - name: Independent cross-project consumer Sandbox smoke gate
         if: ${{ success() }}
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
