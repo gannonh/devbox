@@ -11,7 +11,37 @@
       "source": "gannonh/skills",
       "sourceType": "github",
       "skillPath": "plan-build-verify/SKILL.md",
-      "computedHash": "57c705b7350a8a6cb2b36ea8ca36b71b13c3ee7092f8e53bb7fed3c769b4b124"
+      "computedHash": "8bbb2c0ace87821b0811740f9fb95e4f4a5600a12eb27532e351b1adfcaa5c90"
+    },
+    "readme": {
+      "source": "gannonh/skills",
+      "sourceType": "github",
+      "skillPath": "readme/SKILL.md",
+      "computedHash": "d8f24451fb0481a457cffe63b174d1c29179bdec5da5ad816c678a19beda401f"
+    },
+    "thermo-nuclear-code-quality-review": {
+      "source": "cursor/plugins",
+      "sourceType": "github",
+      "skillPath": "cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md",
+      "computedHash": "9052b01b46b1d8dbf94c45f9313ec1983443f9a460e83d49cdc7fe0f640ca476"
+    },
+    "thermo-nuclear-review": {
+      "source": "cursor/plugins",
+      "sourceType": "github",
+      "skillPath": "thermos/skills/thermo-nuclear-review/SKILL.md",
+      "computedHash": "c13babcfb10d8f33325af0b00c3eff7b5efb034147f93993c4d9ed569faa5570"
+    },
+    "thermo-run": {
+      "source": "gannonh/skills",
+      "sourceType": "github",
+      "skillPath": "thermo-run/SKILL.md",
+      "computedHash": "16eabcd03c60038d5d283bbc7312517eefb6527e981c9e12a83403f9967dfa45"
+    },
+    "unslop": {
+      "source": "cursor/plugins",
+      "sourceType": "github",
+      "skillPath": "pstack/skills/unslop/SKILL.md",
+      "computedHash": "3dfc2afeda677e12c6065497a40df7d895859de1c7d1cffb899b1559d129fe4f"
     }
   }
 }
