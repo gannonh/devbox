@@ -145,6 +145,19 @@ describe('release workflow contract', () => {
     expect(run).toContain('git add package.json package-lock.json');
   });
 
+  it('refreshes package-lock.json after the dbx alias pin is rewritten', async () => {
+    const wf = await loadWorkflow();
+    const commit = stepByName(wf, 'Commit version bump and create tag');
+    const run = String(commit.run ?? '');
+    const publishDbx = stepByName(wf, 'Publish @gannonh/dbx alias');
+    const publishRun = String(publishDbx.run ?? '');
+    expect(publishRun).toContain('npm pkg set "dependencies.@gannonh/devbox=$TARGET_VERSION"');
+    expect(run).toContain('npm install --package-lock-only --ignore-scripts');
+    expect(run.indexOf('npm install --package-lock-only')).toBeLessThan(
+      run.indexOf('git add package.json package-lock.json'),
+    );
+  });
+
   it('creates the tag only after publish succeeds', async () => {
     const wf = await loadWorkflow();
     const commit = stepByName(wf, 'Commit version bump and create tag');

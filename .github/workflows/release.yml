@@ -327,8 +327,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # packages/dbx/package.json is rewritten by the alias publish step,
-          # so its committed manifest stays in lockstep with the release.
+          # packages/dbx/package.json is rewritten by the alias publish step.
+          # Refresh the lockfile so packages/dbx's @gannonh/devbox pin and the
+          # node_modules/@gannonh/devbox registry entry match. Without this,
+          # the next npm ci on main fails with EUSAGE (lock file still on N-1).
+          npm install --package-lock-only --ignore-scripts
           git add package.json package-lock.json packages/dbx/package.json
           if git diff --cached --quiet; then
             echo "Version manifests already at ${TARGET_VERSION}; reusing HEAD for the tag"
