@@ -338,6 +338,34 @@ describe('Vercel display startup', () => {
     expect(String(error)).not.toContain(password);
   });
 
+  it('names only display-mode missing= services when readiness fails', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-status-missing-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/display',
+    });
+    await store.write({ displayCredentials: { username: DISPLAY_USERNAME, password: 'display-missing-password' } });
+    const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async (_sandbox, request) => {
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return {
+            exitCode: 1,
+            stdout: async () => '[devbox-status] display=stopped missing=auth-proxy\n',
+          };
+        }
+        return { exitCode: 0 };
+      }),
+    } as unknown as VercelSandboxClient;
+
+    await expect(startDisplayStack({ sandbox: sandbox(), client, store, secrets: [] }))
+      .rejects.toMatchObject({
+        code: 'display_startup_failed',
+        message: expect.stringMatching(/services not running: auth-proxy/),
+      });
+  });
+
   it('rejects malformed readiness markers instead of accepting substring matches', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-display-status-malformed-'));
     const store = createVercelBranchMetadataStore({

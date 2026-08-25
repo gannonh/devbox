@@ -184,7 +184,7 @@ export async function startDisplayStack(options: DisplayStartupOptions): Promise
   }
 
   const status = await runCommand(options, displayStatusRequest(), 'display status');
-  const missing = REQUIRED_SERVICES.filter((service) => !hasRunningService(status.rawOutput, service));
+  const missing = missingDisplayServices(status.rawOutput);
   if (status.exitCode !== 0 || !hasRunningDisplay(status.rawOutput)) {
     const detail = missing.length > 0 && missing.length < REQUIRED_SERVICES.length
       ? `services not running: ${missing.join(', ')}`
@@ -282,6 +282,12 @@ async function commandOutput(
   if (result.stdout) output.push(await result.stdout(signal === undefined ? undefined : { signal }));
   if (result.stderr) output.push(await result.stderr(signal === undefined ? undefined : { signal }));
   return output.join('\n').trim();
+}
+
+function missingDisplayServices(output: string): readonly string[] {
+  const match = output.match(/^\[devbox-status\] display=stopped missing=([^\r\n]*)$/m);
+  if (match?.[1] !== undefined) return match[1].split(',').filter(Boolean);
+  return REQUIRED_SERVICES.filter((service) => !hasRunningService(output, service));
 }
 
 function hasRunningService(output: string, service: string): boolean {
