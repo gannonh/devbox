@@ -672,15 +672,6 @@ async function attachTerminal(input: {
     removeEarlyMessageListener();
     removeSocketErrorGuard();
     streams.stdout.on('error', onStdoutError);
-    streams.stdin.on('data', onStdin);
-    streams.stdin.on('end', onEof);
-    streams.stdin.on('close', onInputClose);
-    streams.stdin.on('error', onStdinError);
-    signalSource.on('SIGINT', onSigint);
-    signalSource.on('SIGWINCH', onResize);
-    for (const signal of detachSignals) {
-      signalSource.on(signal, onTermination);
-    }
     if (stdinIsTTY && streams.stdin.setRawMode) {
       try {
         streams.stdin.setRawMode(true);
@@ -690,24 +681,40 @@ async function attachTerminal(input: {
         return;
       }
     }
-    try {
-      streams.stdin.resume();
-    } catch (error) {
-      reportError(error);
-      requestTerminal({ status: 'detached', reason: 'error' });
-      return;
-    }
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) {
       onAbort();
       return;
     }
+    // Hold stdin until the start frame is accepted so bytes written while
+    // openInteractive/WebSocket setup is still in flight cannot outrun shell spawn
+    // after stop→resume, where that race shows up as a silent ready hang.
+    const armStdin = () => {
+      if (settled || cleaned) return;
+      streams.stdin.on('data', onStdin);
+      streams.stdin.on('end', onEof);
+      streams.stdin.on('close', onInputClose);
+      streams.stdin.on('error', onStdinError);
+      signalSource.on('SIGINT', onSigint);
+      signalSource.on('SIGWINCH', onResize);
+      for (const signal of detachSignals) {
+        signalSource.on(signal, onTermination);
+      }
+      try {
+        streams.stdin.resume();
+      } catch (error) {
+        reportError(error);
+        requestTerminal({ status: 'detached', reason: 'error' });
+      }
+    };
     try {
       socket.send(startFrame, (error) => {
         if (error) {
           reportError(error);
           finish({ status: 'detached', reason: 'error' });
+          return;
         }
+        armStdin();
       });
     } catch (error) {
       reportError(error);

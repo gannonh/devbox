@@ -760,8 +760,32 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
     pathReport.sessions.push({ phase: 'after-initial-stop', states: afterInitialStop.map(sessionState) });
 
     const resumed = await timed(pathReport, 'resume-attach', (requestSignal) => attachResumedSandbox(client, credentials, identity.name, requestSignal), signal, operationTimeoutMs);
-    recordCheck(pathReport, 'resume/reconnect attach', resumed.status === 'running' || resumed.status === 'pending', `status=${resumed.status}`);
+    // `pending` is not interactive-ready; requiring `running` plus a cheap
+    // non-interactive probe avoids opening a terminal against a shell that is
+    // still coming up after stop→resume (Release flake: terminal-resumed 90s hang).
+    recordCheck(pathReport, 'resume/reconnect attach', resumed.status === 'running', `status=${resumed.status}`);
     const resumedCloneCwd = resolveVercelRepositoryCwd(resumed.cwd, remote.repository);
+    const resumeProbe = await timed(
+      pathReport,
+      'resume-command',
+      (requestSignal) => runCommand(
+        client,
+        resumed,
+        'pwd',
+        [],
+        resumedCloneCwd,
+        requestSignal,
+        operationTimeoutMs,
+      ),
+      signal,
+      operationTimeoutMs,
+    );
+    recordCheck(
+      pathReport,
+      'resume command probe',
+      resumeProbe.exitCode === 0,
+      `exitCode=${resumeProbe.exitCode}`,
+    );
     await timed(
       pathReport,
       'terminal-resumed',

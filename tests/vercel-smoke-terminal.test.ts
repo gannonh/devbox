@@ -245,6 +245,83 @@ describe('provider smoke output waiting', () => {
     ]);
   });
 
+  it('retries the ready command until the marker appears', async () => {
+    const signalController = new AbortController();
+    const pathReport = { label: 'missing', checks: [] as unknown[] };
+    let readyWrites = 0;
+    const terminalAdapter = {
+      attach: vi.fn(async (_sandbox: unknown, options: VercelTerminalOptions = {}) => new Promise<VercelTerminalResult>((resolve) => {
+        const streams = options.streams!;
+        const signalSource = options.signalSource!;
+        streams.stdin.on('data', (chunk: Buffer) => {
+          const input = Buffer.from(chunk);
+          if (input.includes(0x1d)) {
+            resolve({ status: 'detached', reason: 'escape' });
+            return;
+          }
+          const command = input.toString();
+          if (command.includes('sleep 30')) {
+            streams.stdout.write('provider-smoke-sleeping-missing\n');
+            return;
+          }
+          if (command.includes('provider-smoke-after-interrupt-missing')) {
+            streams.stdout.write('provider-smoke-after-interrupt-missing\n');
+            return;
+          }
+          readyWrites += 1;
+          if (readyWrites < 3) return;
+          streams.stdout.write('provider-smoke-ready-missing\n');
+        });
+        signalSource.once('SIGINT', () => {
+          streams.stdout.write('provider-smoke-interrupted-missing\n');
+        });
+      })),
+    };
+
+    await runInteractiveTerminal({
+      sandbox: {},
+      pathReport,
+      signal: signalController.signal,
+      terminalAdapter,
+      cloneCwd: '/vercel/sandbox/repo',
+      terminalTimeoutMs: 5_000,
+      readyRetryIntervalMs: 20,
+      recordCheck: (target: any, name: string, ok: boolean, detail: string) => {
+        target.checks.push({ name, ok, detail });
+        if (!ok) throw new Error(detail);
+      },
+    });
+
+    expect(readyWrites).toBeGreaterThanOrEqual(3);
+    expect(pathReport.checks).toEqual([
+      expect.objectContaining({ name: 'openInteractive terminal', ok: true }),
+      expect.objectContaining({ name: 'Ctrl-C terminal protocol', ok: true }),
+      expect.objectContaining({ name: 'Ctrl-] terminal protocol', ok: true }),
+    ]);
+  });
+
+  it('surfaces an early attach failure instead of hanging on the ready marker', async () => {
+    const signalController = new AbortController();
+    const pathReport = { label: 'existing', checks: [] as unknown[] };
+    const terminalAdapter = {
+      attach: vi.fn(async (_sandbox: unknown, options: VercelTerminalOptions = {}) => {
+        options.onError?.({ message: 'openInteractive failed' } as never);
+        return { status: 'detached', reason: 'error' } as VercelTerminalResult;
+      }),
+    };
+
+    await expect(runInteractiveTerminal({
+      sandbox: {},
+      pathReport,
+      signal: signalController.signal,
+      terminalAdapter,
+      cloneCwd: '/vercel/sandbox/repo',
+      terminalTimeoutMs: 1_000,
+      recordCheck: () => {},
+    })).rejects.toThrow(/openInteractive failed|settled early/);
+    expect(pathReport.checks).toEqual([]);
+  });
+
   it('resolves from a data marker and removes its listener exactly once', async () => {
     const stream = new PassThrough();
     const controller = new AbortController();

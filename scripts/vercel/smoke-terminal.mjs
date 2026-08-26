@@ -240,6 +240,7 @@ export async function runInteractiveTerminal({
   cloneCwd,
   terminalTimeoutMs,
   recordCheck,
+  readyRetryIntervalMs = 2_000,
 }) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
@@ -250,10 +251,21 @@ export async function runInteractiveTerminal({
   stdout.on('data', (chunk) => output.push(chunk.toString()));
   stderr.on('data', (chunk) => output.push(chunk.toString()));
 
+  const sessionController = new AbortController();
+  const abortSession = (reason) => {
+    if (sessionController.signal.aborted) return;
+    sessionController.abort(reason instanceof Error ? reason : new Error(String(reason)));
+  };
+  const onParentAbort = () => abortSession(signal?.reason ?? new Error('terminal session aborted'));
+  if (signal?.aborted) onParentAbort();
+  else signal?.addEventListener('abort', onParentAbort, { once: true });
+  const sessionSignal = sessionController.signal;
+
+  let protocolComplete = false;
   const attach = terminalAdapter.attach(sandbox, {
     streams: { stdin, stdout, stderr },
     tty: false,
-    signal,
+    signal: sessionSignal,
     signalSource,
     cwd: cloneCwd,
     timeoutExtension: false,
@@ -263,34 +275,60 @@ export async function runInteractiveTerminal({
       return true;
     },
   });
+  const attachWatch = Promise.resolve(attach).then((result) => {
+    if (!protocolComplete && !(result.status === 'detached' && result.reason === 'escape')) {
+      abortSession(new Error(
+        terminalError ?? `interactive terminal settled early (${result.status}${result.reason ? `/${result.reason}` : ''})`,
+      ));
+    }
+    return result;
+  }, (error) => {
+    abortSession(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  });
+
   const capturedOutput = () => output.join('');
+  // Keep marker waits under the outer stage budget so a missing ready marker
+  // surfaces as itself instead of the opaque `terminal-resumed timed out` label.
+  const markerTimeoutMs = Math.max(1_000, terminalTimeoutMs - 5_000);
   const readyMarker = `provider-smoke-ready-${pathReport.label}`;
   const encodedReadyMarker = Buffer.from(readyMarker).toString('base64');
-  const readyWait = waitForOutput(stdout, readyMarker, terminalTimeoutMs, signal, capturedOutput);
-  stdin.write(`printf "%s\\n" "$(printf "%s" "${encodedReadyMarker}" | base64 -d)"\n`);
-  await readyWait;
+  const readyCommand = `printf "%s\\n" "$(printf "%s" "${encodedReadyMarker}" | base64 -d)"\n`;
+  const readyWait = waitForOutput(stdout, readyMarker, markerTimeoutMs, sessionSignal, capturedOutput);
+  stdin.write(readyCommand);
+  const readyRetry = setInterval(() => {
+    if (sessionSignal.aborted || capturedOutput().includes(readyMarker)) return;
+    stdin.write(readyCommand);
+  }, readyRetryIntervalMs);
+  try {
+    await readyWait;
+  } finally {
+    clearInterval(readyRetry);
+  }
   const interruptMarker = `provider-smoke-interrupted-${pathReport.label}`;
   const encodedInterruptMarker = Buffer.from(interruptMarker).toString('base64');
   const sleepMarker = `provider-smoke-sleeping-${pathReport.label}`;
   const encodedSleepMarker = Buffer.from(sleepMarker).toString('base64');
-  const sleepingWait = waitForOutput(stdout, sleepMarker, terminalTimeoutMs, signal, capturedOutput);
+  const sleepingWait = waitForOutput(stdout, sleepMarker, markerTimeoutMs, sessionSignal, capturedOutput);
   stdin.write(`trap 'printf "%s\\n" "$(printf "%s" "${encodedInterruptMarker}" | base64 -d)"' INT; printf "%s\\n" "$(printf "%s" "${encodedSleepMarker}" | base64 -d)"; sleep 30\n`);
   await sleepingWait;
   const outputBeforeInterrupt = capturedOutput();
-  const interruptWait = waitForOutput(stdout, interruptMarker, terminalTimeoutMs, signal, capturedOutput);
+  const interruptWait = waitForOutput(stdout, interruptMarker, markerTimeoutMs, sessionSignal, capturedOutput);
   signalSource.emit('SIGINT');
   await interruptWait;
   const outputAfterInterrupt = capturedOutput().slice(outputBeforeInterrupt.length);
   const postInterruptMarker = `provider-smoke-after-interrupt-${pathReport.label}`;
-  const postInterruptWait = waitForOutput(stdout, postInterruptMarker, terminalTimeoutMs, signal, capturedOutput);
+  const postInterruptWait = waitForOutput(stdout, postInterruptMarker, markerTimeoutMs, sessionSignal, capturedOutput);
   stdin.write(`printf '${postInterruptMarker}\\n'\n`);
   await postInterruptWait;
+  protocolComplete = true;
   stdin.write(Buffer.from([0x1d]));
   const result = await boundedCall(
-    () => attach,
+    () => attachWatch,
     'interactive terminal completion',
-    { signal, timeoutMs: terminalTimeoutMs },
+    { signal: sessionSignal, timeoutMs: terminalTimeoutMs },
   );
+  signal?.removeEventListener('abort', onParentAbort);
   const detachedByEscape = result.status === 'detached' && result.reason === 'escape';
   recordCheck(pathReport, 'openInteractive terminal', detachedByEscape, terminalError ?? `terminal status=${result.status}`);
   recordCheck(pathReport, 'Ctrl-C terminal protocol', outputAfterInterrupt.includes(interruptMarker), 'remote trap observed SIGINT after it was sent through the terminal adapter');
