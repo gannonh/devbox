@@ -725,8 +725,9 @@ jobs:
       # `latest` is unreachable from this workflow: only the release workflow
       # may move it, and only from the default branch.
       #
-      # Re-runs that already published skip republish and only ensure the
-      # channel dist-tag, then finish the GitHub tag/release below.
+      # Re-runs that already published skip republish. Only advance the channel
+      # dist-tag when it is missing or older than this version — never roll a
+      # newer channel backward. Then finish the GitHub tag/release below.
       - name: Publish prerelease to npm
         if: ${{ github.event_name == 'schedule' || inputs.publish }}
         env:
@@ -738,8 +739,27 @@ jobs:
           [[ "${tag}" != 'latest' ]] || { echo 'nightly must never publish to latest' >&2; exit 1; }
           existing="$(npm view "@gannonh/devbox@${version}" version 2>/dev/null || true)"
           if [[ "${existing}" == "${version}" ]]; then
-            echo "@gannonh/devbox@${version} already on the registry; ensuring dist-tag ${tag}"
-            npm dist-tag add "@gannonh/devbox@${version}" "${tag}"
+            current="$(npm view "@gannonh/devbox" "dist-tags.${tag}" 2>/dev/null || true)"
+            decision="$(
+              CURRENT_DIST_TAG="${current}" CANDIDATE_VERSION="${version}" \
+                node scripts/vercel/should-advance-dist-tag.mjs
+            )"
+            case "${decision}" in
+              advance)
+                echo "@gannonh/devbox@${version} already on the registry; pointing dist-tag ${tag} at it"
+                npm dist-tag add "@gannonh/devbox@${version}" "${tag}"
+                ;;
+              already)
+                echo "dist-tag ${tag} already at ${version}"
+                ;;
+              preserve)
+                echo "preserving dist-tag ${tag} at ${current} (newer than ${version})"
+                ;;
+              *)
+                echo "unexpected dist-tag decision: ${decision:-empty}" >&2
+                exit 1
+                ;;
+            esac
           else
             echo "Publishing @gannonh/devbox@${version} to dist-tag ${tag}"
             npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag "${tag}"

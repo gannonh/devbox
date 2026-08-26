@@ -467,6 +467,7 @@ describe('Vercel image and release workflows', () => {
       exists('scripts/vercel/emit-image-pin.mjs'),
       exists('scripts/vercel/retag-image.mjs'),
       exists('scripts/vercel/nightly-pin.mjs'),
+      exists('scripts/vercel/should-advance-dist-tag.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),
     ]);
   });

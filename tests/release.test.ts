@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { distTagAdvanceDecision } from '../scripts/vercel/should-advance-dist-tag.mjs';
 
 // Parse the release workflow YAML and assert its structural contract.
 // This locks in the workflow shape so changes are intentional.
@@ -273,11 +275,75 @@ describe('nightly workflow GitHub release contract', () => {
     expect(run).toContain("\"${tag}\" != 'latest'");
   });
 
+  it('does not move a channel backward when ensuring the dist-tag on rerun', async () => {
+    const wf = await loadNightly();
+    const publish = publishStepByName(wf, 'Publish prerelease to npm');
+    const run = String(publish.run ?? '');
+    // Re-runs look up the live channel version before dist-tag add.
+    expect(run).toContain('npm view "@gannonh/devbox" "dist-tags.${tag}"');
+    expect(run).toContain('scripts/vercel/should-advance-dist-tag.mjs');
+    expect(run).toContain('CURRENT_DIST_TAG');
+    expect(run).toContain('CANDIDATE_VERSION');
+    expect(run).toContain('preserving dist-tag');
+    expect(run).toContain('newer than');
+    // dist-tag add is gated on an advance decision, not unconditional.
+    expect(run).toContain('case "${decision}" in');
+    expect(run).toContain('advance)');
+    expect(run).toContain('preserve)');
+    const addIdx = run.indexOf('npm dist-tag add');
+    const preserveIdx = run.indexOf('preserving dist-tag');
+    expect(addIdx).toBeGreaterThanOrEqual(0);
+    expect(preserveIdx).toBeGreaterThanOrEqual(0);
+  });
+
   it('never opens a pull request from Nightly', async () => {
     const wf = await loadNightly();
     const text = JSON.stringify(wf);
     expect(text).not.toContain('gh pr create');
     expect(text).not.toContain('gh pr merge');
     expect(text).not.toContain('pull-requests: write');
+  });
+});
+
+describe('distTagAdvanceDecision', () => {
+  it('advances when the channel is unset or older than the candidate', () => {
+    expect(distTagAdvanceDecision('', '0.1.12-nightly.42')).toBe('advance');
+    expect(distTagAdvanceDecision('0.1.12-nightly.40', '0.1.12-nightly.42')).toBe('advance');
+    expect(distTagAdvanceDecision('0.1.11-nightly.100', '0.1.12-nightly.1')).toBe('advance');
+    expect(distTagAdvanceDecision('0.1.12-dev.feature.3', '0.1.12-dev.feature.9')).toBe('advance');
+  });
+
+  it('reports already when the channel already points at the candidate', () => {
+    expect(distTagAdvanceDecision('0.1.12-nightly.42', '0.1.12-nightly.42')).toBe('already');
+  });
+
+  it('preserves a newer channel version instead of rolling backward', () => {
+    expect(distTagAdvanceDecision('0.1.12-nightly.50', '0.1.12-nightly.42')).toBe('preserve');
+    expect(distTagAdvanceDecision('0.1.13-nightly.1', '0.1.12-nightly.99')).toBe('preserve');
+    expect(distTagAdvanceDecision('0.1.12-dev.feature.9', '0.1.12-dev.feature.3')).toBe('preserve');
+  });
+
+  it('rejects a missing candidate', () => {
+    expect(() => distTagAdvanceDecision('0.1.12-nightly.50', '')).toThrow(/candidate version is required/);
+  });
+
+  it('CLI prints the decision for the Nightly publish step', () => {
+    const script = resolve('scripts/vercel/should-advance-dist-tag.mjs');
+    const run = (env: NodeJS.ProcessEnv) =>
+      execFileSync(process.execPath, [script], {
+        encoding: 'utf8',
+        env: { ...process.env, ...env },
+      }).trim();
+
+    expect(run({ CURRENT_DIST_TAG: '0.1.12-nightly.50', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe(
+      'preserve',
+    );
+    expect(run({ CURRENT_DIST_TAG: '0.1.12-nightly.40', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe(
+      'advance',
+    );
+    expect(run({ CURRENT_DIST_TAG: '0.1.12-nightly.42', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe(
+      'already',
+    );
+    expect(run({ CURRENT_DIST_TAG: '', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe('advance');
   });
 });
