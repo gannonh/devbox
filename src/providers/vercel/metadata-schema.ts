@@ -69,17 +69,42 @@ export interface VercelScopeMetadata extends VercelScopeMetadataInput {
 }
 
 /**
+ * One published `relayPort -> localhost:logicalPort` mapping.
+ *
+ * The logical port is what the user chose and what output shows; the relay
+ * port is the listener a Vercel route actually points at. Both are recorded
+ * because a route set alone cannot say which app a relay serves.
+ */
+export interface VercelRelayMappingRecord {
+  logicalPort: number;
+  relayPort: number;
+  label: string;
+}
+
+/** A complete transport state: the mappings and the exposed set they imply. */
+export interface VercelRelayState {
+  relays: VercelRelayMappingRecord[];
+  /** The full port set on the Sandbox: relay ports plus reserved noVNC. */
+  applied: number[];
+}
+
+/**
  * A committed app-port selection.
  *
- * Bound to the exact remote revision, the candidate fingerprint, and the
- * detector version so a resume can re-apply the same public routes without
- * prompting, and a changed project re-prompts instead of silently reusing a
- * selection that no longer describes the checkout.
+ * Bound to the exact remote revision when that enrichment succeeds, or a
+ * non-reusable unresolved-revision sentinel when it fails, plus the candidate
+ * fingerprint and detector version. This lets a resume re-apply the same
+ * public routes without prompting while preventing a failed scan from
+ * qualifying as scan-based reuse. The Sandbox identity is recorded too: a
+ * mapping only describes processes inside the instance that published it, so a
+ * resumed box re-provisions instead of trusting it.
  */
 export interface VercelAppPortSelection {
+  /** The Sandbox instance these relay processes and routes belong to. */
+  sandboxId: string;
   /** App ports the user accepted; empty means the candidates were rejected. */
   selected: number[];
-  /** The full port set applied to the Sandbox, including reserved noVNC. */
+  relays: VercelRelayMappingRecord[];
   applied: number[];
   fingerprint: string;
   detectorVersion: number;
@@ -91,11 +116,14 @@ export interface VercelAppPortSelection {
  *
  * Written before the update call and cleared after it, so a crash between the
  * two always leaves the actual Sandbox route set reconcilable against a
- * recorded `previous`/`desired` pair rather than untracked.
+ * recorded `previous`/`desired` pair rather than untracked. Both states carry
+ * their mappings, not just their port sets: recovery has to restore the
+ * relay-to-app correspondence, which a bare list of ports cannot describe.
  */
 export interface VercelPendingAppPorts {
-  previous: number[];
-  desired: number[];
+  sandboxId: string;
+  previous: VercelRelayState;
+  desired: VercelRelayState;
   selected: number[];
   fingerprint: string;
   detectorVersion: number;
@@ -260,13 +288,16 @@ const BRANCH_INPUT_FIELDS = [
   'pendingAppPorts',
 ] as const;
 const APP_PORT_SELECTION_FIELDS = [
+  'sandboxId',
   'selected',
+  'relays',
   'applied',
   'fingerprint',
   'detectorVersion',
   'revision',
 ] as const;
 const PENDING_APP_PORT_FIELDS = [
+  'sandboxId',
   'previous',
   'desired',
   'selected',
@@ -274,6 +305,8 @@ const PENDING_APP_PORT_FIELDS = [
   'detectorVersion',
   'revision',
 ] as const;
+const RELAY_STATE_FIELDS = ['relays', 'applied'] as const;
+const RELAY_MAPPING_FIELDS = ['logicalPort', 'relayPort', 'label'] as const;
 const BRANCH_STORED_FIELDS = ['schemaVersion', 'metadataKind', 'provider', 'repoKeyHash', ...BRANCH_INPUT_FIELDS] as const;
 
 export function validateScopeMetadataInput(value: unknown): VercelScopeMetadataInput {
@@ -348,9 +381,29 @@ export function parseStoredBranchMetadata(
     ...validateBranchMetadataInput(Object.fromEntries(
       BRANCH_INPUT_FIELDS
         .filter((field) => stored[field] !== undefined)
+        .filter((field) => readableRelayField(field, stored[field]))
         .map((field) => [field, stored[field]]),
     )),
   };
+}
+
+/**
+ * Drop an unreadable app-port record instead of failing the whole document.
+ *
+ * The relay-backed shape replaced the raw-port one outright, so a record
+ * written by an older devbox describes routes that no longer exist. Reading it
+ * as absent takes the full safe provisioning path; refusing to read the file
+ * at all would strand the identity and snapshot state stored beside it.
+ */
+function readableRelayField(field: string, value: unknown): boolean {
+  if (field !== 'appPorts' && field !== 'pendingAppPorts') return true;
+  try {
+    if (field === 'appPorts') parseAppPortSelection(value);
+    else parsePendingAppPorts(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function serializeBranchMetadata(
@@ -438,12 +491,66 @@ function parseAppPortSelection(value: unknown): VercelAppPortSelection {
     'Vercel app port selection',
   );
   return {
+    sandboxId: requireString(selection.sandboxId, 'appPorts.sandboxId'),
     selected: parsePortArray(selection.selected, 'appPorts.selected'),
+    relays: parseRelayMappings(selection.relays, 'appPorts.relays'),
     applied: parsePortArray(selection.applied, 'appPorts.applied'),
     fingerprint: parseFingerprint(selection.fingerprint, 'appPorts.fingerprint'),
     detectorVersion: parseDetectorVersion(selection.detectorVersion, 'appPorts.detectorVersion'),
     revision: parseRevision(selection.revision, 'appPorts.revision'),
   };
+}
+
+function parseRelayState(value: unknown, field: string): VercelRelayState {
+  const state = expectRecord(value, `Vercel relay state ${field}`);
+  assertExactKeys(state, RELAY_STATE_FIELDS, RELAY_STATE_FIELDS, `Vercel relay state ${field}`);
+  return {
+    relays: parseRelayMappings(state.relays, `${field}.relays`),
+    applied: parsePortArray(state.applied, `${field}.applied`),
+  };
+}
+
+function parseRelayMappings(value: unknown, field: string): VercelRelayMappingRecord[] {
+  if (!Array.isArray(value)) throw new Error(`Metadata ${field} must be an array`);
+  const mappings: VercelRelayMappingRecord[] = [];
+  for (const [index, entry] of value.entries()) {
+    const mapping = expectRecord(entry, `Metadata ${field}[${index}]`);
+    assertExactKeys(mapping, RELAY_MAPPING_FIELDS, RELAY_MAPPING_FIELDS, `Metadata ${field}[${index}]`);
+    const logicalPort = parsePort(mapping.logicalPort, `${field}[${index}].logicalPort`);
+    const relayPort = parsePort(mapping.relayPort, `${field}[${index}].relayPort`);
+    if (mappings.some((existing) => existing.logicalPort === logicalPort)) {
+      throw new Error(`Metadata ${field}[${index}] duplicates logical port ${logicalPort}`);
+    }
+    if (mappings.some((existing) => existing.relayPort === relayPort)) {
+      throw new Error(`Metadata ${field}[${index}] duplicates relay port ${relayPort}`);
+    }
+    mappings.push({ logicalPort, relayPort, label: parseRelayLabel(mapping.label, `${field}[${index}].label`) });
+  }
+  return mappings;
+}
+
+/**
+ * A short printable label, never project text.
+ *
+ * Labels come from the detector's framework vocabulary or the host's
+ * `portsAttributes`, so this bounds what a route line can be made to say and
+ * keeps script or path text out of a file that is read back and printed.
+ */
+function parseRelayLabel(value: unknown, field: string): string {
+  const label = requireString(value, field);
+  // Space-separated words that each start alphanumeric: "Web app" and "vite"
+  // qualify, an option-shaped token like "--port" does not.
+  if (label.length > 32 || !/^[A-Za-z0-9][A-Za-z0-9._+-]*(?: [A-Za-z0-9][A-Za-z0-9._+-]*)*$/.test(label)) {
+    throw new Error(`Metadata ${field} must be at most 32 printable label characters`);
+  }
+  return label;
+}
+
+function parsePort(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65_535) {
+    throw new Error(`Metadata ${field} must be an integer port in 1..65535`);
+  }
+  return value;
 }
 
 function parsePendingAppPorts(value: unknown): VercelPendingAppPorts {
@@ -455,8 +562,9 @@ function parsePendingAppPorts(value: unknown): VercelPendingAppPorts {
     'Vercel pending app ports',
   );
   return {
-    previous: parsePortArray(pending.previous, 'pendingAppPorts.previous'),
-    desired: parsePortArray(pending.desired, 'pendingAppPorts.desired'),
+    sandboxId: requireString(pending.sandboxId, 'pendingAppPorts.sandboxId'),
+    previous: parseRelayState(pending.previous, 'pendingAppPorts.previous'),
+    desired: parseRelayState(pending.desired, 'pendingAppPorts.desired'),
     selected: parsePortArray(pending.selected, 'pendingAppPorts.selected'),
     fingerprint: parseFingerprint(pending.fingerprint, 'pendingAppPorts.fingerprint'),
     detectorVersion: parseDetectorVersion(pending.detectorVersion, 'pendingAppPorts.detectorVersion'),

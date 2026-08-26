@@ -2,8 +2,10 @@ name: Nightly
 
 # Builds the Sandbox image from the current ref, proves it with independent
 # publisher and consumer smoke gates, then publishes a prerelease carrying that
-# exact digest.  Nothing here opens a pull request: the image pin is a build
-# output, so a commit's code and its image always come from the same commit.
+# exact digest. After a successful npm publish it also cuts a GitHub prerelease
+# tag (for example, v0.1.11-nightly.42) with install notes. Nothing here opens a
+# pull request: the image pin is a build output, so a commit's code and its
+# image always come from the same commit.
 #
 # Runs automatically against main, and on demand against any ref so a branch can
 # be verified -- or installed with npx -- before it merges.
@@ -579,8 +581,10 @@ jobs:
       needs.candidate.result == 'success' &&
       needs.candidate.outputs.candidate_digest != ''
     runs-on: ubuntu-latest
+    # contents:write is only for the post-publish git tag + GitHub Release.
+    # This job still must not open a pull request or rewrite the image pin in source.
     permissions:
-      contents: read
+      contents: write
     env:
       SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
       CANDIDATE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
@@ -720,12 +724,134 @@ jobs:
 
       # `latest` is unreachable from this workflow: only the release workflow
       # may move it, and only from the default branch.
+      #
+      # Re-runs that already published skip republish. Only advance the channel
+      # dist-tag when it is missing or older than this version — never roll a
+      # newer channel backward. Then finish the GitHub tag/release below.
       - name: Publish prerelease to npm
         if: ${{ github.event_name == 'schedule' || inputs.publish }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          version='${{ steps.channel.outputs.version }}'
           tag='${{ steps.channel.outputs.tag }}'
           [[ "${tag}" != 'latest' ]] || { echo 'nightly must never publish to latest' >&2; exit 1; }
-          npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag "${tag}"
+          existing="$(npm view "@gannonh/devbox@${version}" version 2>/dev/null || true)"
+          if [[ "${existing}" == "${version}" ]]; then
+            current="$(npm view "@gannonh/devbox" "dist-tags.${tag}" 2>/dev/null || true)"
+            decision="$(
+              CURRENT_DIST_TAG="${current}" CANDIDATE_VERSION="${version}" \
+                node scripts/vercel/should-advance-dist-tag.mjs
+            )"
+            case "${decision}" in
+              advance)
+                echo "@gannonh/devbox@${version} already on the registry; pointing dist-tag ${tag} at it"
+                npm dist-tag add "@gannonh/devbox@${version}" "${tag}"
+                ;;
+              already)
+                echo "dist-tag ${tag} already at ${version}"
+                ;;
+              preserve)
+                echo "preserving dist-tag ${tag} at ${current} (newer than ${version})"
+                ;;
+              *)
+                echo "unexpected dist-tag decision: ${decision:-empty}" >&2
+                exit 1
+                ;;
+            esac
+          else
+            echo "Publishing @gannonh/devbox@${version} to dist-tag ${tag}"
+            npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag "${tag}"
+          fi
+
+      # Tag and GitHub Release only after npm publish succeeds. Marked as a
+      # prerelease so it never becomes Latest over stables. Idempotent: re-runs
+      # reuse an existing tag/release when it already points at SOURCE_COMMIT.
+      - name: Create prerelease tag
+        id: prerelease_tag
+        if: ${{ success() && (github.event_name == 'schedule' || inputs.publish) }}
+        run: |
+          set -euo pipefail
+          version='${{ steps.channel.outputs.version }}'
+          tag="v${version}"
+          [[ "${version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(nightly|dev)\.[0-9A-Za-z.-]+)?$ ]] || {
+            echo "refusing to tag malformed prerelease version: ${version}" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_COMMIT}" ]] || {
+            echo 'tag checkout does not match verified source commit' >&2
+            exit 1
+          }
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            local_target="$(git rev-parse "${tag}^{}")"
+            [[ "${local_target}" == "${SOURCE_COMMIT}" ]] || {
+              echo "refusing to reuse local tag ${tag}: points at ${local_target}, expected ${SOURCE_COMMIT}" >&2
+              exit 1
+            }
+            echo "Local tag ${tag} already exists at ${SOURCE_COMMIT}"
+          else
+            git tag "${tag}" "${SOURCE_COMMIT}"
+          fi
+
+          remote_listing="$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}" || true)"
+          if [[ -n "${remote_listing}" ]]; then
+            # Prefer the peeled commit (annotated tags); fall back to lightweight.
+            remote_target="$(printf '%s\n' "${remote_listing}" | awk '
+              $2 ~ /\^\{\}$/ { print $1; found = 1; exit }
+              { sha = $1 }
+              END { if (!found && sha != "") print sha }
+            ')"
+            [[ -n "${remote_target}" ]] || {
+              echo "refusing to reuse tag ${tag}: could not resolve origin target" >&2
+              exit 1
+            }
+            [[ "${remote_target}" == "${SOURCE_COMMIT}" ]] || {
+              echo "refusing to reuse tag ${tag}: origin points at ${remote_target}, expected ${SOURCE_COMMIT}" >&2
+              exit 1
+            }
+            echo "Tag ${tag} already on origin at ${SOURCE_COMMIT}"
+          else
+            git push origin "refs/tags/${tag}"
+            echo "Pushed tag ${tag} at ${SOURCE_COMMIT}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: ${{ success() && (github.event_name == 'schedule' || inputs.publish) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.prerelease_tag.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.channel.outputs.version }}
+          DIST_TAG: ${{ steps.channel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ -n "${RELEASE_TAG}" ]] || { echo 'prerelease tag was not resolved' >&2; exit 1; }
+          [[ "${DIST_TAG}" != 'latest' ]] || { echo 'nightly must never advertise latest' >&2; exit 1; }
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "GitHub Release ${RELEASE_TAG} already exists"
+            exit 0
+          fi
+          cat > /tmp/release-notes.md <<EOF
+          ## Install
+
+          \`\`\`sh
+          npx @gannonh/devbox@${DIST_TAG} init
+          \`\`\`
+
+          or
+
+          \`\`\`sh
+          npm install -g @gannonh/devbox@${DIST_TAG}
+          devbox init
+          \`\`\`
+
+          Published version: \`${RELEASE_VERSION}\` (\`${DIST_TAG}\` dist-tag).
+          EOF
+          gh release create "${RELEASE_TAG}" \
+            --prerelease \
+            --title "${RELEASE_TAG}" \
+            --notes-file /tmp/release-notes.md \
+            --target "${SOURCE_COMMIT}"
+          echo "Created GitHub prerelease ${RELEASE_TAG}"

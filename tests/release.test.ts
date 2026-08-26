@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { distTagAdvanceDecision } from '../scripts/vercel/should-advance-dist-tag.mjs';
 
 // Parse the release workflow YAML and assert its structural contract.
 // This locks in the workflow shape so changes are intentional.
@@ -179,6 +181,9 @@ describe('release workflow contract', () => {
     // Install instructions for both npx and npm i -g.
     expect(run).toContain('npx @gannonh/devbox init');
     expect(run).toContain('npm install -g @gannonh/devbox');
+    expect(run).toContain('latest');
+    // Idempotent: re-runs reuse an existing release.
+    expect(run).toContain('already exists');
     // GH_TOKEN must be available for gh release create.
     const env = create.env as Record<string, string> | undefined;
     expect(env?.GH_TOKEN).toBeDefined();
@@ -193,5 +198,171 @@ describe('release workflow contract', () => {
     expect(publishIdx).toBeGreaterThanOrEqual(0);
     expect(tagIdx).toBeGreaterThan(publishIdx);
     expect(releaseIdx).toBeGreaterThan(tagIdx);
+  });
+});
+
+describe('nightly workflow GitHub release contract', () => {
+  async function loadNightly(): Promise<Record<string, unknown>> {
+    const yaml = await import('js-yaml');
+    const path = resolve('.github/workflows/nightly.yml');
+    const content = readFileSync(path, 'utf-8');
+    return yaml.load(content) as Record<string, unknown>;
+  }
+
+  function publishJob(wf: Record<string, unknown>): Record<string, unknown> {
+    const jobs = wf.jobs as Record<string, Record<string, unknown>>;
+    return jobs.publish;
+  }
+
+  function publishSteps(wf: Record<string, unknown>): Array<Record<string, unknown>> {
+    return (publishJob(wf).steps as Array<Record<string, unknown>>) ?? [];
+  }
+
+  function publishStepByName(wf: Record<string, unknown>, name: string): Record<string, unknown> {
+    const step = publishSteps(wf).find((s) => String(s.name) === name);
+    if (!step) throw new Error(`publish step "${name}" not found`);
+    return step;
+  }
+
+  it('gives the publish job contents:write for tags and releases only', async () => {
+    const wf = await loadNightly();
+    const jobs = wf.jobs as Record<string, Record<string, unknown>>;
+    const top = wf.permissions as Record<string, string>;
+    expect(top.contents).toBe('read');
+    expect((jobs.candidate.permissions as Record<string, string>).contents).toBe('read');
+    expect((jobs.publish.permissions as Record<string, string>).contents).toBe('write');
+  });
+
+  it('creates a prerelease tag and GitHub Release after npm publish', async () => {
+    const wf = await loadNightly();
+    const names = publishSteps(wf).map((s) => String(s.name ?? ''));
+    const publishIdx = names.indexOf('Publish prerelease to npm');
+    const tagIdx = names.indexOf('Create prerelease tag');
+    const releaseIdx = names.indexOf('Create GitHub Release');
+    expect(publishIdx).toBeGreaterThanOrEqual(0);
+    expect(tagIdx).toBeGreaterThan(publishIdx);
+    expect(releaseIdx).toBeGreaterThan(tagIdx);
+
+    const tag = publishStepByName(wf, 'Create prerelease tag');
+    const tagRun = String(tag.run ?? '');
+    expect(String(tag.if ?? '')).toContain('success()');
+    expect(tagRun).toContain('git tag');
+    expect(tagRun).toContain('git push origin');
+    expect(tagRun).toContain('already on origin at ${SOURCE_COMMIT}');
+
+    const create = publishStepByName(wf, 'Create GitHub Release');
+    const run = String(create.run ?? '');
+    expect(String(create.if ?? '')).toContain('success()');
+    expect(run).toContain('gh release create');
+    expect(run).toContain('--prerelease');
+    expect(run).toContain('already exists');
+    expect(run).toContain('npx @gannonh/devbox@${DIST_TAG} init');
+    expect(run).toContain('npm install -g @gannonh/devbox@${DIST_TAG}');
+    expect(run).not.toContain('@latest');
+    const env = create.env as Record<string, string> | undefined;
+    expect(env?.GH_TOKEN).toBeDefined();
+    expect(env?.DIST_TAG).toBe('${{ steps.channel.outputs.tag }}');
+  });
+
+  it('refuses to reuse a prerelease tag that points at a different commit', async () => {
+    const wf = await loadNightly();
+    const tagRun = String(publishStepByName(wf, 'Create prerelease tag').run ?? '');
+    // Remote (and local) reuse must dereference the tag and match SOURCE_COMMIT.
+    // gh release create --target does not retarget an existing tag.
+    expect(tagRun).toContain('git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}"');
+    expect(tagRun).toContain('refusing to reuse tag ${tag}: origin points at ${remote_target}, expected ${SOURCE_COMMIT}');
+    expect(tagRun).toContain('refusing to reuse local tag ${tag}: points at ${local_target}, expected ${SOURCE_COMMIT}');
+    expect(tagRun).toContain('git rev-parse "${tag}^{}"');
+    expect(tagRun).toContain('already on origin at ${SOURCE_COMMIT}');
+    // Mismatch fails closed before push/reuse; matching target still reuses.
+    const remoteMismatchIdx = tagRun.indexOf(
+      'refusing to reuse tag ${tag}: origin points at ${remote_target}, expected ${SOURCE_COMMIT}',
+    );
+    const reuseIdx = tagRun.indexOf('already on origin at ${SOURCE_COMMIT}');
+    expect(remoteMismatchIdx).toBeGreaterThanOrEqual(0);
+    expect(reuseIdx).toBeGreaterThan(remoteMismatchIdx);
+  });
+
+  it('skips republish when the prerelease version is already on npm', async () => {
+    const wf = await loadNightly();
+    const publish = publishStepByName(wf, 'Publish prerelease to npm');
+    const run = String(publish.run ?? '');
+    expect(run).toContain('npm view "@gannonh/devbox@${version}" version');
+    expect(run).toContain('already on the registry');
+    expect(run).toContain('npm dist-tag add');
+    expect(run).toContain("npm publish '${{ steps.pack.outputs.tarball }}'");
+    expect(run).toContain("\"${tag}\" != 'latest'");
+  });
+
+  it('does not move a channel backward when ensuring the dist-tag on rerun', async () => {
+    const wf = await loadNightly();
+    const publish = publishStepByName(wf, 'Publish prerelease to npm');
+    const run = String(publish.run ?? '');
+    // Re-runs look up the live channel version before dist-tag add.
+    expect(run).toContain('npm view "@gannonh/devbox" "dist-tags.${tag}"');
+    expect(run).toContain('scripts/vercel/should-advance-dist-tag.mjs');
+    expect(run).toContain('CURRENT_DIST_TAG');
+    expect(run).toContain('CANDIDATE_VERSION');
+    expect(run).toContain('preserving dist-tag');
+    expect(run).toContain('newer than');
+    // dist-tag add is gated on an advance decision, not unconditional.
+    expect(run).toContain('case "${decision}" in');
+    expect(run).toContain('advance)');
+    expect(run).toContain('preserve)');
+    const addIdx = run.indexOf('npm dist-tag add');
+    const preserveIdx = run.indexOf('preserving dist-tag');
+    expect(addIdx).toBeGreaterThanOrEqual(0);
+    expect(preserveIdx).toBeGreaterThanOrEqual(0);
+  });
+
+  it('never opens a pull request from Nightly', async () => {
+    const wf = await loadNightly();
+    const text = JSON.stringify(wf);
+    expect(text).not.toContain('gh pr create');
+    expect(text).not.toContain('gh pr merge');
+    expect(text).not.toContain('pull-requests: write');
+  });
+});
+
+describe('distTagAdvanceDecision', () => {
+  it('advances when the channel is unset or older than the candidate', () => {
+    expect(distTagAdvanceDecision('', '0.1.12-nightly.42')).toBe('advance');
+    expect(distTagAdvanceDecision('0.1.12-nightly.40', '0.1.12-nightly.42')).toBe('advance');
+    expect(distTagAdvanceDecision('0.1.11-nightly.100', '0.1.12-nightly.1')).toBe('advance');
+    expect(distTagAdvanceDecision('0.1.12-dev.feature.3', '0.1.12-dev.feature.9')).toBe('advance');
+  });
+
+  it('reports already when the channel already points at the candidate', () => {
+    expect(distTagAdvanceDecision('0.1.12-nightly.42', '0.1.12-nightly.42')).toBe('already');
+  });
+
+  it('preserves a newer channel version instead of rolling backward', () => {
+    expect(distTagAdvanceDecision('0.1.12-nightly.50', '0.1.12-nightly.42')).toBe('preserve');
+    expect(distTagAdvanceDecision('0.1.13-nightly.1', '0.1.12-nightly.99')).toBe('preserve');
+    expect(distTagAdvanceDecision('0.1.12-dev.feature.9', '0.1.12-dev.feature.3')).toBe('preserve');
+  });
+
+  it('rejects a missing candidate', () => {
+    expect(() => distTagAdvanceDecision('0.1.12-nightly.50', '')).toThrow(/candidate version is required/);
+  });
+
+  it('CLI prints the decision for the Nightly publish step', () => {
+    const script = resolve('scripts/vercel/should-advance-dist-tag.mjs');
+    const run = (env: NodeJS.ProcessEnv) =>
+      execFileSync(process.execPath, [script], {
+        encoding: 'utf8',
+        env: { ...process.env, ...env },
+      }).trim();
+
+    expect(run({ CURRENT_DIST_TAG: '0.1.12-nightly.50', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe(
+      'preserve',
+    );
+    expect(run({ CURRENT_DIST_TAG: '0.1.12-nightly.40', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe(
+      'advance',
+    );
+    expect(run({ CURRENT_DIST_TAG: '0.1.12-nightly.42', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe(
+      'already',
+    );
+    expect(run({ CURRENT_DIST_TAG: '', CANDIDATE_VERSION: '0.1.12-nightly.42' })).toBe('advance');
   });
 });

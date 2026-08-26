@@ -41,8 +41,9 @@ credentials are never written to the repository.
 
 Vercel reads the existing `.devcontainer/devcontainer.json` `forwardPorts` and
 `portsAttributes` as the explicit host-configuration path. Those ports are
-always retained, and the paired noVNC `6080` is always exposed. VNC `5900` and
-the internal noVNC listener are never exposed.
+always retained as logical app ports; a fresh Sandbox still receives only the
+paired noVNC `6080`, and confirmed app ports are published through relays.
+VNC `5900` and the internal noVNC listener are never exposed.
 
 ## Zero-configuration app ports
 
@@ -86,9 +87,9 @@ explicitly.
 In a TTY, devbox lists the retained configured ports and the inferred
 candidates, states that accepted app routes are **public**, and asks once.
 Enter accepts, `n` rejects, and `e` edits the inferred set only — the edit
-prompt can never drop a configured port. Accepted ports are applied to the
-running Sandbox with a single full-port-list update; the Sandbox is never
-recreated to add a route.
+prompt can never drop a configured port. Accepted logical ports are published
+through one relay each and applied to the running Sandbox with a single
+full-port-list update; the Sandbox is never recreated to add a route.
 
 When the detector infers nothing, a TTY is still asked — the default inverted so
 that Enter exposes nothing:
@@ -151,35 +152,67 @@ the Sandbox's routes after the update, so the ready banner, the resume banner,
 and `--url` always print current URLs, but a URL copied before an update can go
 stale and return `SANDBOX_NOT_FOUND`.
 
-### Your dev server must accept the sandbox host
+### Routes point at a relay, not at your dev server
 
-Devbox exposes the port; serving on it is the app's job. Two settings are
-usually needed, and neither is devbox-specific — the same two apply behind any
-tunnel or reverse proxy:
+Run the project's ordinary dev command. Nothing needs `--host`, and no
+`vite.config.*` change is required.
 
-- Bind externally, e.g. `npm run dev -- --host 0.0.0.0 --strictPort`.
-- Allow the generated host. Vite 5.4.12 and later reject unknown `Host`
-  headers with `Blocked request. This host (…) is not allowed`; add
-  `server.allowedHosts: ['.vercel.run']` to `vite.config.*`. Next.js has no
-  equivalent check and needs nothing.
+Devbox never exposes the app's own listener. For each approved logical port it
+starts one small process inside the Sandbox that binds an ephemeral port and
+forwards HTTP, streaming HTTP, and WebSocket traffic to `localhost:<your
+port>`; the public route points at that process. So a server bound to loopback
+is reachable, and Vite 5.4.12+ sees a `Host` it accepts rather than
+`Blocked request. This host (…) is not allowed`.
+
+The relay replaces only transport-level fields. `Host` becomes
+`localhost:<your port>`; `Origin`, cookies, and `Authorization` pass through
+untouched, so your app's own origin policy still applies. Client-supplied
+`Forwarded` and `X-Forwarded-*` values are discarded and replaced with what the
+relay observed: `X-Forwarded-Host` from the incoming Host, `X-Forwarded-Proto:
+https`, and `X-Forwarded-For` from the connecting peer. An app that needs the
+public hostname should read `X-Forwarded-Host`.
+
+Route lines always name your port, never the relay's:
+
+```text
+5173: https://<generated>.vercel.run  (vite — public)
+```
+
+Before your server starts listening, the URL answers `502` within three seconds
+with a short generic body. The same URL serves the app as soon as the server is
+up — there is no second route update and no new URL to copy.
+
+A relay's target is fixed when it starts. No request field can redirect it, a
+malformed or absolute-form request authority is refused with `400`, and a relay
+can never target `5900`, `6080`, or `6081` or receive the display access code.
+See [ADR 0007](../adrs/0007-relay-backed-public-app-routes.md).
 
 The confirmed selection is stored without secrets in the branch's mode-`0600`
-metadata together with the candidate fingerprint, the detector version, and the
-remote `git rev-parse HEAD`. A resume with those values unchanged re-applies the
-same routes without prompting; a changed project prompts again in a TTY, or
-reports the change without new exposure outside one. Each route update is
-written as a pending `{previous, desired}` record first and committed after, so
-an interrupted update is reconciled against the Sandbox's actual routes on the
-next attach — committed when already applied, cleared when never applied, and
-otherwise restored to the previous set. An unknown route set is never treated as
-committed.
+metadata together with the Sandbox identity, the `{logicalPort, relayPort,
+label}` mappings, the applied relay-port set, the candidate fingerprint, the
+detector version, and the remote `git rev-parse HEAD`. A resume with those
+values unchanged re-applies the same routes without prompting; a changed
+project prompts again in a TTY, or reports the change without new exposure
+outside one.
 
-Devbox never launches, rewrites, or relays your dev command. A route can exist
-before the app starts, so bind the server externally yourself:
+Each route update is written as a pending record holding complete `previous`
+and `desired` states — both the mappings and the exposed sets — before the
+update and committed after. The order is: every desired relay listening, then
+the route update, then the metadata commit, then the relays the change orphaned
+are stopped. An interrupted update is reconciled on the next attach against the
+Sandbox's actual routes *and* its PID-verified relay processes: committed only
+when both match `desired`, cleared when both match `previous`, and otherwise
+restored to `previous`. A route that cannot be verified is never reported ready.
 
-```bash
-npm run dev -- --host 0.0.0.0 --strictPort
-```
+A second attach to the same running Sandbox verifies the recorded relays and
+reuses them, so the URLs do not change. A snapshot resume, or metadata that no
+longer describes this Sandbox, takes the full provisioning path; the recorded
+relay port is preferred when it is still free, so a reconstructed relay often
+keeps its URL.
+
+Devbox never launches or rewrites your dev command, and never edits your
+project. A route can exist before the app starts; that window returns the
+bounded `502` described above.
 
 The printed `6080` link carries the branch access code as a `token` parameter.
 Opening it pairs the browser: the proxy sets an `HttpOnly; Secure; SameSite=Lax`

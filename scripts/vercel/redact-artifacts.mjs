@@ -14,6 +14,7 @@ import { basename, join } from 'node:path';
 // and any *Fingerprint field is a non-reversible hash that must survive.
 const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)/i;
 const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)|^DEVBOX_GITHUB_FIXTURE_/i;
+const binaryArtifactExtension = /\.(?:png|webm|mp4)$/i;
 const isSensitiveField = (name) => !/Fingerprint/i.test(name) && sensitiveFieldName.test(name);
 const secrets = [...new Set(Object.entries(process.env)
   .filter(([name, value]) => sensitiveEnvironmentName.test(name) && typeof value === 'string' && value.length > 0)
@@ -51,6 +52,10 @@ function redactValue(value) {
 }
 
 async function redactFile(path) {
+  // Screenshots and optional video evidence contain no structured text to
+  // redact. Preserve their bytes for reviewers instead of decoding them as
+  // UTF-8 and corrupting the artifact.
+  if (binaryArtifactExtension.test(path)) return;
   const input = await readFile(path, 'utf8');
   if (basename(path) === 'manifest-raw.json') {
     JSON.parse(input);

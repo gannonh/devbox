@@ -21,6 +21,8 @@ export type {
   VercelIdentityTags,
   VercelAppPortSelection,
   VercelPendingAppPorts,
+  VercelRelayMappingRecord,
+  VercelRelayState,
   VercelCreateConfiguration,
   VercelMetadata,
   VercelMetadataIdentity,

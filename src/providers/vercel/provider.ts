@@ -25,6 +25,7 @@ import {
 import {
   VercelLifecycleError,
   createVercelLifecycle,
+  sandboxIdentifier,
   type VercelLifecycle,
   type VercelLifecycleOptions,
   type VercelRecoveryInput,
@@ -67,10 +68,12 @@ import { DEVBOX_NOVNC_PROXY_PORT, appPortsOf, buildDesiredPortSet, samePortSet }
 import {
   applyAppPorts,
   reconcilePendingAppPorts,
+  relayManagerOptions,
   type AppPortFlowMode,
   type AppPortFlowResult,
   type AppPortPrompt,
 } from './app-port-flow.js';
+import { verifyRelayMappings, type VercelRelayMapping } from './app-relay.js';
 import {
   renderVercelAttachNotice,
   renderVercelReadyBlock,
@@ -261,18 +264,21 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       };
       const runtime = await prepareSandboxRuntime(runtimeOptions);
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
-      const appPorts = runtime.reused && request.exposePorts === undefined
+      // A cheap attach still proves the transport before it reuses a URL; only
+      // exact healthy evidence skips the scan, the prompt, and the route call.
+      const reused = runtime.reused && request.exposePorts === undefined
         ? await reuseRecordedAppPorts(request, client, sandbox, prepared.branchStore!, repository, secrets)
-        : await resolveAppPorts(
-          request,
-          options,
-          client,
-          sandbox,
-          prepared.branchStore!,
-          repository,
-          secrets,
-          'resume',
-        );
+        : undefined;
+      const appPorts = reused ?? await resolveAppPorts(
+        request,
+        options,
+        client,
+        sandbox,
+        prepared.branchStore!,
+        repository,
+        secrets,
+        'resume',
+      );
       if (runtime.reused) {
         request.stderr.write('Re-entering the prepared sandbox (no re-provisioning)\n');
       }
@@ -352,7 +358,10 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       }
       const labels = await resolveRouteLabels(request.repoRoot);
       const token = await displayToken(prepared.branchStore, secrets);
-      const renderedRoutes = renderVercelRoutes(routes, labels, token);
+      // Routes name relay listeners; the persisted mapping is the only thing
+      // that can turn one back into the app port the user asked for.
+      const relays = await publishedRelayMappings(prepared.branchStore, routes);
+      const renderedRoutes = renderVercelRoutes(routes, labels, token, relays);
       for (const rendered of renderedRoutes) request.stdout.write(`${rendered.line}\n`);
       if (request.open) {
         const noVnc = renderedRoutes.find(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT);
@@ -865,6 +874,16 @@ async function resolveAppPorts(
   }
 }
 
+/**
+ * The cheap-attach path: reuse an exactly healthy relay set, or decline.
+ *
+ * Skipping the repository scan and the prompt is only safe when the transport
+ * is verifiably the one the metadata describes -- this Sandbox instance, the
+ * recorded relay processes alive at their recorded PIDs and ports, and actual
+ * routes that already name them. Anything less returns `undefined` so the
+ * caller takes the full relay-provisioning path instead of reporting a route
+ * it has not checked.
+ */
 async function reuseRecordedAppPorts(
   request: ProviderBranchRequest,
   client: VercelSandboxClient,
@@ -872,42 +891,73 @@ async function reuseRecordedAppPorts(
   branchStore: VercelBranchMetadataStore,
   repository: string,
   secrets: readonly string[],
-): Promise<AppPortFlowResult> {
+): Promise<AppPortFlowResult | undefined> {
   const actual = buildDesiredPortSet(appPortsOf((sandbox.routes ?? []).map((route) => route.port)), []);
+  const flowOptions = {
+    sandbox,
+    client,
+    branchStore,
+    repoRoot: request.repoRoot,
+    workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
+    branch: request.branch,
+    tty: request.tty,
+    stdin: request.stdin,
+    stderr: request.stderr,
+    secrets,
+  };
   try {
     const selection = await branchStore.withLock(async () => {
       let metadata = await branchStore.read();
       if (metadata?.pendingAppPorts) {
         // An interrupted route update must reconcile before any recorded
-        // selection is restored; the flow owns that reconciliation.
-        metadata = await reconcilePendingAppPorts({
-          sandbox,
-          client,
-          branchStore,
-          repoRoot: request.repoRoot,
-          workspace: resolveVercelRepositoryCwd(sandbox.cwd, repository),
-          branch: request.branch,
-          tty: request.tty,
-          stdin: request.stdin,
-          stderr: request.stderr,
-          secrets,
-        }, metadata);
+        // selection is trusted; the flow owns that reconciliation.
+        metadata = await reconcilePendingAppPorts(flowOptions, metadata);
       }
       return metadata?.appPorts;
     });
-    if (selection?.applied && !samePortSet(actual, selection.applied)) {
-      await client.updatePorts(sandbox, selection.applied);
-      return {
-        selected: [...selection.selected],
-        applied: [...selection.applied],
-        updated: true,
-        labels: {},
-      };
+    if (
+      selection === undefined
+      || selection.sandboxId !== sandboxIdentifier(sandbox)
+      || !samePortSet(actual, selection.applied)
+      || !await verifyRelayMappings(relayManagerOptions(flowOptions), selection.relays)
+    ) {
+      return undefined;
     }
-    return { selected: [...(selection?.selected ?? [])], applied: actual, updated: false, labels: {} };
+    return {
+      selected: [...selection.selected],
+      applied: [...selection.applied],
+      updated: false,
+      labels: Object.fromEntries(selection.relays.map((mapping) => [mapping.logicalPort, mapping.label])),
+      relays: selection.relays.map((mapping) => ({ ...mapping })),
+    };
   } catch (error) {
-    request.stderr.write(`app ports: ${redactSecrets(error, secrets)}; continuing with current routes\n`);
-    return { selected: [], applied: actual, updated: false, labels: {} };
+    request.stderr.write(
+      `app ports: ${redactSecrets(error, secrets)}; re-checking the public routes\n`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Recorded mappings for routes that actually exist right now.
+ *
+ * `--url` has no Sandbox-side evidence to check, so it joins only what the
+ * live route set corroborates: a mapping whose relay port is not published is
+ * a stale record, and printing its logical port would name a URL that is not
+ * there.
+ */
+async function publishedRelayMappings(
+  branchStore: VercelBranchMetadataStore | undefined,
+  routes: readonly { port: number }[],
+): Promise<VercelRelayMapping[]> {
+  if (!branchStore) return [];
+  try {
+    const metadata = await branchStore.read();
+    return (metadata?.appPorts?.relays ?? [])
+      .filter((mapping) => routes.some((route) => route.port === mapping.relayPort))
+      .map((mapping) => ({ ...mapping }));
+  } catch {
+    return [];
   }
 }
 

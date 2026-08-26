@@ -353,11 +353,36 @@ describe('Vercel URL output', () => {
 describe('Vercel zero-config app routes', () => {
   const REVISION = 'd'.repeat(40);
 
+  /** Deterministic stand-in for the kernel's listener choice. */
+  function relayPortFor(logicalPort: number): number {
+    return 40_000 + logicalPort;
+  }
+
   function zeroConfigClient(state: { routes: { port: number; subdomain: string; url: string }[] }) {
     const updates: number[][] = [];
+    const relays = new Map<number, number>();
     const client = {
       writeFiles: vi.fn(async () => {}),
       runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, command: VercelRunCommandRequest) => {
+        if (command.cmd === 'bash' && (command.args ?? [])[0]?.endsWith('app-relay-control.sh')) {
+          const [action, logical] = (command.args ?? []).slice(1);
+          if (action === 'status') {
+            return {
+              exitCode: 0,
+              stdout: async () => [...relays].map(([port, relay]) =>
+                `{"logicalPort":${port},"relayPort":${relay},"pid":${1000 + port},"running":true}`).join('\n'),
+            };
+          }
+          if (action === 'start') {
+            relays.set(Number(logical), relayPortFor(Number(logical)));
+            return {
+              exitCode: 0,
+              stdout: async () =>
+                `{"logicalPort":${logical},"relayPort":${relayPortFor(Number(logical))},"pid":1}`,
+            };
+          }
+          return { exitCode: 0, stdout: async () => '' };
+        }
         if (command.cmd === '/usr/local/bin/devbox-status') {
           return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
         }
@@ -407,9 +432,11 @@ describe('Vercel zero-config app routes', () => {
     await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
 
     expect(appPortPrompt).toHaveBeenCalledTimes(1);
-    expect(updates).toEqual([[5173, 6080]]);
+    // The exposed route is the relay's; the line the user reads is the app's.
+    expect(updates).toEqual([[6080, relayPortFor(5173)]]);
     const ready = test.errorOutput().slice(test.errorOutput().indexOf('Vercel devbox ready'));
-    expect(ready).toContain('5173: https://sandbox.example/5173  (vite — public)');
+    expect(ready).toContain(`5173: https://sandbox.example/${relayPortFor(5173)}  (vite — public)`);
+    expect(ready).not.toContain(`${relayPortFor(5173)}: `);
     expect(ready).toContain(`${NOVNC_LINE}`);
     expect(test.errorOutput()).not.toContain('scripts');
   });
@@ -448,9 +475,10 @@ describe('Vercel zero-config app routes', () => {
     // reads as a fresh boot.
     expect(test.errorOutput()).toContain('Attaching to the existing Vercel sandbox for feature/ui');
     expect(appPortPrompt).toHaveBeenCalledTimes(1);
-    expect(updates).toEqual([[5173, 6080]]);
+    // The attach verifies the live relay and reuses it: one update, one URL.
+    expect(updates).toEqual([[6080, relayPortFor(5173)]]);
     const resumed = test.errorOutput().slice(test.errorOutput().lastIndexOf('Vercel devbox resumed'));
-    expect(resumed).toContain('5173: https://sandbox.example/5173  (vite — public)');
+    expect(resumed).toContain(`5173: https://sandbox.example/${relayPortFor(5173)}  (vite — public)`);
   });
 
   it('reports the exact opt-in syntax instead of exposing anything without a TTY', async () => {
@@ -501,8 +529,8 @@ describe('Vercel zero-config app routes', () => {
 
     await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
 
-    expect(updates).toEqual([[4173, 6080]]);
+    expect(updates).toEqual([[6080, relayPortFor(4173)]]);
     const ready = test.errorOutput().slice(test.errorOutput().indexOf('Vercel devbox ready'));
-    expect(ready).toContain('4173: https://sandbox.example/4173  (public)');
+    expect(ready).toContain(`4173: https://sandbox.example/${relayPortFor(4173)}  (public)`);
   });
 });

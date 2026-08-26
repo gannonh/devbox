@@ -37,7 +37,8 @@ import {
 } from './source.js';
 import { redactSecrets } from './redaction.js';
 import { assertSandboxVcpus } from './resources.js';
-import { assertSdkPorts, resolveDevcontainerPorts } from './ports.js';
+import { assertSdkPorts, DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts } from './ports.js';
+import { stopAllRelays } from './app-relay.js';
 import type { ShellRunner } from '../../lib/shell.js';
 
 export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 60 * 60 * 1000;
@@ -377,6 +378,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         const effectiveConfiguration = metadata?.configuration ?? configuration;
         const sandbox = await getExistingSandbox(context, context.credentials, identity.name, false);
         validateSandboxIdentity(sandbox, context, identity);
+        await stopRelaysBeforeStop(context, sandbox);
         let sessions = await context.client.listSessions(sandbox);
         let finalStop: VercelStopResult | undefined;
         if (!allTerminal(sessions) || STOPPABLE_SESSION_STATES.has(sandbox.status)) {
@@ -702,10 +704,40 @@ function redactLifecycleFailure(error: unknown, secrets: readonly string[]): str
   return redactSecrets(error, secrets).replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
+/**
+ * Stop the app relays before the Sandbox goes down.
+ *
+ * Stopping the box removes its routes and its processes anyway; doing this
+ * first also clears the relay state files, so nothing in the resumed
+ * filesystem can be mistaken for a live listener. Best effort by design: a box
+ * that cannot run a command is a box that is about to be stopped regardless.
+ */
+async function stopRelaysBeforeStop(
+  context: PreparedContext,
+  sandbox: VercelSandboxHandle,
+): Promise<void> {
+  try {
+    await stopAllRelays({ sandbox, client: context.client });
+  } catch {
+    // Reported nowhere on purpose: the stop below is the guarantee.
+  }
+}
+
+/**
+ * The ports a fresh Sandbox is created with: the authenticated noVNC route,
+ * and nothing else.
+ *
+ * Configured `forwardPorts` are still parsed and validated here so a broken
+ * devcontainer fails at boot rather than at the prompt -- but they are logical
+ * app ports, not listeners, and every one of them is published later as a
+ * relay by the app-port flow. Creating with the raw port would expose the
+ * app's own listener for the window before that flow runs, which is exactly
+ * what relaying exists to avoid.
+ */
 async function resolvePorts(options: VercelLifecycleOptions): Promise<number[]> {
-  return options.ports === undefined
-    ? (await resolveDevcontainerPorts(options.repoRoot)).ports
-    : assertSdkPorts([...options.ports]);
+  if (options.ports !== undefined) return assertSdkPorts([...options.ports]);
+  await resolveDevcontainerPorts(options.repoRoot);
+  return [DEVBOX_NOVNC_PROXY_PORT];
 }
 
 async function prepareContext(options: VercelLifecycleOptions): Promise<PreparedContext> {
