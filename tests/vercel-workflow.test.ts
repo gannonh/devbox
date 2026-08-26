@@ -182,12 +182,13 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('schedule:');
     expect(workflow).toContain('cron:');
-    // The pin is a build output, so no run writes to the source tree. This is
-    // what removed the second pull request from every image change.
+    // The pin is a build output, so no run writes a pin commit or opens a PR.
+    // The publish job may write a prerelease git tag + GitHub Release only.
     expect(workflow).not.toContain('gh pr create');
     expect(workflow).not.toContain('gh pr merge');
     expect(workflow).not.toContain('enable-auto-merge');
-    expect(workflow).not.toContain('contents: write');
+    expect(workflow).toContain('Create prerelease tag');
+    expect(workflow).toContain('--prerelease');
   });
 
   it('documents the channel model instead of a label ritual', async () => {
@@ -364,10 +365,15 @@ describe('Vercel image and release workflows', () => {
     }
     expect(workflow).toMatch(/if: >-\n\s+needs\.candidate\.result == 'success'/);
     expect(workflow).toMatch(/candidate:[\s\S]*?permissions:\n\s+contents: read/);
-    // No job in this workflow can write to the repository any more: emitting a
-    // pin replaced opening a promotion pull request.
-    expect(workflow).toMatch(/publish:[\s\S]*?permissions:\n\s+contents: read/);
+    // Publish may write a prerelease tag + GitHub Release after npm publish.
+    // It still must not open a pull request or rewrite the image pin in source.
+    expect(workflow).toMatch(/publish:[\s\S]*?permissions:\n\s+contents: write/);
     expect(workflow).not.toContain('pull-requests: write');
+    expect(workflow).toContain('Create prerelease tag');
+    expect(workflow).toContain('Create GitHub Release');
+    expect(workflow).toContain('--prerelease');
+    expect(workflow).toContain('npx @gannonh/devbox@${DIST_TAG} init');
+    expect(workflow).toContain('npm install -g @gannonh/devbox@${DIST_TAG}');
   });
 
   it('documents scoped all-resource orphan cleanup and a long-lived local runtime', async () => {
@@ -461,6 +467,7 @@ describe('Vercel image and release workflows', () => {
       exists('scripts/vercel/emit-image-pin.mjs'),
       exists('scripts/vercel/retag-image.mjs'),
       exists('scripts/vercel/nightly-pin.mjs'),
+      exists('scripts/vercel/should-advance-dist-tag.mjs'),
       exists('scripts/vercel/redact-artifacts.mjs'),
     ]);
   });
