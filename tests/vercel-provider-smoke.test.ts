@@ -234,6 +234,8 @@ describe('Vercel provider smoke configuration', () => {
       'validStopSnapshot',
       'snapshot === undefined',
       "'resume/reconnect attach'",
+      "'resume command probe'",
+      "'resume-command'",
       'SMOKE_TOTAL_TIMEOUT_MS',
       'finally',
     ]) {
@@ -252,9 +254,13 @@ describe('Vercel provider smoke configuration', () => {
       'postInterruptMarker',
       'Buffer.from([0x1d])',
       "reason === 'escape'",
+      'readyRetry',
+      'settled early',
     ]) {
       expect(terminalSource).toContain(required);
     }
+    expect(source).toContain("resumed.status === 'running'");
+    expect(source).not.toContain("resumed.status === 'running' || resumed.status === 'pending'");
     expect(terminalSource).not.toContain('exit\\n');
     expect(source).not.toContain('sandbox.openInteractive');
     expect(source).not.toContain('execFile');
