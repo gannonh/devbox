@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyAppPorts } from '../src/providers/vercel/app-port-flow.js';
+import { applyAppPorts, UNRESOLVED_CHECKOUT_REVISION } from '../src/providers/vercel/app-port-flow.js';
 import { APP_PORT_DETECTOR_VERSION, detectAppPorts } from '../src/providers/vercel/app-ports.js';
 import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
 import type { VercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
@@ -730,15 +730,26 @@ describe('zero-config app port flow', () => {
     expect(metadata?.appPorts).toBeUndefined();
   });
 
-  it('does not expose anything when the checkout revision cannot be read', async () => {
-    const { updates, output } = await run({
+  it('still publishes configured and --expose-ports when the checkout revision cannot be read', async () => {
+    const { updates, result, output, ...harness } = await run({
       client: { revision: 'not-a-sha' },
+      forwardPorts: [4000],
       exposePorts: [5173],
       tty: false,
     });
 
-    expect(updates).toEqual([]);
-    expect(output).toContain('--expose-ports was not applied');
+    // Inference is skipped; trusted host config and the explicit opt-in still
+    // get relays. The all-zero sentinel is what metadata records instead of a
+    // real SHA, so a later successful rev-parse will not silently reuse this.
+    expect(updates).toEqual([[
+      DEVBOX_NOVNC_PROXY_PORT,
+      relayPortFor(4000),
+      relayPortFor(5173),
+    ]]);
+    expect(result.selected).toEqual([5173]);
+    expect(output).not.toContain('--expose-ports was not applied');
+    const metadata = await harness.metadata();
+    expect(metadata?.appPorts?.revision).toBe(UNRESOLVED_CHECKOUT_REVISION);
   });
 
   it('keeps secrets out of scan failure notices', async () => {

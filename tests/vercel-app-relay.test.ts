@@ -270,6 +270,28 @@ describe('app relay HTTP boundary', () => {
     const served = await fetch(`http://127.0.0.1:${relayPort}/`);
     expect(await served.text()).toBe('late-app');
   });
+
+  it('keeps a connected upstream that takes longer than the connect timeout to send headers', async () => {
+    // Cold Vite/Next compiles accept TCP immediately and emit headers later.
+    // The timeout bounds reaching the app, not first-byte time after connect.
+    const upstream = await startUpstream({
+      onRequest: (_request, response) => {
+        setTimeout(() => {
+          response.writeHead(200, { 'content-type': 'text/plain' });
+          response.end('slow-headers');
+        }, 2_500);
+      },
+    });
+    const relayPort = await startRelay(upstream.port);
+
+    const started = Date.now();
+    const response = await fetch(`http://127.0.0.1:${relayPort}/`);
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(body).toBe('slow-headers');
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2_500);
+  });
 });
 
 describe('app relay WebSocket boundary', () => {
