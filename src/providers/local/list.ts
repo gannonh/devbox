@@ -7,7 +7,12 @@ import { info, setLogStreams } from '../../lib/log.js';
 interface ContainerRow {
   branch: string;
   name: string;
-  state: string;
+  state: 'running' | 'paused' | 'stopped';
+}
+
+function localState(state: string): ContainerRow['state'] {
+  if (state === 'running' || state === 'paused') return state;
+  return 'stopped';
 }
 
 export async function list(ctx: LauncherContext): Promise<number> {
@@ -35,21 +40,34 @@ export async function list(ctx: LauncherContext): Promise<number> {
     .trim()
     .split('\n')
     .map((line) => {
-      const [branch, name, state] = line.split('\t');
-      return { branch, name, state };
+      const [branch = '', name = '', state = ''] = line.split('\t');
+      return { branch, name, state: localState(state) };
     });
 
   for (const row of rows) {
     if (!row.name) continue;
-    if (row.state === 'running') {
-      const url = `http://${row.name}.orb.local:6080/vnc.html`;
-      output.write(`  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} `);
-      output.write(hyperlink(url, url));
-      output.write('\n');
-    } else {
-      output.write(
-        `  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} (stopped — start with: devbox ${row.branch})\n`,
-      );
+    switch (row.state) {
+      case 'running': {
+        const url = `http://${row.name}.orb.local:6080/vnc.html`;
+        output.write(`  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} `);
+        output.write(hyperlink(url, url));
+        output.write('\n');
+        break;
+      }
+      case 'paused':
+        output.write(
+          `  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} (resume with: devbox ${row.branch} --attach)\n`,
+        );
+        break;
+      case 'stopped':
+        output.write(
+          `  ${row.branch.padEnd(22)} ${row.state.padEnd(9)} (start with: devbox ${row.branch})\n`,
+        );
+        break;
+      default: {
+        const _exhaustive: never = row.state;
+        void _exhaustive;
+      }
     }
   }
 

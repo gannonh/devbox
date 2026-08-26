@@ -43,9 +43,18 @@ provider.
    version, and remote `HEAD`, and is written pending-then-commit so an
    interrupted update is reconcilable against actual routes and PID-verified
    relay processes.
-6. Stop, resume, and remove use terminal session proof plus snapshot relisting.
-   Metadata is removed only after cloud cleanup converges; residual IDs remain
-   in a mode-`0600` retry record after partial cleanup.
+6. Pause and stop call the persistent Sandbox stop operation. Vercel retains
+   one snapshot, and the host records its ID plus the source session because
+   the snapshot is frozen before its ID is available to the filesystem. Attach
+   proves the old running session or the snapshot-to-source-session chain before
+   choosing a cheap or fast path. Snapshot resume refreshes runtime secrets,
+   display services, and relay routes without clone, dependency install, or
+   post-create work. Metadata is removed only after cloud cleanup converges;
+   residual IDs remain in a mode-`0600` retry record after partial cleanup.
+7. Re-entry writes a mode-`0600` remote heartbeat on terminal input and a
+   successful display health poll. The idle controller pauses only after the
+   configured window, while setup is not running and no fresh heartbeat exists.
+   A missing heartbeat is conservative until the full window has elapsed.
 
 ```mermaid
 flowchart LR
@@ -57,6 +66,7 @@ flowchart LR
   Vercel --> SDK[@vercel/sandbox v3]
   SDK --> Image[Public digest-pinned VCR image]
   SDK --> Runtime[Runtime secrets/display/setup]
+  Runtime --> Heartbeat[0600 input/display heartbeat]
   SDK --> TTY[Interactive terminal]
   Vercel --> Detect[Bounded Vite/Next detector]
   Detect --> Confirm[Public-route confirmation]
@@ -66,6 +76,8 @@ flowchart LR
   Update --> Routes
   Runtime --> Routes
   Relays --> App[localhost app listeners]
+  Heartbeat --> Idle[Idle pause controller]
+  Idle --> SDK
 ```
 
 ## CI and acceptance

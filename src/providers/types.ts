@@ -80,6 +80,7 @@ export interface DevboxProvider {
   readonly name: ProviderName;
   up(request: ProviderBranchRequest): Promise<ProviderActionResult>;
   attach(request: ProviderBranchRequest): Promise<ProviderActionResult>;
+  pause?(request: ProviderBranchRequest): Promise<ProviderActionResult>;
   stop(request: ProviderBranchRequest): Promise<ProviderActionResult>;
   remove(request: ProviderBranchRequest): Promise<ProviderActionResult>;
   list(request: ProviderListRequest): Promise<ProviderActionResult>;

@@ -75,6 +75,7 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 | `devbox init [--force]` | Scaffold `.devbox/` + `.devcontainer/`. Required for local boxes. `--force` overwrites differing files. |
 | `devbox <branch>` | Boot a box for a branch (or re-enter if running). |
 | `devbox <branch> --attach` `-a` | Re-enter a running box. Starts + re-brings display if stopped. |
+| `devbox <branch> --pause` | Pause a box while keeping its local container or Vercel snapshot. Attach resumes it. |
 | `devbox <branch> --stop` | Stop the box (keeps worktree + container on disk). |
 | `devbox <branch> --rm` | Remove container, worktree, and branch. Uncommitted worktree work is lost. |
 | `devbox <branch> --url` | Print the noVNC URL. Add `--open` `-o` to launch a browser. |
@@ -84,6 +85,24 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 | `devbox --help` `-h` | Show usage. |
 
 `devbox` is the installed bin; `npx @gannonh/devbox` works without a global install. Use whichever fits the user's setup.
+
+Vercel re-entry resumes the retained snapshot without recloning, dependency
+installation, or the post-create hook. It refreshes runtime secrets, Pi
+configuration, display services, and recorded public routes first. The remote
+heartbeat at `/vercel/.devbox/runtime/heartbeat` is mode `0600` and is updated
+by terminal input and successful display health polls. Automatic pause defaults
+to 15 minutes; set
+`DEVBOX_IDLE_PAUSE_MINUTES=0` to disable it or choose 1 through 1440. A missing
+heartbeat becomes idle only after the full window. A freshly snapshot-resumed
+session receives one bootstrap heartbeat before the idle timer starts; an
+ordinary attach does not reset an old heartbeat just by existing.
+
+For long-running work without terminal input, an agent may refresh the heartbeat
+explicitly:
+
+```sh
+(umask 077; mkdir -p /vercel/.devbox/runtime; date +%s > /vercel/.devbox/runtime/heartbeat; chmod 600 /vercel/.devbox/runtime/heartbeat)
+```
 
 ## Inside the box
 

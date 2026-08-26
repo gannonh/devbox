@@ -1,0 +1,13 @@
+# How explorer
+
+Read `/Users/gannonhall/dotfiles/codex/.codex/plugins/cache/open-pstack/pstack/1.2.0/skills/how/references/explorer-prompt.md` and follow it in full.
+
+## Question
+
+How does the current Vercel lifecycle provision, attach, stop, resume, and clean up a named sandbox, including preparation evidence, runtime sync, display startup, and app relay restoration? We need to implement issue #19, whose spec is the GitHub issue at https://github.com/gannonh/devbox/issues/19.
+
+## Your exploration angle
+
+Audit the existing test doubles and live verification surface that issue #19 can extend. Read `tests/vercel-runtime-reattach.test.ts`, `tests/vercel-provider.test.ts`, `tests/vercel-lifecycle.test.ts`, `tests/vercel-runtime-sync.test.ts`, `tests/local-provider.test.ts`, `tests/local-commands.test.ts`, `tests/docker.test.ts`, relevant scripts under `scripts/vercel`, the Vercel image startup scripts, `skills/devbox/SKILL.md`, and the current README/reference/architecture docs. Map reusable harness seams and identify what real CLI or mocked integration checks can prove pause, snapshot resume, idle heartbeat, list states, and cleanup without credentials.
+
+Return the required Components Found, Flow, Files Read, Boundaries, Non-Obvious Things, and Open Questions sections from the template. Use repository-relative paths and line numbers.

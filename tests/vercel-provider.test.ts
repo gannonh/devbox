@@ -877,8 +877,10 @@ describe('Vercel provider', () => {
     expect(commands.every((command) =>
       command.cmd === '/usr/local/bin/devbox-status'
       || command.cmd === 'cat'
+      || command.cmd === 'stat'
       || isRelayControl(command)
-      || (command.args?.[1] ?? '').includes('cat /vercel/.devbox/runtime/preparation.json')))
+      || (command.args?.[1] ?? '').includes('cat /vercel/.devbox/runtime/preparation.json')
+      || (command.cmd === 'sh' && (command.args?.[1] ?? '').includes('/vercel/.devbox/runtime/heartbeat'))))
       .toBe(true);
     expect(commands.filter(isRelayControl).map((command) => command.args?.[1])).toEqual(['status']);
     expect(terminal.attach).toHaveBeenCalledOnce();
@@ -1260,12 +1262,29 @@ describe('Vercel provider', () => {
       tty: false,
     }))).resolves.toEqual({ exitCode: 0 });
 
-    expect(output).toContain(`${identity.name}: stopped`);
+    expect(output).toContain(`${identity.name}: paused`);
     expect(output).toContain('snapshot: snapshot-1 created');
+    expect(output).toContain('attach resumes from this retained snapshot');
     expect(output).toContain('cpu: 123ms');
     expect(output).toContain('network: ingress=4 egress=5');
     expect(output).not.toContain('session');
     expect(output).not.toContain('new-vercel-token');
+
+    currentLifecycle.pause = vi.fn(async () => ({
+      name: identity.name,
+      sessions: [],
+      finalSession: { id: 'session', status: 'stopped' as const },
+      snapshot: { id: 'snapshot-2', status: 'created' as const },
+    }));
+    await expect(provider.pause(request({
+      env: { VERCEL_TOKEN: 'new-vercel-token' },
+      stderr,
+      tty: false,
+    }))).resolves.toEqual({ exitCode: 0 });
+
+    expect(currentLifecycle.pause).toHaveBeenCalledOnce();
+    expect(output).toContain(`${identity.name}: paused`);
+    expect(output).toContain('snapshot: snapshot-2 created');
   });
 
   it('routes list, URL/open, and remove through stored metadata without remote queries', async () => {

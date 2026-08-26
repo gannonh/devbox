@@ -25,6 +25,7 @@ export interface SandboxRoute {
 export interface SandboxSessionRecord {
   id: string;
   status: SandboxSessionStatus;
+  sourceSnapshotId?: string;
   activeCpuDurationMs?: number;
   networkTransfer?: { ingress: number; egress: number };
   [key: string]: unknown;
@@ -34,6 +35,8 @@ export interface SandboxSnapshotRecord {
   id: string;
   sourceSessionId: string;
   status: SandboxSnapshotStatus;
+  createdAt?: number;
+  updatedAt?: number;
   [key: string]: unknown;
 }
 
@@ -41,6 +44,10 @@ export interface SandboxListRecord {
   name: string;
   persistent: boolean;
   status: SandboxSessionStatus;
+  currentSessionId?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  statusUpdatedAt?: number;
   image?: string;
   timeout?: number;
   tags?: Record<string, string>;
@@ -57,6 +64,8 @@ export interface VercelStopResult {
   snapshot?: {
     id: string;
     status: SandboxSnapshotStatus;
+    sourceSessionId?: string;
+    createdAt?: number;
     [key: string]: unknown;
   };
   [key: string]: unknown;
@@ -81,6 +90,10 @@ export interface VercelSandboxHandle {
   readonly routes?: readonly SandboxRoute[];
   readonly keepLastSnapshots?: { count: number; expiration?: number; deleteEvicted?: boolean };
   readonly currentSnapshotId?: string;
+  /** Snapshot used to create the current session, when the session was resumed from one. */
+  readonly sourceSnapshotId?: string;
+  /** SDK 3 exposes the current session ID through this method, not `Sandbox.id`. */
+  readonly currentSession?: () => { readonly sessionId?: string };
   readonly activeCpuUsageMs?: number;
   readonly networkTransfer?: { ingress: number; egress: number };
   readonly totalActiveCpuDurationMs?: number;

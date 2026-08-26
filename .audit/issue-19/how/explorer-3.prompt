@@ -1,0 +1,13 @@
+# How explorer
+
+Read `/Users/gannonhall/dotfiles/codex/.codex/plugins/cache/open-pstack/pstack/1.2.0/skills/how/references/explorer-prompt.md` and follow it in full.
+
+## Question
+
+How does the current Vercel lifecycle provision, attach, stop, resume, and clean up a named sandbox, including preparation evidence, runtime sync, display startup, and app relay restoration? We need to implement issue #19, whose spec is the GitHub issue at https://github.com/gannonh/devbox/issues/19.
+
+## Your exploration angle
+
+Trace the public CLI and provider abstraction across local and Vercel. Read `src/cli.ts`, `src/providers/types.ts`, provider registry/index files, `src/providers/local/*`, and the CLI/provider routing and local command tests. Identify how actions are parsed, which action names and flags are legal, how help and errors are rendered, how local stop and attach work, and how list rows are represented. Determine the cleanest typed shape for adding an explicit pause action while preserving stop semantics.
+
+Return the required Components Found, Flow, Files Read, Boundaries, Non-Obvious Things, and Open Questions sections from the template. Use repository-relative paths and line numbers.

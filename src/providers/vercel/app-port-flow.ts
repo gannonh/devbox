@@ -95,6 +95,8 @@ export interface AppPortFlowOptions {
   signal?: AbortSignal;
   prompt?: AppPortPrompt;
   mode?: AppPortFlowMode;
+  /** Rebind the last committed route selection after stable checkout evidence. */
+  restoreRecorded?: boolean;
 }
 
 export interface AppPortFlowResult {
@@ -123,7 +125,6 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
   // detected port that happens to be valid.
   const devcontainer = await resolveDevcontainerPorts(options.repoRoot);
   const configured = appPortsOf(devcontainer.ports);
-  const recorded = recordedSelection(options, metadata);
   const previousSelection = metadata?.appPorts;
 
   const scan = await scanRemoteAppPorts({
@@ -149,6 +150,37 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
   // scan is enrichment, not a gate on the host's .devcontainer ports.
   const revision = scan.revision;
   const { candidates, conflicting, fingerprint } = scan.detection;
+  const recorded = recordedSelection(options, metadata);
+
+  // A snapshot retains the checkout and the dependency tree, but its route
+  // processes do not survive the stop. Rebinding the committed choice is safe
+  // only when the detector, checkout revision, and package fingerprint still
+  // agree. Otherwise the normal decision flow must get a chance to rescan and
+  // prompt, because the recorded app may have moved or disappeared.
+  const recordedMatchesCheckout = previousSelection !== undefined
+    && previousSelection.detectorVersion === APP_PORT_DETECTOR_VERSION
+    && revision !== undefined
+    && previousSelection.revision === revision
+    && previousSelection.fingerprint === fingerprint;
+  if (options.restoreRecorded && previousSelection !== undefined && recordedMatchesCheckout) {
+    const logical = appPortsOf(buildDesiredPortSet(configured, previousSelection.selected));
+    const recordedLabels = Object.fromEntries(
+      previousSelection.relays.map((mapping) => [mapping.logicalPort, mapping.label]),
+    );
+    return publishRelayRoutes(options, {
+      metadata,
+      // The snapshot has no live relay processes, so deliberately bypass the
+      // same-Sandbox reusable selection and provision fresh relays from the
+      // retained logical choice.
+      recorded: undefined,
+      logical,
+      labels: { ...recordedLabels, ...devcontainer.labels },
+      selected: [...previousSelection.selected],
+      fingerprint,
+      revision,
+    });
+  }
+
   const reusable = previousSelection !== undefined
     && previousSelection.detectorVersion === APP_PORT_DETECTOR_VERSION
     && previousSelection.fingerprint === fingerprint

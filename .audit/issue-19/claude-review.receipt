@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "parent": "codex",
+  "provider": "claude",
+  "model": "claude-cli-default",
+  "mode": "read-only-diff-review",
+  "cwd": "/Users/gannonhall/.katacode/worktrees/devbox/katacode-d8c0462c",
+  "status": "unavailable-auth",
+  "startedAt": "2026-08-26T20:49:39Z",
+  "completedAt": "2026-08-26T20:49:39Z",
+  "argv": [
+    "claude",
+    "--bare",
+    "--safe-mode",
+    "--no-session-persistence",
+    "--tools",
+    "",
+    "--output-format",
+    "text",
+    "-p",
+    "independent read-only unified-diff review"
+  ],
+  "exitCode": 1,
+  "error": {
+    "message": "Not logged in · Please run /login",
+    "evidence": "stderr/stdout from claude CLI"
+  }
+}

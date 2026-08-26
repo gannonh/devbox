@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "parent": "codex",
+  "provider": "grok",
+  "model": "grok-4.6",
+  "effort": "xhigh",
+  "mode": "read-only",
+  "cwd": "/Users/gannonhall/.katacode/worktrees/devbox/katacode-d8c0462c",
+  "promptPath": "/Users/gannonhall/.katacode/worktrees/devbox/katacode-d8c0462c/.audit/issue-19/how/explorer-4.prompt",
+  "outputPath": "/Users/gannonhall/.katacode/worktrees/devbox/katacode-d8c0462c/.audit/issue-19/how/explorer-4.out",
+  "status": "unavailable-cli",
+  "startedAt": "2026-08-26T19:30:43.838Z",
+  "completedAt": "2026-08-26T19:30:44.054Z",
+  "elapsedMs": 216,
+  "executable": null,
+  "preflight": {
+    "argv": [
+      "grok",
+      "models"
+    ],
+    "status": "not-run",
+    "evidence": ""
+  },
+  "argv": [
+    "grok",
+    "--prompt-file",
+    "/Users/gannonhall/.katacode/worktrees/devbox/katacode-d8c0462c/.audit/issue-19/how/explorer-4.prompt",
+    "--model",
+    "grok-4.6",
+    "--reasoning-effort",
+    "xhigh",
+    "--permission-mode",
+    "plan",
+    "--sandbox",
+    "read-only",
+    "--tools",
+    "read_file,grep,list_dir,run_terminal_cmd",
+    "--disallowed-tools",
+    "Agent,search_tool,use_tool",
+    "--output-format",
+    "streaming-messages-json",
+    "--cwd",
+    "/Users/gannonhall/.katacode/worktrees/devbox/katacode-d8c0462c",
+    "--no-subagents",
+    "--disable-web-search",
+    "--verbatim"
+  ],
+  "exitCode": null,
+  "signal": null,
+  "reportedModel": null,
+  "modelVerified": false,
+  "modelEvidence": null,
+  "sessionId": null,
+  "usage": null,
+  "costUsd": null,
+  "error": {
+    "message": "grok executable not found",
+    "evidence": ""
+  }
+}

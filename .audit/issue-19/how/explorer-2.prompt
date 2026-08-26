@@ -1,0 +1,13 @@
+# How explorer
+
+Read `/Users/gannonhall/dotfiles/codex/.codex/plugins/cache/open-pstack/pstack/1.2.0/skills/how/references/explorer-prompt.md` and follow it in full.
+
+## Question
+
+How does the current Vercel lifecycle provision, attach, stop, resume, and clean up a named sandbox, including preparation evidence, runtime sync, display startup, and app relay restoration? We need to implement issue #19, whose spec is the GitHub issue at https://github.com/gannonh/devbox/issues/19.
+
+## Your exploration angle
+
+Trace persistent metadata and provider resource state. Read `src/providers/vercel/metadata-schema.ts`, `metadata.ts`, `metadata-store.ts`, `lifecycle.ts`, `cleanup.ts`, `client.ts`, `identity.ts`, `recovery.ts`, and the corresponding tests. Map branch metadata, scope metadata, snapshot IDs, current snapshot identity, session statuses, and list output. Explain what information survives stop and what cleanup deletes. Call out the SDK/mock contract for snapshots and the exact places where list state can be derived.
+
+Return the required Components Found, Flow, Files Read, Boundaries, Non-Obvious Things, and Open Questions sections from the template. Use repository-relative paths and line numbers.

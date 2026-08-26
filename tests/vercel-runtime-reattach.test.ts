@@ -115,7 +115,7 @@ function prepareOptions(
 }
 
 function markerOf(harness: ReattachHarness): Record<string, unknown> | undefined {
-  const upload = harness.uploads.flat().find((file) => file.path === VERCEL_RUNTIME_PREPARATION_PATH);
+  const upload = harness.uploads.flat().reverse().find((file) => file.path === VERCEL_RUNTIME_PREPARATION_PATH);
   return upload === undefined ? undefined : JSON.parse(upload.content.toString('utf8'));
 }
 
@@ -155,10 +155,13 @@ describe('Vercel cheap re-attach', () => {
     expect(boot.reused).toBe(false);
     const marker = markerOf(harness);
     expect(marker).toEqual({
-      sandboxId: 'runtime-sync',
-      revision: HEAD,
-      githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
-      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
+      kind: 'running-session',
+      sandboxName: 'runtime-sync',
+      sessionInstanceId: 'runtime-sync',
+      sourceRevision: HEAD,
+      imageDigest: '',
+      githubTokenSha256: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
+      envSha256: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
     });
 
     const commandCount = harness.commands.length;
@@ -199,6 +202,62 @@ describe('Vercel cheap re-attach', () => {
       .toContain('bash');
   });
 
+  it('resumes from a retained snapshot without launching clone, dependencies, or setup', async () => {
+    const harness = reattachClient();
+    const original = {
+      ...sandbox(),
+      currentSession: () => ({ sessionId: 'runtime-sync' }),
+    } as VercelSandboxHandle;
+    await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: original,
+    }));
+    const commandCount = harness.commands.length;
+    const uploadCount = harness.uploads.length;
+    const resumed = {
+      ...sandbox(),
+      sourceSnapshotId: 'snapshot-1',
+      currentSession: () => ({ sessionId: 'resumed-session' }),
+    } as VercelSandboxHandle;
+
+    const result = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: resumed,
+      mode: 'attach',
+      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
+    }));
+
+    expect(result).toMatchObject({
+      reused: true,
+      evidence: 'snapshot',
+      snapshotResumed: true,
+    });
+    const resumedCommands = harness.commands.slice(commandCount);
+    expect(resumedCommands.some((command) => command.cmd === 'bash')).toBe(false);
+    expect(resumedCommands.some((command) => (command.args ?? []).join(' ').includes('setup.sh'))).toBe(false);
+    expect(harness.uploads.slice(uploadCount).flat().map((file) => file.path))
+      .toContain(VERCEL_RUNTIME_PREPARATION_PATH);
+    expect(markerOf(harness)).toMatchObject({
+      kind: 'running-session',
+      sessionInstanceId: 'resumed-session',
+    });
+
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
+    const later = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: resumed,
+      mode: 'attach',
+      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
+    }));
+    expect(later).toMatchObject({
+      reused: true,
+      evidence: 'running-session',
+      snapshotResumed: false,
+    });
+  });
+
   it('hashes newline-bearing environments injectively', async () => {
     const multiline = reattachClient();
     await prepareSandboxRuntime(prepareOptions({
@@ -211,8 +270,8 @@ describe('Vercel cheap re-attach', () => {
       runtimeEnvironment: { A: 'x', B: 'y' },
     }));
 
-    expect(markerOf(multiline)!.environmentHash)
-      .not.toBe(markerOf(twoEntries)!.environmentHash);
+    expect(markerOf(multiline)!.envSha256)
+      .not.toBe(markerOf(twoEntries)!.envSha256);
   });
 
   it('takes the full path when no evidence exists', async () => {
@@ -231,8 +290,8 @@ describe('Vercel cheap re-attach', () => {
 
   it('takes the full path when the box is not the prepared instance or HEAD moved', async () => {
     for (const mutated of [
-      { sandboxId: 'another-box' },
-      { revision: 'c'.repeat(40) },
+      { sandboxName: 'another-box' },
+      { sourceRevision: 'c'.repeat(40) },
     ]) {
       const harness = reattachClient();
       await prepareSandboxRuntime(prepareOptions({ client: harness.client }));
@@ -281,7 +340,7 @@ describe('Vercel cheap re-attach', () => {
       envPath,
       mode: 'attach',
     }));
-    expect(envRotated.reused).toBe(false);
+    expect(envRotated.reused).toBe(true);
     expect(envHarness.uploads.flat().filter((file) => file.path === '/vercel/.devbox/runtime/environment.json').length)
       .toBe(2);
   });

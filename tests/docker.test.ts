@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { idLabel, containerFor, containerForAll, novncUrlFor, containerName } from '../src/providers/local/docker.js';
+import {
+  idLabel,
+  containerFor,
+  containerForAll,
+  containerName,
+  containerState,
+  novncUrlFor,
+} from '../src/providers/local/docker.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 
 function mockShell(impl: Partial<ShellRunner>): ShellRunner {
@@ -19,14 +26,21 @@ describe('idLabel', () => {
 
 describe('containerFor', () => {
   it('queries running containers by branch label', async () => {
-    const execQuiet = vi.fn().mockResolvedValue({ stdout: 'abc123\n', code: 0 });
+    const execQuiet = vi.fn().mockResolvedValue({ stdout: 'abc123\trunning\n', code: 0 });
     const runner = mockShell({ execQuiet });
 
     const cid = await containerFor(runner, 'my-feature');
     expect(cid).toBe('abc123');
     expect(execQuiet).toHaveBeenCalledWith(
       'docker',
-      ['ps', '-q', '--filter', 'label=devbox.branch=my-feature'],
+      [
+        'ps',
+        '-a',
+        '--filter',
+        'label=devbox.branch=my-feature',
+        '--format',
+        '{{.ID}}\t{{.State}}',
+      ],
       {},
     );
   });
@@ -36,20 +50,49 @@ describe('containerFor', () => {
     const runner = mockShell({ execQuiet });
     expect(await containerFor(runner, 'nope')).toBe('');
   });
+
+  it('does not treat a paused container as running', async () => {
+    const execQuiet = vi.fn().mockResolvedValue({ stdout: 'abc123\tpaused\n', code: 0 });
+    const runner = mockShell({ execQuiet });
+
+    expect(await containerFor(runner, 'my-feature')).toBe('');
+  });
 });
 
 describe('containerForAll', () => {
   it('queries all containers (including stopped) by branch label', async () => {
-    const execQuiet = vi.fn().mockResolvedValue({ stdout: 'def456\n', code: 0 });
+    const execQuiet = vi.fn().mockResolvedValue({ stdout: 'def456\texited\n', code: 0 });
     const runner = mockShell({ execQuiet });
 
     const cid = await containerForAll(runner, 'my-feature');
     expect(cid).toBe('def456');
     expect(execQuiet).toHaveBeenCalledWith(
       'docker',
-      ['ps', '-aq', '--filter', 'label=devbox.branch=my-feature'],
+      [
+        'ps',
+        '-a',
+        '--filter',
+        'label=devbox.branch=my-feature',
+        '--format',
+        '{{.ID}}\t{{.State}}',
+      ],
       {},
     );
+  });
+});
+
+describe('containerState', () => {
+  it.each([
+    ['abc123\trunning\n', { kind: 'running', id: 'abc123' }],
+    ['abc123\tpaused\n', { kind: 'paused', id: 'abc123' }],
+    ['abc123\texited\n', { kind: 'stopped', id: 'abc123' }],
+    ['', { kind: 'missing' }],
+  ])('parses %j into a local state', async (stdout, expected) => {
+    const runner = mockShell({
+      execQuiet: vi.fn().mockResolvedValue({ stdout, code: 0 }),
+    });
+
+    await expect(containerState(runner, 'my-feature')).resolves.toEqual(expected);
   });
 });
 

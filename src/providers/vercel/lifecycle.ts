@@ -12,6 +12,8 @@ import {
   buildVercelSandboxCreateRequest,
   isVercelNotFound,
   type SandboxSessionRecord,
+  type SandboxListRecord,
+  type SandboxSnapshotRecord,
   type VercelCommandResult,
   type VercelSandboxClient,
   type VercelSandboxHandle,
@@ -27,7 +29,9 @@ import {
   type VercelBranchMetadataStore,
   type VercelCreateConfiguration,
   type VercelMetadataIdentity,
+  type VercelPausedSnapshot,
 } from './metadata.js';
+import { patchBranchMetadata } from './metadata.js';
 import {
   normalizeRequestedSourceBranch,
   renderRemoteSourceNotice,
@@ -169,6 +173,8 @@ export interface VercelLifecycleOptions {
   client?: VercelSandboxClient;
   timeoutMs?: number;
   vcpus?: number;
+  /** Mutable branch policy. Zero disables automatic idle pause. */
+  idlePauseMinutes?: number;
   onNotice?: (notice: string) => void | Promise<void>;
   cleanup?: Pick<VercelCleanupOptions, 'timeoutMs' | 'maxAttempts' | 'backoffMs' | 'sleep'>;
 }
@@ -185,6 +191,8 @@ export interface VercelStopReport {
   snapshot?: {
     id: string;
     status: string;
+    sourceSessionId?: string;
+    createdAt?: number;
   };
   activeCpuUsageMs?: number;
   networkTransfer?: { ingress: number; egress: number };
@@ -204,6 +212,7 @@ export interface VercelLifecycle {
   routes(): Promise<readonly { url: string; subdomain: string; port: number }[]>;
   url(port: number): Promise<string>;
   stop(): Promise<VercelStopReport>;
+  pause(): Promise<VercelStopReport>;
   remove(): Promise<VercelCleanupResult>;
 }
 
@@ -235,7 +244,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
     return portsPromise;
   };
 
-  return {
+  const lifecycle: VercelLifecycle = {
     up: async () => {
       const context = await getContext();
       const ports = await getPorts();
@@ -272,14 +281,15 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             ...createRequest,
           });
           validateSandboxIdentity(sandbox, context, effectiveIdentity);
-          await writeBranchMetadata(context, {
+          await writeBranchMetadata(context, patchBranchMetadata(existing, {
             identity: effectiveIdentity,
             sandboxId: sandboxIdentifier(sandbox),
             ...(existing?.snapshotIds === undefined ? {} : { snapshotIds: existing.snapshotIds }),
             ...(existing?.residual === undefined ? {} : { residual: existing.residual }),
             ...preserveDisplayCredentials(existing),
             configuration: existing?.configuration ?? configuration,
-          });
+            ...(options.idlePauseMinutes === undefined ? {} : { idlePauseMinutes: options.idlePauseMinutes }),
+          }));
         } catch (error) {
           if (createdSandbox === undefined) throw error;
           return handleCreatedSandboxFailure(
@@ -318,6 +328,11 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         }
         const sandbox = await getExistingSandbox(context, context.credentials, identity.name, true);
         validateSandboxIdentity(sandbox, context, identity);
+        if (options.idlePauseMinutes !== undefined && metadata?.idlePauseMinutes !== options.idlePauseMinutes) {
+          await writeBranchMetadata(context, patchBranchMetadata(metadata, {
+            idlePauseMinutes: options.idlePauseMinutes,
+          }));
+        }
         return sandbox;
       });
     },
@@ -328,11 +343,11 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           credentials: context.credentials,
           tags: { provider: 'vercel', repository: context.repositoryTag },
         });
-        return records.filter((record) => isValidGlobalListIdentityTags(
+        return annotateListRecords(context, records.filter((record) => isValidGlobalListIdentityTags(
           record.tags,
           'vercel',
           context.repositoryTag,
-        ));
+        )));
       }
       const metadataStore = requireMetadataStore(context);
       return metadataStore.withLock(async () => {
@@ -346,11 +361,11 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             repository: identity.tags.repository,
           },
         });
-        return records.filter((record) => isValidGlobalListIdentityTags(
+        return annotateListRecords(context, records.filter((record) => isValidGlobalListIdentityTags(
           record.tags,
           identity.tags.provider,
           identity.tags.repository,
-        ));
+        )));
       });
     },
     routes: async () => {
@@ -378,17 +393,38 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         const effectiveConfiguration = metadata?.configuration ?? configuration;
         const sandbox = await getExistingSandbox(context, context.credentials, identity.name, false);
         validateSandboxIdentity(sandbox, context, identity);
-        await stopRelaysBeforeStop(context, sandbox);
         let sessions = await context.client.listSessions(sandbox);
         let finalStop: VercelStopResult | undefined;
         if (!allTerminal(sessions) || STOPPABLE_SESSION_STATES.has(sandbox.status)) {
+          // Do not run a cleanup command against an already-stopped Sandbox:
+          // the SDK may transparently resume it just to execute that command.
+          // Only touch relay processes on the path that actually stops a live
+          // session.
+          await stopRelaysBeforeStop(context, sandbox);
           finalStop = await context.client.stopSandbox(sandbox);
           sessions = await context.client.listSessions(sandbox);
         }
         if (!allTerminal(sessions)) {
           throw new VercelLifecycleError('stop_incomplete', 'Vercel Sandbox still has a non-terminal session');
         }
-        const snapshot = finalStop?.snapshot;
+        const snapshot = finalStop?.snapshot
+          ?? (sandbox.currentSnapshotId === undefined ? undefined : {
+            id: sandbox.currentSnapshotId,
+            status: 'created' as const,
+            ...(metadata?.pausedSnapshot?.sourceSessionId === undefined
+              ? { sourceSessionId: sandboxIdentifier(sandbox) }
+              : { sourceSessionId: metadata.pausedSnapshot.sourceSessionId }),
+            ...(metadata?.pausedSnapshot?.createdAt === undefined
+              ? {}
+              : { createdAt: metadata.pausedSnapshot.createdAt }),
+          });
+        const pausedSnapshot: VercelPausedSnapshot | undefined = snapshot === undefined
+          ? withoutIdlePauseMarker(metadata?.pausedSnapshot)
+          : {
+            id: snapshot.id,
+            sourceSessionId: snapshot.sourceSessionId ?? sandboxIdentifier(sandbox),
+            ...(snapshot.createdAt === undefined ? {} : { createdAt: snapshot.createdAt }),
+          };
         const knownSnapshotIds = [
           ...new Set([
             ...(metadata?.snapshotIds ?? []),
@@ -396,14 +432,15 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             ...(snapshot === undefined ? [] : [snapshot.id]),
           ]),
         ];
-        await writeBranchMetadata(context, {
+        await writeBranchMetadata(context, patchBranchMetadata(metadata, {
           identity,
           sandboxId: sandboxIdentifier(sandbox),
           ...(knownSnapshotIds.length === 0 ? {} : { snapshotIds: knownSnapshotIds }),
           ...(metadata?.residual === undefined ? {} : { residual: metadata.residual }),
           ...preserveDisplayCredentials(metadata),
           configuration: effectiveConfiguration,
-        });
+          ...(pausedSnapshot === undefined ? {} : { pausedSnapshot }),
+        }));
         const finalSession = selectNewestSession(sessions);
         const activeCpuUsageMs = finalStop?.activeCpuDurationMs
           ?? finalSession?.activeCpuDurationMs
@@ -415,12 +452,20 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           name: sandbox.name,
           sessions,
           ...(finalSession === undefined ? {} : { finalSession }),
-          ...(snapshot === undefined ? {} : { snapshot: { id: snapshot.id, status: snapshot.status } }),
+          ...(snapshot === undefined ? {} : {
+            snapshot: {
+              id: snapshot.id,
+              status: snapshot.status,
+              ...(snapshot.sourceSessionId === undefined ? {} : { sourceSessionId: snapshot.sourceSessionId }),
+              ...(snapshot.createdAt === undefined ? {} : { createdAt: snapshot.createdAt }),
+            },
+          }),
           ...(activeCpuUsageMs === undefined ? {} : { activeCpuUsageMs }),
           ...(networkTransfer === undefined ? {} : { networkTransfer }),
         };
       });
     },
+    pause: async () => lifecycle.stop(),
     remove: async () => {
       const context = await getContext();
       if (options.recovery) {
@@ -441,6 +486,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             ...new Set([
               ...(metadata?.snapshotIds ?? []),
               ...(metadata?.residual?.snapshotIds ?? []),
+              ...(metadata?.pausedSnapshot === undefined ? [] : [metadata.pausedSnapshot.id]),
             ]),
           ],
           adapter,
@@ -454,7 +500,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
           error,
           lifecycleSecrets(context, metadata),
         ));
-        await writeBranchMetadata(context, {
+        await writeBranchMetadata(context, patchBranchMetadata(metadata, {
           identity,
           sandboxId: metadata?.sandboxId ?? identity.name,
           ...(metadata?.snapshotIds === undefined ? {} : { snapshotIds: metadata.snapshotIds }),
@@ -465,7 +511,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             snapshotIds: result.residualSnapshotIds,
             reason: cleanupDetails.join('; ') || 'Vercel cleanup verification did not converge',
           },
-        });
+        }));
         throw new VercelCleanupError(
           result,
           cleanupDetails.join('; ') || 'Vercel cleanup verification did not converge',
@@ -473,6 +519,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
       });
     },
   };
+  return lifecycle;
 }
 
 async function removeRecoveredSandbox(
@@ -512,7 +559,7 @@ async function removeRecoveredSandbox(
     secrets = lifecycleSecrets(context, existingMetadata);
     cleanupDetails = result.errors.map((error) => redactLifecycleFailure(error, secrets));
     try {
-      await writeBranchMetadata(context, {
+      await writeBranchMetadata(context, patchBranchMetadata(existingMetadata, {
         identity: recovery.identity,
         sandboxId: recovery.identity.name,
         ...(result.snapshotIds.length === 0 ? {} : { snapshotIds: result.snapshotIds }),
@@ -525,7 +572,7 @@ async function removeRecoveredSandbox(
             ...(cleanupDetails.length === 0 ? [] : cleanupDetails),
           ].join('; '),
         },
-      });
+      }));
     } catch (error) {
       recoveryMetadataFailure = redactLifecycleFailure(error, secrets);
     }
@@ -556,6 +603,17 @@ function preserveDisplayCredentials(
   return metadata?.displayCredentials === undefined
     ? {}
     : { displayCredentials: metadata.displayCredentials };
+}
+
+function withoutIdlePauseMarker(
+  snapshot: VercelPausedSnapshot | undefined,
+): VercelPausedSnapshot | undefined {
+  if (snapshot === undefined) return undefined;
+  return {
+    id: snapshot.id,
+    sourceSessionId: snapshot.sourceSessionId,
+    ...(snapshot.createdAt === undefined ? {} : { createdAt: snapshot.createdAt }),
+  };
 }
 
 async function writeBranchMetadata(
@@ -623,6 +681,7 @@ async function compensateCreatedSandbox(
     ...new Set([
       ...(existing?.snapshotIds ?? []),
       ...(existing?.residual?.snapshotIds ?? []),
+      ...(existing?.pausedSnapshot === undefined ? [] : [existing.pausedSnapshot.id]),
       ...(createdSandbox.currentSnapshotId === undefined ? [] : [createdSandbox.currentSnapshotId]),
     ]),
   ];
@@ -658,7 +717,7 @@ async function compensateCreatedSandbox(
   let recoveryMetadataFailure: string | undefined;
   const cleanupDetails = result.errors.map((error) => redactLifecycleFailure(error, secrets));
   try {
-    await writeBranchMetadata(context, {
+    await writeBranchMetadata(context, patchBranchMetadata(existing, {
       identity,
       sandboxId: sandboxIdentifier(createdSandbox),
       ...(result.snapshotIds.length === 0 ? {} : { snapshotIds: result.snapshotIds }),
@@ -673,7 +732,7 @@ async function compensateCreatedSandbox(
           ...(cleanupDetails.length === 0 ? [] : cleanupDetails),
         ].join('; '),
       },
-    });
+    }));
   } catch (error) {
     recoveryMetadataFailure = redactLifecycleFailure(error, secrets);
   }
@@ -865,6 +924,45 @@ async function getExistingSandbox(
   }
 }
 
+async function annotateListRecords(
+  context: PreparedContext,
+  records: SandboxListRecord[],
+): Promise<ReadonlyArray<SandboxListRecord & {
+  snapshotCreatedAt?: number;
+  sessionStatus?: string;
+}>> {
+  const snapshots = new Map<string, SandboxSnapshotRecord>();
+  for (const name of new Set(records
+    .filter((record) => record.status === 'stopped' && record.currentSnapshotId !== undefined)
+    .map((record) => record.name))) {
+    try {
+      for (const snapshot of await context.client.listSnapshots({
+        credentials: context.credentials,
+        name,
+      })) snapshots.set(snapshot.id, snapshot);
+    } catch {
+      // Listing state remains useful when snapshot age is temporarily unavailable.
+    }
+  }
+  return records.map((record) => {
+    const paused = record.status === 'stopped' && record.currentSnapshotId !== undefined;
+    const snapshot = record.currentSnapshotId === undefined
+      ? undefined
+      : snapshots.get(record.currentSnapshotId);
+    const snapshotCreatedAt = snapshotTimestamp(snapshot?.createdAt);
+    return {
+      ...record,
+      ...(paused ? { sessionStatus: record.status, status: 'paused' } : {}),
+      ...(snapshotCreatedAt === undefined ? {} : { snapshotCreatedAt }),
+    } as SandboxListRecord & { snapshotCreatedAt?: number; sessionStatus?: string };
+  });
+}
+
+function snapshotTimestamp(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return undefined;
+  return value < 1_000_000_000_000 ? value * 1_000 : value;
+}
+
 function requireStoredIdentity(
   metadata: VercelBranchMetadata | null,
   context: PreparedContext,
@@ -1049,9 +1147,23 @@ function sameTags(actual: Record<string, string> | TagSet, expected: Readonly<Re
     actualKeys.every((key, index) => key === expectedKeys[index] && actualValues[key] === expectedValues[key]);
 }
 
+/**
+ * Return the current Sandbox session identity used by session-local state.
+ *
+ * The SDK does not expose `Sandbox.id`; it exposes the session ID through
+ * `currentSession()`. Test doubles and older adapters may still provide `id`,
+ * so those values remain supported before falling back to the sandbox name.
+ */
 export function sandboxIdentifier(sandbox: VercelSandboxHandle): string {
   const candidate = sandbox as VercelSandboxHandle & { id?: unknown };
-  return typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id : sandbox.name;
+  try {
+    const sessionId = candidate.currentSession?.()?.sessionId;
+    if (typeof sessionId === 'string' && sessionId.trim()) return sessionId;
+  } catch {
+    // A stopped or test-double handle may not have a current SDK session.
+  }
+  if (typeof candidate.id === 'string' && candidate.id.trim()) return candidate.id;
+  return sandbox.name;
 }
 
 function selectNewestSession(sessions: SandboxSessionRecord[]): SandboxSessionRecord | undefined {
