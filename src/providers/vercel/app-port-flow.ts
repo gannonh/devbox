@@ -68,6 +68,15 @@ export type AppPortFlowMode = 'boot' | 'resume';
  */
 export const APP_PORT_SCAN_TIMEOUT_MS = 60_000;
 
+/**
+ * Metadata stand-in when `git rev-parse HEAD` could not be read.
+ *
+ * Required because committed selections always carry a 40-hex revision. A later
+ * successful rev-parse will never equal this value, so a selection recorded
+ * while the checkout was unreadable is never silently reused as "same tree".
+ */
+export const UNRESOLVED_CHECKOUT_REVISION = '0'.repeat(40);
+
 export interface AppPortFlowOptions {
   sandbox: VercelSandboxHandle;
   client: VercelSandboxClient;
@@ -134,47 +143,23 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     );
   }
 
+  // A missing revision means inference was skipped (scan already warned and
+  // returned an empty candidate set). Configured forwardPorts and an explicit
+  // --expose-ports list are still trusted and must still be published: the
+  // scan is enrichment, not a gate on the host's .devcontainer ports.
   const revision = scan.revision;
-  const { candidates, conflicting } = scan.detection;
-  const fingerprint = revision === undefined
-    ? recorded?.fingerprint ?? scan.detection.fingerprint
-    : scan.detection.fingerprint;
-  if (revision === undefined) {
-    const selected = options.exposePorts === undefined
-      ? [...(recorded?.selected ?? [])]
-      : [...options.exposePorts];
-    const logical = appPortsOf(buildDesiredPortSet(configured, selected));
-    if (logical.length === 0) {
-      if (options.exposePorts !== undefined) {
-        options.stderr.write(
-          'app ports: --expose-ports was not applied because the remote checkout revision could not be read\n',
-        );
-      }
-      return unchanged(options, recorded);
-    }
-    options.stderr.write(
-      `app ports: remote checkout revision could not be read; using configured/explicit ports only (${formatPorts(logical)})\n`,
-    );
-    return publishRelayRoutes(options, {
-      metadata,
-      recorded,
-      logical,
-      labels: appPortLabels(logical, [], devcontainer.labels),
-      selected,
-      fingerprint,
-      revision: revision ?? recorded?.revision,
-    });
-  }
-
+  const { candidates, conflicting, fingerprint } = scan.detection;
   const reusable = previousSelection !== undefined
     && previousSelection.detectorVersion === APP_PORT_DETECTOR_VERSION
     && previousSelection.fingerprint === fingerprint
+    && revision !== undefined
     && previousSelection.revision === revision;
 
   const decision = decideAppPortSelection({
     branch: options.branch,
     ...(options.exposePorts === undefined ? {} : { exposePorts: options.exposePorts }),
     reusable,
+    inferenceAvailable: revision !== undefined,
     previousSelected: previousSelection?.selected ?? [],
     candidates,
     configured,
@@ -212,7 +197,10 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     labels,
     selected: appPortsOf(selected),
     fingerprint,
-    revision,
+    // Metadata requires a 40-hex revision; the all-zero sentinel marks an
+    // unresolved checkout so a later successful rev-parse never compares equal
+    // and silently reuses a selection bound to "we did not know".
+    revision: revision ?? UNRESOLVED_CHECKOUT_REVISION,
   });
 }
 
@@ -223,7 +211,7 @@ interface PublishRequest {
   labels: Record<number, string>;
   selected: number[];
   fingerprint: string;
-  revision?: string;
+  revision: string;
 }
 
 /**
@@ -558,21 +546,6 @@ function sameMappings(
   if (left.length !== right.length) return false;
   return left.every((mapping) => right.some((other) =>
     other.logicalPort === mapping.logicalPort && other.relayPort === mapping.relayPort));
-}
-
-function unchanged(
-  options: AppPortFlowOptions,
-  recorded: VercelAppPortSelection | undefined,
-): AppPortFlowResult {
-  const actual = buildDesiredPortSet(appPortsOf(routePorts(options.sandbox)), []);
-  const relays = (recorded?.relays ?? []).filter((mapping) => actual.includes(mapping.relayPort));
-  return {
-    selected: [...(recorded?.selected ?? [])],
-    applied: actual,
-    updated: false,
-    labels: Object.fromEntries(relays.map((mapping) => [mapping.logicalPort, mapping.label])),
-    relays: relays.map((mapping) => ({ ...mapping })),
-  };
 }
 
 function sameSelection(left: VercelAppPortSelection, right: VercelAppPortSelection): boolean {

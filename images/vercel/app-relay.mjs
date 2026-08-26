@@ -203,8 +203,10 @@ const server = http.createServer((request, response) => {
     headers: upstreamHeaders(request, authority),
   });
 
-  // The bound wait applies to reaching the app, not to how long the app then
-  // streams: a dev server's SSE channel must not be timed out mid-response.
+  // ClientRequest.setTimeout is a socket inactivity timer, not a connect-only
+  // deadline. Bound the wait until TCP connects, then clear it: a cold Vite or
+  // Next compile can take longer than this to emit headers, and a streaming
+  // response must not be killed mid-flight. Matches the WebSocket path below.
   upstream.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
     upstream.destroy(new Error('upstream connect timeout'));
   });

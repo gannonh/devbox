@@ -3,7 +3,7 @@ import { PassThrough } from 'node:stream';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyAppPorts } from '../src/providers/vercel/app-port-flow.js';
+import { applyAppPorts, UNRESOLVED_CHECKOUT_REVISION } from '../src/providers/vercel/app-port-flow.js';
 import { APP_PORT_DETECTOR_VERSION, detectAppPorts } from '../src/providers/vercel/app-ports.js';
 import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
 import type { VercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
@@ -730,24 +730,41 @@ describe('zero-config app port flow', () => {
     expect(metadata?.appPorts).toBeUndefined();
   });
 
-  it('still publishes configured ports when the checkout revision cannot be read', async () => {
-    const { updates, result, output, ...harness } = await run({
+  it('still publishes configured and --expose-ports without prompting when the checkout revision cannot be read', async () => {
+    const { updates, result, output, prompt, ...harness } = await run({
       client: { revision: 'not-a-sha' },
       forwardPorts: [4000],
-      tty: false,
+      exposePorts: [5173],
+      tty: true,
     });
 
+    // Inference is skipped; trusted host config and the explicit opt-in still
+    // get relays. The all-zero sentinel is what metadata records instead of a
+    // real SHA, so a later successful rev-parse will not silently reuse this.
+    expect(updates).toEqual([[
+      DEVBOX_NOVNC_PROXY_PORT,
+      relayPortFor(4000),
+      relayPortFor(5173),
+    ]]);
+    expect(result.selected).toEqual([5173]);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(output).not.toContain('--expose-ports was not applied');
+    const metadata = await harness.metadata();
+    expect(metadata?.appPorts?.revision).toBe(UNRESOLVED_CHECKOUT_REVISION);
+  });
+
+  it('does not prompt when an unresolved checkout has only configured ports', async () => {
+    const { updates, result, prompt, output } = await run({
+      client: { revision: 'not-a-sha' },
+      forwardPorts: [4000],
+      tty: true,
+      answers: [],
+    });
+
+    expect(prompt).not.toHaveBeenCalled();
     expect(updates).toEqual([[DEVBOX_NOVNC_PROXY_PORT, relayPortFor(4000)]]);
-    expect(result).toMatchObject({
-      selected: [],
-      applied: [DEVBOX_NOVNC_PROXY_PORT, relayPortFor(4000)],
-    });
+    expect(result.selected).toEqual([]);
     expect(output).toContain('remote checkout revision could not be resolved');
-    expect((await harness.metadata())?.appPorts).toMatchObject({
-      selected: [],
-      relays: [{ logicalPort: 4000, relayPort: relayPortFor(4000) }],
-      applied: [DEVBOX_NOVNC_PROXY_PORT, relayPortFor(4000)],
-    });
   });
 
   it('keeps secrets out of scan failure notices', async () => {

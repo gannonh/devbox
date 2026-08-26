@@ -15,6 +15,7 @@ describe('decideAppPortSelection', () => {
       branch: 'feature/ui',
       exposePorts: [3000],
       reusable: true,
+      inferenceAvailable: true,
       previousSelected: [5173],
       candidates: [vite],
       configured: [],
@@ -26,6 +27,7 @@ describe('decideAppPortSelection', () => {
     expect(decideAppPortSelection({
       branch: 'feature/ui',
       reusable: false,
+      inferenceAvailable: true,
       previousSelected: [],
       candidates: [vite],
       configured: [],
@@ -37,6 +39,7 @@ describe('decideAppPortSelection', () => {
     const decision = decideAppPortSelection({
       branch: 'feature/ui',
       reusable: false,
+      inferenceAvailable: true,
       previousSelected: [],
       candidates: [vite],
       configured: [],
@@ -46,5 +49,17 @@ describe('decideAppPortSelection', () => {
     if (decision.kind !== 'non-interactive') return;
     expect(decision.selected).toEqual([]);
     expect(decision.notice).toContain('--expose-ports');
+  });
+
+  it('does not prompt when remote inference is unavailable', () => {
+    expect(decideAppPortSelection({
+      branch: 'feature/ui',
+      reusable: false,
+      inferenceAvailable: false,
+      previousSelected: [5173],
+      candidates: [],
+      configured: [4000],
+      tty: true,
+    })).toEqual({ kind: 'selected', selected: [5173] });
   });
 });

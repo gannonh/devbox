@@ -115,8 +115,10 @@ describe('Vercel image assets', () => {
     expect(relay).toContain("headers['x-forwarded-proto'] = 'https'");
     expect(relay).not.toMatch(/delete .*\.origin\b/);
     expect(relay).not.toContain('DEVBOX_NOVNC_PASSWORD');
-    // A pre-listen route must answer, not hang, and must not loop.
+    // A pre-listen route must answer, not hang, and must not loop. The timeout
+    // clears on TCP connect so a cold compile is not mistaken for a hang.
     expect(relay).toContain('UPSTREAM_CONNECT_TIMEOUT_MS');
+    expect(relay).toContain("socket.once('connect'");
     expect(relay).toContain('502');
     expect(relay).toContain("server.on('upgrade',");
 
