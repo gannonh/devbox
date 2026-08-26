@@ -1,9 +1,8 @@
 name: Vercel provider UAT
 
-# This is the credentialed, owner-triggered end-to-end gate. The UAT fixture
-# runner is checked into the repository and uploaded into the disposable
-# Sandbox, so every run exercises the same reviewed Vite/Electron/OAuth/push
-# contract without per-run commands or environment secrets.
+# This is the credentialed, owner-triggered end-to-end gate. The UAT runners
+# are checked into the repository, so every run exercises the same reviewed
+# provider and relay-backed public-app contract without per-run commands.
 on:
   workflow_call:
     inputs:
@@ -157,6 +156,34 @@ jobs:
           SMOKE_REPORT: ${{ env.ARTIFACT_DIR }}/provider-uat.json
           DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
         run: node scripts/vercel/provider-smoke.mjs
+
+      # This path uses the exact pinned public fixture for issue #17. The
+      # runner creates only the display route first, then proves that the
+      # logical Vite port is served through a relay, including browser HMR,
+      # attach, compensation, the live route limit, and cleanup.
+      - name: Prepare pinned app-route UAT source
+        env:
+          GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+        run: |
+          set -euo pipefail
+          source_root="${RUNNER_TEMP}/devbox-uat-source"
+          gh repo clone gannonh/uat-devbox "${source_root}" -- --branch main --single-branch
+          git -C "${source_root}" checkout --detach 180442037b52775618b2d56cdf7f218514aa9b00
+          test "$(git -C "${source_root}" rev-parse HEAD)" = 180442037b52775618b2d56cdf7f218514aa9b00
+          echo "DEVBOX_UAT_REPO_ROOT=${source_root}" >> "${GITHUB_ENV}"
+
+      - name: Run relay-backed public app-route UAT
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_UAT_REPO_KEY: gannonh/uat-devbox
+          DEVBOX_UAT_MONOREPO_BRANCH: main
+          DEVBOX_UAT_ONLY: monorepo
+          DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/app-port-uat.json
+          DEVBOX_VERCEL_IMAGE: ${{ inputs.image_reference }}
+        run: node scripts/vercel/app-port-uat.mjs
 
       # This independent image path proves all four agents, Chromium, the
       # access-code pairing HTTP/WebSocket boundary, and the 6080-only public

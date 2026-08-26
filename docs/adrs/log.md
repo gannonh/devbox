@@ -32,3 +32,7 @@
 ## 2026-08-20
 
 * **Coding-agent version manifest**: Accepted the single-source-of-truth agent manifest with Dockerfile derivation, provenance agreement, exact in-image and smoke version gates, and reviewable-PR promotion for issue [#12](https://github.com/gannonh/devbox/issues/12).
+
+## 2026-08-26
+
+* **Relay-backed public app routes**: Accepted publishing a fixed-target HTTP/WebSocket relay per confirmed app port instead of the app's own listener, 6080-only Sandbox creation, kernel-allocated and collision-checked listener ports, the Host/forwarding header contract with `Origin` preserved, and the listeners-ready → route-update → commit → stop-obsolete transaction for issue [#17](https://github.com/gannonh/devbox/issues/17). This retires ADR 0005's instruction to add `--host` and `server.allowedHosts`.

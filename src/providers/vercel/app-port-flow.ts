@@ -3,13 +3,18 @@
  *
  * Runs after the remote checkout is ready and before readiness is rendered:
  * reconcile any pending route update, scan the remote checkout for app-port
- * candidates, decide which of them to expose, and apply the full desired port
- * set to the running Sandbox without recreating it.
+ * candidates, decide which of them to expose, and publish each accepted
+ * logical port through a sandbox-local relay rather than the app's own
+ * listener. A Vercel route needs an externally reachable listener and an
+ * ordinary dev command binds loopback and checks the Host it is handed, so
+ * relaying is what lets the project's normal dev command work unedited.
  *
- * Everything happens under the branch metadata lock. A route update is written
- * as a pending `{ previous, desired }` record first and committed after, so a
- * crash between the two leaves a route set that the next attach can reconcile
- * against the Sandbox's actual routes rather than an untracked public port.
+ * Everything happens under the branch metadata lock, in one order: desired
+ * relay listeners ready, then the route update, then the metadata commit, then
+ * the obsolete relays are stopped. A crash anywhere in that sequence leaves a
+ * pending `{ previous, desired }` record the next attach reconciles against
+ * the Sandbox's actual routes and its PID-verified relay processes, rather
+ * than an untracked public port or a route that points at nothing.
  */
 import type { Writable } from 'node:stream';
 import {
@@ -19,6 +24,14 @@ import {
 import { decideAppPortSelection } from './app-port-decision.js';
 import { scanRemoteAppPorts } from './app-port-scan.js';
 import { promptForAppPorts } from './app-port-prompt.js';
+import {
+  DEFAULT_APP_PORT_LABEL,
+  provisionRelays,
+  stopRelays,
+  verifyRelayMappings,
+  type RelayManagerOptions,
+  type VercelRelayMapping,
+} from './app-relay.js';
 import {
   appPortsOf,
   buildDesiredPortSet,
@@ -31,7 +44,9 @@ import {
   type VercelBranchMetadata,
   type VercelBranchMetadataStore,
   type VercelPendingAppPorts,
+  type VercelRelayState,
 } from './metadata.js';
+import { sandboxIdentifier } from './lifecycle.js';
 import type { VercelSandboxClient, VercelSandboxHandle } from './client.js';
 import type { ProviderInput } from '../types.js';
 import { redactSecrets } from './redaction.js';
@@ -74,14 +89,16 @@ export interface AppPortFlowOptions {
 }
 
 export interface AppPortFlowResult {
-  /** Inferred/opted-in app ports now exposed. */
+  /** Inferred/opted-in app ports now exposed, as logical ports. */
   selected: number[];
-  /** Full port set believed to be on the Sandbox. */
+  /** Full port set believed to be on the Sandbox: relay ports plus noVNC. */
   applied: number[];
   /** True when this run changed the Sandbox's route set. */
   updated: boolean;
-  /** Framework labels for the selected ports, for route rendering. */
+  /** Framework labels keyed by logical port, for route rendering. */
   labels: Record<number, string>;
+  /** Published `relayPort -> logicalPort` mappings, for route rendering. */
+  relays: VercelRelayMapping[];
 }
 
 export async function applyAppPorts(options: AppPortFlowOptions): Promise<AppPortFlowResult> {
@@ -95,8 +112,9 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
   // The explicit host configuration is validated before any candidate can be
   // considered, so a broken forwardPorts list can never be masked by a
   // detected port that happens to be valid.
-  const configured = appPortsOf((await resolveDevcontainerPorts(options.repoRoot)).ports);
-  const actual = appPortsOf((options.sandbox.routes ?? []).map((route) => route.port));
+  const devcontainer = await resolveDevcontainerPorts(options.repoRoot);
+  const configured = appPortsOf(devcontainer.ports);
+  const recorded = recordedSelection(options, metadata);
   const previousSelection = metadata?.appPorts;
 
   const scan = await scanRemoteAppPorts({
@@ -123,7 +141,7 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
         'app ports: --expose-ports was not applied because the remote checkout revision could not be read\n',
       );
     }
-    return unchanged(previousSelection, actual, scan.detection.candidates);
+    return unchanged(options, recorded);
   }
 
   const { candidates, conflicting, fingerprint } = scan.detection;
@@ -161,27 +179,97 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
     if (decision.notice !== undefined) options.stderr.write(`${decision.notice}\n`);
   }
 
-  const desired = buildDesiredPortSet(configured, selected);
-  const labels = frameworkLabels(candidates, selected);
-  const previous = buildDesiredPortSet(actual, []);
-  if (samePortSet(desired, previous)) {
-    await commitSelection(options, metadata, selected, desired, fingerprint, revision, previousSelection);
-    return { selected, applied: desired, updated: false, labels };
+  // One logical app port still costs exactly one exposed slot, so the verified
+  // 14-route ceiling is enforced here, on the ports the user chose, before any
+  // relay is started for them.
+  const logical = appPortsOf(buildDesiredPortSet(configured, selected));
+  const labels = appPortLabels(logical, candidates, devcontainer.labels);
+  return publishRelayRoutes(options, {
+    metadata,
+    recorded,
+    logical,
+    labels,
+    selected: appPortsOf(selected),
+    fingerprint,
+    revision,
+  });
+}
+
+interface PublishRequest {
+  metadata: VercelBranchMetadata | null;
+  recorded: VercelAppPortSelection | undefined;
+  logical: number[];
+  labels: Record<number, string>;
+  selected: number[];
+  fingerprint: string;
+  revision: string;
+}
+
+/**
+ * Start the desired relays, publish them, and commit -- in that order.
+ *
+ * Nothing reaches the route API until every listener it will name is bound and
+ * held, and nothing is committed until the route API has accepted the set. The
+ * relays a changed selection orphans are stopped last, because a stopped relay
+ * that is still published is the one failure this order cannot undo.
+ */
+async function publishRelayRoutes(
+  options: AppPortFlowOptions,
+  request: PublishRequest,
+): Promise<AppPortFlowResult> {
+  const relayOptions = relayManagerOptions(options);
+  const actual = buildDesiredPortSet(appPortsOf(routePorts(options.sandbox)), []);
+  const previous: VercelRelayState = {
+    relays: request.recorded?.relays ?? [],
+    applied: request.recorded?.applied ?? actual,
+  };
+
+  // The cheapest correct outcome: the same logical ports, the same live relay
+  // processes, and routes that already name them. No API call, no restart.
+  if (
+    request.recorded !== undefined
+    && samePortSet(request.recorded.selected, request.selected)
+    && sameLogicalPorts(request.recorded.relays, request.logical)
+    && samePortSet(actual, request.recorded.applied)
+    && await verifyRelayMappings(relayOptions, request.recorded.relays)
+  ) {
+    const relays = relabel(request.recorded.relays, request.labels);
+    await commitSelection(options, request, relays, actual, request.recorded);
+    return result(request, relays, actual, false);
+  }
+
+  const provisioned = await provisionRelays(relayOptions, {
+    logical: request.logical.map((port) => ({ port, label: request.labels[port] ?? DEFAULT_APP_PORT_LABEL })),
+    existing: request.recorded?.relays ?? [],
+    routePorts: routePorts(options.sandbox),
+  });
+  const desiredApplied = buildDesiredPortSet(provisioned.mappings.map(({ relayPort }) => relayPort), []);
+  const obsolete = (request.recorded?.relays ?? [])
+    .filter((mapping) => !request.logical.includes(mapping.logicalPort))
+    .map(({ logicalPort }) => logicalPort);
+
+  // Equal port sets means the routes already name these listeners, and a
+  // route update would regenerate every subdomain for nothing.
+  if (samePortSet(desiredApplied, actual)) {
+    await commitSelection(options, request, provisioned.mappings, desiredApplied, request.recorded);
+    await stopObsoleteRelays(options, relayOptions, obsolete);
+    return result(request, provisioned.mappings, desiredApplied, false);
   }
 
   const pending: VercelPendingAppPorts = {
+    sandboxId: sandboxIdentifier(options.sandbox),
     previous,
-    desired,
-    selected,
-    fingerprint,
+    desired: { relays: provisioned.mappings, applied: desiredApplied },
+    selected: request.selected,
+    fingerprint: request.fingerprint,
     detectorVersion: APP_PORT_DETECTOR_VERSION,
-    revision,
+    revision: request.revision,
   };
-  await options.branchStore.write(withAppPortFields(metadata, previousSelection, pending));
+  await options.branchStore.write(withAppPortFields(request.metadata, request.recorded, pending));
   try {
     await options.client.updatePorts(
       options.sandbox,
-      desired,
+      desiredApplied,
       options.signal === undefined ? undefined : { signal: options.signal },
     );
   } catch (error) {
@@ -195,29 +283,25 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
       + 'pending retained so the next attach can reconcile against fresh routes\n',
     );
     return {
-      selected: [...(previousSelection?.selected ?? [])],
-      applied: previous,
+      selected: [...(request.recorded?.selected ?? [])],
+      applied: actual,
       updated: false,
-      labels: frameworkLabels(candidates, previousSelection?.selected ?? []),
+      labels: request.labels,
+      relays: [...previous.relays],
     };
   }
-  const selection: VercelAppPortSelection = {
-    selected,
-    applied: desired,
-    fingerprint,
-    detectorVersion: APP_PORT_DETECTOR_VERSION,
-    revision,
-  };
-  await options.branchStore.write(withAppPortFields(metadata, selection, undefined));
-  return { selected, applied: desired, updated: true, labels };
+  await commitSelection(options, request, provisioned.mappings, desiredApplied, undefined);
+  await stopObsoleteRelays(options, relayOptions, obsolete);
+  return result(request, provisioned.mappings, desiredApplied, true);
 }
 
 /**
- * Reconcile a durable pending record against the Sandbox's actual routes.
+ * Reconcile a durable pending record against actual routes and live relays.
  *
- * An already-applied desired set is committed, an unapplied pending set is
+ * An already-applied desired state is committed, an unapplied pending state is
  * cleared, and anything else is restored to the recorded previous set before
- * the record is cleared. An unknown route set is never treated as committed.
+ * the record is cleared. A state is only "applied" when its routes match *and*
+ * its relay processes verify, so an unverified route is never reported ready.
  */
 export async function reconcilePendingAppPorts(
   options: AppPortFlowOptions,
@@ -225,57 +309,131 @@ export async function reconcilePendingAppPorts(
 ): Promise<VercelBranchMetadata | null> {
   const pending = metadata?.pendingAppPorts;
   if (!metadata || !pending) return metadata;
-  const actual = buildDesiredPortSet(
-    appPortsOf((options.sandbox.routes ?? []).map((route) => route.port)),
-    [],
-  );
+  if (pending.sandboxId !== sandboxIdentifier(options.sandbox)) {
+    // The record describes another Sandbox instance; its processes cannot
+    // exist here, so there is nothing to commit and nothing to roll back.
+    options.stderr.write('app ports: discarding a route update recorded for a previous sandbox\n');
+    return writeBranch(options, metadata, metadata.appPorts, undefined);
+  }
+  const relayOptions = relayManagerOptions(options);
+  const actual = buildDesiredPortSet(appPortsOf(routePorts(options.sandbox)), []);
 
-  if (samePortSet(actual, pending.desired)) {
+  if (
+    samePortSet(actual, pending.desired.applied)
+    && await verifyRelayMappings(relayOptions, pending.desired.relays)
+  ) {
     const selection: VercelAppPortSelection = {
+      sandboxId: pending.sandboxId,
       selected: pending.selected,
-      applied: pending.desired,
+      relays: pending.desired.relays,
+      applied: pending.desired.applied,
       fingerprint: pending.fingerprint,
       detectorVersion: pending.detectorVersion,
       revision: pending.revision,
     };
     options.stderr.write(
-      `app ports: committing the interrupted route update ${formatPorts(pending.desired)}\n`,
+      `app ports: committing the interrupted route update ${formatPorts(pending.selected)}\n`,
     );
-    return writeBranch(options, metadata, selection, undefined);
+    const committed = await writeBranch(options, metadata, selection, undefined);
+    await stopObsoleteRelays(
+      options,
+      relayOptions,
+      logicalPortsNotIn(pending.previous.relays, pending.desired.relays),
+    );
+    return committed;
   }
-  if (samePortSet(actual, pending.previous)) {
+  if (
+    samePortSet(actual, pending.previous.applied)
+    && await verifyRelayMappings(relayOptions, pending.previous.relays)
+  ) {
     options.stderr.write('app ports: clearing an interrupted route update that never applied\n');
-    return writeBranch(options, metadata, metadata.appPorts, undefined);
+    const cleared = await writeBranch(options, metadata, metadata.appPorts, undefined);
+    await stopObsoleteRelays(
+      options,
+      relayOptions,
+      logicalPortsNotIn(pending.desired.relays, pending.previous.relays),
+    );
+    return cleared;
   }
   options.stderr.write(
-    `app ports: restoring ${formatPorts(pending.previous)} after an interrupted route update\n`,
+    `app ports: restoring ${formatPorts(pending.previous.applied)} after an interrupted route update\n`,
   );
   await options.client.updatePorts(
     options.sandbox,
-    pending.previous,
+    pending.previous.applied,
     options.signal === undefined ? undefined : { signal: options.signal },
   );
-  return writeBranch(options, metadata, metadata.appPorts, undefined);
+  const restored = await writeBranch(options, metadata, metadata.appPorts, undefined);
+  await stopObsoleteRelays(
+    options,
+    relayOptions,
+    logicalPortsNotIn(pending.desired.relays, pending.previous.relays),
+  );
+  return restored;
+}
+
+export function relayManagerOptions(options: AppPortFlowOptions): RelayManagerOptions {
+  return {
+    sandbox: options.sandbox,
+    client: options.client,
+    ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
+}
+
+/**
+ * The committed selection, but only when it describes this Sandbox instance.
+ *
+ * Relay mappings name processes, and a resumed Sandbox has none of them, so a
+ * record from a previous instance is evidence about a box that no longer
+ * exists. Ignoring it here is what sends a snapshot resume down the full
+ * provisioning path.
+ */
+function recordedSelection(
+  options: AppPortFlowOptions,
+  metadata: VercelBranchMetadata | null,
+): VercelAppPortSelection | undefined {
+  const selection = metadata?.appPorts;
+  if (!selection) return undefined;
+  return selection.sandboxId === sandboxIdentifier(options.sandbox) ? selection : undefined;
+}
+
+async function stopObsoleteRelays(
+  options: AppPortFlowOptions,
+  relayOptions: RelayManagerOptions,
+  logicalPorts: readonly number[],
+): Promise<void> {
+  if (logicalPorts.length === 0) return;
+  try {
+    await stopRelays(relayOptions, logicalPorts);
+  } catch (error) {
+    // The routes that named these relays are already gone, so a leftover
+    // process is inert; say so rather than failing a completed transaction.
+    options.stderr.write(
+      `app ports: could not stop the relay(s) for ${formatPorts(logicalPorts)} `
+      + `(${redactSecrets(error, options.secrets ?? [])}); they are no longer published\n`,
+    );
+  }
 }
 
 async function commitSelection(
   options: AppPortFlowOptions,
-  metadata: VercelBranchMetadata | null,
-  selected: number[],
-  desired: number[],
-  fingerprint: string,
-  revision: string,
-  previousSelection: VercelAppPortSelection | undefined,
+  request: PublishRequest,
+  relays: readonly VercelRelayMapping[],
+  applied: readonly number[],
+  unchangedFrom: VercelAppPortSelection | undefined,
 ): Promise<void> {
   const selection: VercelAppPortSelection = {
-    selected,
-    applied: desired,
-    fingerprint,
+    sandboxId: sandboxIdentifier(options.sandbox),
+    selected: request.selected,
+    relays: relays.map((mapping) => ({ ...mapping })),
+    applied: [...applied],
+    fingerprint: request.fingerprint,
     detectorVersion: APP_PORT_DETECTOR_VERSION,
-    revision,
+    revision: request.revision,
   };
-  if (previousSelection && sameSelection(previousSelection, selection)) return;
-  await writeBranch(options, metadata, selection, undefined);
+  if (unchangedFrom && sameSelection(unchangedFrom, selection)) return;
+  await options.branchStore.write(withAppPortFields(request.metadata, selection, undefined));
 }
 
 async function writeBranch(
@@ -288,38 +446,124 @@ async function writeBranch(
   return options.branchStore.read();
 }
 
-function frameworkLabels(
+function result(
+  request: PublishRequest,
+  relays: readonly VercelRelayMapping[],
+  applied: readonly number[],
+  updated: boolean,
+): AppPortFlowResult {
+  return {
+    selected: [...request.selected],
+    applied: [...applied],
+    updated,
+    labels: request.labels,
+    relays: relays.map((mapping) => ({ ...mapping })),
+  };
+}
+
+/**
+ * Label a logical port for the route line.
+ *
+ * The host's `portsAttributes` label wins over a detected framework because it
+ * is the one a human wrote. Both are bounded to what metadata will store, so a
+ * label can never carry script or path text onto a printed line.
+ */
+export function appPortLabels(
+  logical: readonly number[],
   candidates: readonly AppPortCandidate[],
-  selected: readonly number[],
+  configuredLabels: Record<number, string>,
 ): Record<number, string> {
   const labels: Record<number, string> = {};
-  for (const candidate of candidates) {
-    if (!selected.includes(candidate.port) || labels[candidate.port] !== undefined) continue;
-    labels[candidate.port] = candidate.framework;
+  for (const port of logical) {
+    const configured = configuredLabels[port];
+    const framework = candidates.find((candidate) => candidate.port === port)?.framework;
+    const label = sanitizeLabel(configured) ?? sanitizeLabel(framework) ?? DEFAULT_APP_PORT_LABEL;
+    labels[port] = label;
   }
   return labels;
 }
 
+const LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]*(?: [A-Za-z0-9][A-Za-z0-9._+-]*)*$/;
+
+function sanitizeLabel(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const cleaned = value
+    .replace(/[^A-Za-z0-9 ._+-]/g, ' ')
+    .split(/\s+/)
+    .map((word) => word.replace(/^[._+-]+/, ''))
+    .filter((word) => word.length > 0)
+    .join(' ')
+    .slice(0, 32)
+    .trim();
+  return LABEL_PATTERN.test(cleaned) ? cleaned : undefined;
+}
+
+function relabel(
+  relays: readonly VercelRelayMapping[],
+  labels: Record<number, string>,
+): VercelRelayMapping[] {
+  return relays.map((mapping) => ({
+    ...mapping,
+    label: labels[mapping.logicalPort] ?? mapping.label,
+  }));
+}
+
+function routePorts(sandbox: VercelSandboxHandle): number[] {
+  return (sandbox.routes ?? []).map((route) => route.port);
+}
+
+function sameLogicalPorts(
+  relays: readonly VercelRelayMapping[],
+  logical: readonly number[],
+): boolean {
+  return samePortSet(relays.map(({ logicalPort }) => logicalPort), logical);
+}
+
+/** Logical relay processes that are not part of the other committed state. */
+function logicalPortsNotIn(
+  source: readonly VercelRelayMapping[],
+  target: readonly VercelRelayMapping[],
+): number[] {
+  const targetPorts = new Set(target.map(({ logicalPort }) => logicalPort));
+  return [...new Set(source
+    .filter(({ logicalPort }) => !targetPorts.has(logicalPort))
+    .map(({ logicalPort }) => logicalPort))];
+}
+
+function sameMappings(
+  left: readonly VercelRelayMapping[],
+  right: readonly VercelRelayMapping[],
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((mapping) => right.some((other) =>
+    other.logicalPort === mapping.logicalPort && other.relayPort === mapping.relayPort));
+}
+
 function unchanged(
-  previousSelection: VercelAppPortSelection | undefined,
-  actual: readonly number[],
-  candidates: readonly AppPortCandidate[],
+  options: AppPortFlowOptions,
+  recorded: VercelAppPortSelection | undefined,
 ): AppPortFlowResult {
-  const selected = [...(previousSelection?.selected ?? [])];
+  const actual = buildDesiredPortSet(appPortsOf(routePorts(options.sandbox)), []);
+  const relays = (recorded?.relays ?? []).filter((mapping) => actual.includes(mapping.relayPort));
   return {
-    selected,
-    applied: buildDesiredPortSet(actual, []),
+    selected: [...(recorded?.selected ?? [])],
+    applied: actual,
     updated: false,
-    labels: frameworkLabels(candidates, selected),
+    labels: Object.fromEntries(relays.map((mapping) => [mapping.logicalPort, mapping.label])),
+    relays: relays.map((mapping) => ({ ...mapping })),
   };
 }
 
 function sameSelection(left: VercelAppPortSelection, right: VercelAppPortSelection): boolean {
-  return left.fingerprint === right.fingerprint
+  return left.sandboxId === right.sandboxId
+    && left.fingerprint === right.fingerprint
     && left.detectorVersion === right.detectorVersion
     && left.revision === right.revision
     && samePortSet(left.selected, right.selected)
-    && samePortSet(left.applied, right.applied);
+    && samePortSet(left.applied, right.applied)
+    && sameMappings(left.relays, right.relays)
+    && left.relays.every((mapping) => right.relays.some((other) =>
+      other.logicalPort === mapping.logicalPort && other.label === mapping.label));
 }
 
 function scanSignal(signal: AbortSignal | undefined): AbortSignal {

@@ -6,6 +6,8 @@ const startupPath = 'images/vercel/start-devbox.sh';
 const statusPath = 'images/vercel/status-devbox.sh';
 const proxyPath = 'images/vercel/novnc-proxy.mjs';
 const localCheckPath = 'images/vercel/check-local-image.sh';
+const relayPath = 'images/vercel/app-relay.mjs';
+const relayControlPath = 'images/vercel/app-relay-control.sh';
 
 async function text(path: string): Promise<string> {
   return readFile(path, 'utf8');
@@ -94,5 +96,31 @@ describe('Vercel image assets', () => {
     expect(proxy).toContain("delete forwarded['proxy-authenticate']");
     expect(proxy).toContain('delete forwarded.cookie');
     expect(proxy).not.toContain('www-authenticate');
+  });
+
+  it('ships an app relay with a fixed target and no credential of its own', async () => {
+    const relay = await text(relayPath);
+    const control = await text(relayControlPath);
+
+    // The upstream comes from the environment at startup and from nowhere else.
+    expect(relay).toContain('DEVBOX_RELAY_TARGET_PORT');
+    expect(relay).toContain('const upstreamHost = \'127.0.0.1\'');
+    expect(relay).toContain('RESERVED_PORTS = new Set([5900, 6080, 6081])');
+    expect(relay).toContain('reserved display port');
+    // Host is rewritten; Origin and credentials are not touched.
+    expect(relay).toContain('headers.host = upstreamAuthority');
+    expect(relay).toContain("headers['x-forwarded-proto'] = 'https'");
+    expect(relay).not.toMatch(/delete .*\.origin\b/);
+    expect(relay).not.toContain('DEVBOX_NOVNC_PASSWORD');
+    // A pre-listen route must answer, not hang, and must not loop.
+    expect(relay).toContain('UPSTREAM_CONNECT_TIMEOUT_MS');
+    expect(relay).toContain('502');
+    expect(relay).toContain("server.on('upgrade',");
+
+    // The control script is the PID/start-time evidence the manager trusts.
+    expect(control).toContain('proc_start_time');
+    expect(control).toContain('process_matches');
+    expect(control).toContain('app-relay.mjs');
+    expect(control).toContain('env -u DEVBOX_NOVNC_PASSWORD');
   });
 });

@@ -101,6 +101,29 @@ async function seedBranchMetadata(stateHome: string, branch = 'feature/ui'): Pro
   });
 }
 
+/**
+ * Stand-in for app-relay-control.sh: reports live relays and starts new ones
+ * on a deterministic port so route expectations stay readable.
+ */
+function relayControlResponse(args: readonly string[], running: Record<number, number>): string {
+  const [command, ...rest] = args;
+  if (command === 'status') {
+    return Object.entries(running)
+      .map(([logical, relay]) =>
+        `{"logicalPort":${logical},"relayPort":${relay},"pid":${1000 + Number(logical)},"running":true}`)
+      .join('\n');
+  }
+  if (command === 'start') {
+    const logical = Number(rest[0]);
+    return `{"logicalPort":${logical},"relayPort":${40_000 + logical},"pid":${1000 + logical}}`;
+  }
+  return '';
+}
+
+function isRelayControl(request: { cmd?: string; args?: string[] }): boolean {
+  return request.cmd === 'bash' && (request.args?.[0] ?? '').endsWith('app-relay-control.sh');
+}
+
 describe('Vercel provider', () => {
   it('uses production device auth defaults to render and optionally open the verification URL', async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-provider-device-auth-'));
@@ -749,8 +772,10 @@ describe('Vercel provider', () => {
       },
       displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
       appPorts: {
+        sandboxId: 'sandbox-id',
         selected: [3000],
-        applied: [3000],
+        relays: [{ logicalPort: 3000, relayPort: 43_000, label: 'next' }],
+        applied: [6080, 43_000],
         fingerprint: 'f'.repeat(64),
         detectorVersion: 2,
         revision: head,
@@ -776,6 +801,12 @@ describe('Vercel provider', () => {
         if (request.cmd === '/usr/local/bin/devbox-status') {
           return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
         }
+        if (isRelayControl(request)) {
+          return {
+            exitCode: 0,
+            stdout: async () => relayControlResponse((request.args ?? []).slice(1), { 3000: 43_000 }),
+          };
+        }
         const script = request.cmd === 'sh' ? request.args?.[1] ?? '' : '';
         if (script.includes('cat /vercel/.devbox/runtime/preparation.json')) {
           return {
@@ -794,7 +825,7 @@ describe('Vercel provider', () => {
       ...sandbox(),
       routes: [
         { port: 6080, subdomain: '', url: 'https://sandbox.example/6080' },
-        { port: 6082, subdomain: '', url: 'https://sandbox.example/6082' },
+        { port: 43_000, subdomain: '', url: 'https://sandbox.example/43000' },
       ],
       domain: (port: number) => `https://sandbox.example/${port}`,
     };
@@ -836,12 +867,20 @@ describe('Vercel provider', () => {
     expect(code).toEqual({ exitCode: 0 });
     expect(stderrText).toContain('Re-entering the prepared sandbox (no re-provisioning)');
     expect(prompt).not.toHaveBeenCalled();
-    expect(updatedPorts).toEqual([[3000]]);
+    // Verified relay plus matching routes: nothing is republished, so the URL
+    // the user copied last time still works.
+    expect(updatedPorts).toEqual([]);
+    expect(stderrText).toContain('3000: https://sandbox.example/43000  (next — public)');
+    expect(stderrText).not.toContain('43000:');
+    // The repository is never scanned on this path; the only Sandbox work is
+    // the preparation/display evidence and the relay health check.
     expect(commands.every((command) =>
       command.cmd === '/usr/local/bin/devbox-status'
       || command.cmd === 'cat'
+      || isRelayControl(command)
       || (command.args?.[1] ?? '').includes('cat /vercel/.devbox/runtime/preparation.json')))
       .toBe(true);
+    expect(commands.filter(isRelayControl).map((command) => command.args?.[1])).toEqual(['status']);
     expect(terminal.attach).toHaveBeenCalledOnce();
   });
 
@@ -874,8 +913,10 @@ describe('Vercel provider', () => {
       },
       displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
       appPorts: {
+        sandboxId: 'sandbox-id',
         selected: [3000],
-        applied: [3000],
+        relays: [{ logicalPort: 3000, relayPort: 43_000, label: 'next' }],
+        applied: [6080, 43_000],
         fingerprint: 'f'.repeat(64),
         detectorVersion: 2,
         revision: head,
@@ -908,6 +949,12 @@ describe('Vercel provider', () => {
         }
         if (request.cmd === 'git' && request.args?.includes('rev-parse')) {
           return { exitCode: 0, stdout: async () => `${head}\n` };
+        }
+        if (isRelayControl(request)) {
+          return {
+            exitCode: 0,
+            stdout: async () => relayControlResponse((request.args ?? []).slice(1), {}),
+          };
         }
         return { exitCode: 0 };
       },
@@ -960,7 +1007,9 @@ describe('Vercel provider', () => {
     expect(code).toEqual({ exitCode: 0 });
     expect(stderrText).toContain('exposing 4000 from --expose-ports');
     expect(prompt).not.toHaveBeenCalled();
-    expect(updatedPorts).toEqual([[4000, 6080]]);
+    // The explicit opt-in still goes through a relay; 4000 itself is not a route.
+    expect(updatedPorts).toEqual([[6080, 44_000]]);
+    expect(stderrText).toContain('4000: https://sandbox.example/44000');
     expect(terminal.attach).toHaveBeenCalledOnce();
   });
 
@@ -993,15 +1042,21 @@ describe('Vercel provider', () => {
       },
       displayCredentials: { username: 'devbox', password: DISPLAY_TOKEN },
       appPorts: {
+        sandboxId: 'sandbox-id',
         selected: [],
-        applied: [],
+        relays: [],
+        applied: [6080],
         fingerprint: 'f'.repeat(64),
         detectorVersion: 2,
         revision: head,
       },
       pendingAppPorts: {
-        previous: [],
-        desired: [3000, 6080],
+        sandboxId: 'sandbox-id',
+        previous: { relays: [], applied: [6080] },
+        desired: {
+          relays: [{ logicalPort: 3000, relayPort: 43_000, label: 'next' }],
+          applied: [6080, 43_000],
+        },
         selected: [3000],
         fingerprint: 'f'.repeat(64),
         detectorVersion: 2,
@@ -1026,6 +1081,12 @@ describe('Vercel provider', () => {
         if (request.cmd === '/usr/local/bin/devbox-status') {
           return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
         }
+        if (isRelayControl(request)) {
+          return {
+            exitCode: 0,
+            stdout: async () => relayControlResponse((request.args ?? []).slice(1), { 3000: 43_000 }),
+          };
+        }
         const script = request.cmd === 'sh' ? request.args?.[1] ?? '' : '';
         if (script.includes('cat /vercel/.devbox/runtime/preparation.json')) {
           return {
@@ -1040,12 +1101,12 @@ describe('Vercel provider', () => {
         updatedPorts.push([...ports]);
       },
     } as unknown as VercelSandboxClient;
-    // Live routes already match pending.desired: reconciliation commits it.
+    // Live routes and a live relay both match pending.desired: it commits.
     const box = {
       ...sandbox(),
       routes: [
-        { port: 3000, subdomain: '', url: 'https://sandbox.example/3000' },
         { port: 6080, subdomain: '', url: 'https://sandbox.example/6080' },
+        { port: 43_000, subdomain: '', url: 'https://sandbox.example/43000' },
       ],
       domain: (port: number) => `https://sandbox.example/${port}`,
     };
@@ -1085,7 +1146,8 @@ describe('Vercel provider', () => {
     expect(updatedPorts).toEqual([]);
     const stored = await metadata.read();
     expect(stored?.pendingAppPorts).toBeUndefined();
-    expect(stored?.appPorts?.applied).toEqual([3000, 6080]);
+    expect(stored?.appPorts?.applied).toEqual([6080, 43_000]);
+    expect(stored?.appPorts?.relays).toEqual([{ logicalPort: 3000, relayPort: 43_000, label: 'next' }]);
   });
 
   it('gives a request timeout or vcpus precedence over stored configuration on up', async () => {
