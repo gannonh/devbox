@@ -331,7 +331,32 @@ jobs:
           # Refresh the lockfile so packages/dbx's @gannonh/devbox pin and the
           # node_modules/@gannonh/devbox registry entry match. Without this,
           # the next npm ci on main fails with EUSAGE (lock file still on N-1).
-          npm install --package-lock-only --ignore-scripts
+          #
+          # Publish can succeed before the registry serves the new version to
+          # install clients (ETARGET). Wait until the exact version is visible,
+          # then refresh the lockfile with bounded retries.
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if npm view "@gannonh/devbox@${TARGET_VERSION}" version >/dev/null 2>&1; then
+              echo "@gannonh/devbox@${TARGET_VERSION} is visible on the registry"
+              break
+            fi
+            if [[ "${attempt}" -eq 8 ]]; then
+              echo "@gannonh/devbox@${TARGET_VERSION} is still not visible after publish" >&2
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          done
+          for attempt in 1 2 3 4 5 6; do
+            if npm install --package-lock-only --ignore-scripts; then
+              break
+            fi
+            if [[ "${attempt}" -eq 6 ]]; then
+              echo "npm install --package-lock-only failed after retries" >&2
+              exit 1
+            fi
+            echo "npm install --package-lock-only failed; retrying (${attempt}/6)"
+            sleep $((attempt * 2))
+          done
           git add package.json package-lock.json packages/dbx/package.json
           if git diff --cached --quiet; then
             echo "Version manifests already at ${TARGET_VERSION}; reusing HEAD for the tag"
