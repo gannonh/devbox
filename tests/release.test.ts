@@ -153,6 +153,11 @@ describe('release workflow contract', () => {
     const publishRun = String(publishDbx.run ?? '');
     expect(publishRun).toContain('npm pkg set "dependencies.@gannonh/devbox=$TARGET_VERSION"');
     expect(run).toContain('npm install --package-lock-only --ignore-scripts');
+    expect(run).toContain('npm view "@gannonh/devbox@${TARGET_VERSION}" version');
+    expect(run).toContain('npm install --package-lock-only failed; retrying');
+    expect(run.indexOf('npm view "@gannonh/devbox@${TARGET_VERSION}" version')).toBeLessThan(
+      run.indexOf('npm install --package-lock-only --ignore-scripts'),
+    );
     expect(run.indexOf('npm install --package-lock-only')).toBeLessThan(
       run.indexOf('git add package.json package-lock.json'),
     );
