@@ -58,8 +58,21 @@ const preferredPort = process.env.DEVBOX_RELAY_LISTEN_PORT === undefined
 const forbiddenPorts = parseForbidden(process.env.DEVBOX_RELAY_FORBIDDEN_PORTS);
 const statePath = process.env.DEVBOX_RELAY_STATE_PATH;
 const listenHost = process.env.DEVBOX_RELAY_BIND ?? '0.0.0.0';
-const upstreamHost = '127.0.0.1';
+const upstreamHost = 'localhost';
 const upstreamAuthority = `localhost:${targetPort}`;
+
+/** Keep the fixed target on loopback while supporting IPv4- and IPv6-only apps. */
+function loopbackLookup(_hostname, options, callback) {
+  const addresses = [
+    { address: '127.0.0.1', family: 4 },
+    { address: '::1', family: 6 },
+  ];
+  if (options.all) {
+    callback(null, addresses);
+    return;
+  }
+  callback(null, addresses[0].address, addresses[0].family);
+}
 
 if (RESERVED_PORTS.has(targetPort)) {
   fail(`DEVBOX_RELAY_TARGET_PORT ${targetPort} is a reserved display port`);
@@ -182,6 +195,8 @@ const server = http.createServer((request, response) => {
   const upstream = http.request({
     host: upstreamHost,
     port: targetPort,
+    lookup: loopbackLookup,
+    autoSelectFamily: true,
     method: request.method,
     path: request.url,
     agent: false,
@@ -192,6 +207,11 @@ const server = http.createServer((request, response) => {
   // streams: a dev server's SSE channel must not be timed out mid-response.
   upstream.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
     upstream.destroy(new Error('upstream connect timeout'));
+  });
+  upstream.once('socket', (socket) => {
+    const clearConnectTimeout = () => upstream.setTimeout(0);
+    if (socket.connecting) socket.once('connect', clearConnectTimeout);
+    else clearConnectTimeout();
   });
 
   let settled = false;
@@ -242,7 +262,12 @@ server.on('upgrade', (request, socket, head) => {
     return;
   }
 
-  const upstream = net.connect(targetPort, upstreamHost);
+  const upstream = net.connect({
+    host: upstreamHost,
+    port: targetPort,
+    lookup: loopbackLookup,
+    autoSelectFamily: true,
+  });
   upstream.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
     upstream.destroy(new Error('upstream connect timeout'));
   });

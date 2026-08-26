@@ -104,7 +104,10 @@ describe('Vercel image assets', () => {
 
     // The upstream comes from the environment at startup and from nowhere else.
     expect(relay).toContain('DEVBOX_RELAY_TARGET_PORT');
-    expect(relay).toContain('const upstreamHost = \'127.0.0.1\'');
+    expect(relay).toContain('const upstreamHost = \'localhost\'');
+    expect(relay).toContain('autoSelectFamily: true');
+    expect(relay).toContain('127.0.0.1');
+    expect(relay).toContain('::1');
     expect(relay).toContain('RESERVED_PORTS = new Set([5900, 6080, 6081])');
     expect(relay).toContain('reserved display port');
     // Host is rewritten; Origin and credentials are not touched.

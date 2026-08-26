@@ -39,6 +39,7 @@ interface Upstream {
 }
 
 async function startUpstream(options: {
+  host?: string;
   onRequest?: (request: http.IncomingMessage, response: http.ServerResponse) => void;
 } = {}): Promise<Upstream> {
   let headers: http.IncomingHttpHeaders | undefined;
@@ -79,7 +80,7 @@ async function startUpstream(options: {
   servers.push(server);
   // Loopback only: the whole point is that this listener is not reachable
   // from outside the Sandbox and the relay is.
-  server.listen(0, '127.0.0.1');
+  server.listen(0, options.host ?? '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('upstream bind failed');
@@ -228,6 +229,31 @@ describe('app relay HTTP boundary', () => {
     finish();
     const second = await reader.read();
     expect(new TextDecoder().decode(second.value)).toBe('last');
+  });
+
+  it('keeps a connected upstream alive while it prepares a slow response', async () => {
+    const upstream = await startUpstream({
+      onRequest: (_request, response) => {
+        const timer = setTimeout(() => response.end('slow-app'), 2_500);
+        timer.unref();
+      },
+    });
+    const relayPort = await startRelay(upstream.port);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/slow`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('slow-app');
+  });
+
+  it('reaches an IPv6-only loopback upstream', async () => {
+    const upstream = await startUpstream({ host: '::1' });
+    const relayPort = await startRelay(upstream.port);
+
+    const response = await fetch(`http://127.0.0.1:${relayPort}/ipv6`);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('upstream:/ipv6');
   });
 
   it('answers a pre-listen route with a bounded generic 502 and no retry loop', async () => {

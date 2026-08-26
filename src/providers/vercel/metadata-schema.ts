@@ -91,12 +91,13 @@ export interface VercelRelayState {
 /**
  * A committed app-port selection.
  *
- * Bound to the exact remote revision, the candidate fingerprint, and the
- * detector version so a resume can re-apply the same public routes without
- * prompting, and a changed project re-prompts instead of silently reusing a
- * selection that no longer describes the checkout. The Sandbox identity is
- * recorded too: a mapping only describes processes inside the instance that
- * published it, so a resumed box re-provisions instead of trusting it.
+ * Bound to the exact remote revision when that enrichment succeeds, plus the
+ * candidate fingerprint and detector version, so a resume can re-apply the
+ * same public routes without prompting. If revision enrichment fails, the
+ * field is omitted rather than guessed and the state cannot qualify for
+ * scan-based reuse. The Sandbox identity is recorded too: a mapping only
+ * describes processes inside the instance that published it, so a resumed box
+ * re-provisions instead of trusting it.
  */
 export interface VercelAppPortSelection {
   /** The Sandbox instance these relay processes and routes belong to. */
@@ -107,7 +108,8 @@ export interface VercelAppPortSelection {
   applied: number[];
   fingerprint: string;
   detectorVersion: number;
-  revision: string;
+  /** Absent only when remote revision enrichment failed; never guessed. */
+  revision?: string;
 }
 
 /**
@@ -126,7 +128,8 @@ export interface VercelPendingAppPorts {
   selected: number[];
   fingerprint: string;
   detectorVersion: number;
-  revision: string;
+  /** Absent only when remote revision enrichment failed; never guessed. */
+  revision?: string;
 }
 
 export interface VercelBranchMetadataInput {
@@ -295,6 +298,14 @@ const APP_PORT_SELECTION_FIELDS = [
   'detectorVersion',
   'revision',
 ] as const;
+const APP_PORT_SELECTION_REQUIRED_FIELDS = [
+  'sandboxId',
+  'selected',
+  'relays',
+  'applied',
+  'fingerprint',
+  'detectorVersion',
+] as const;
 const PENDING_APP_PORT_FIELDS = [
   'sandboxId',
   'previous',
@@ -303,6 +314,14 @@ const PENDING_APP_PORT_FIELDS = [
   'fingerprint',
   'detectorVersion',
   'revision',
+] as const;
+const PENDING_APP_PORT_REQUIRED_FIELDS = [
+  'sandboxId',
+  'previous',
+  'desired',
+  'selected',
+  'fingerprint',
+  'detectorVersion',
 ] as const;
 const RELAY_STATE_FIELDS = ['relays', 'applied'] as const;
 const RELAY_MAPPING_FIELDS = ['logicalPort', 'relayPort', 'label'] as const;
@@ -486,7 +505,7 @@ function parseAppPortSelection(value: unknown): VercelAppPortSelection {
   assertExactKeys(
     selection,
     APP_PORT_SELECTION_FIELDS,
-    APP_PORT_SELECTION_FIELDS,
+    APP_PORT_SELECTION_REQUIRED_FIELDS,
     'Vercel app port selection',
   );
   return {
@@ -496,7 +515,7 @@ function parseAppPortSelection(value: unknown): VercelAppPortSelection {
     applied: parsePortArray(selection.applied, 'appPorts.applied'),
     fingerprint: parseFingerprint(selection.fingerprint, 'appPorts.fingerprint'),
     detectorVersion: parseDetectorVersion(selection.detectorVersion, 'appPorts.detectorVersion'),
-    revision: parseRevision(selection.revision, 'appPorts.revision'),
+    ...(selection.revision === undefined ? {} : { revision: parseRevision(selection.revision, 'appPorts.revision') }),
   };
 }
 
@@ -557,7 +576,7 @@ function parsePendingAppPorts(value: unknown): VercelPendingAppPorts {
   assertExactKeys(
     pending,
     PENDING_APP_PORT_FIELDS,
-    PENDING_APP_PORT_FIELDS,
+    PENDING_APP_PORT_REQUIRED_FIELDS,
     'Vercel pending app ports',
   );
   return {
@@ -567,7 +586,7 @@ function parsePendingAppPorts(value: unknown): VercelPendingAppPorts {
     selected: parsePortArray(pending.selected, 'pendingAppPorts.selected'),
     fingerprint: parseFingerprint(pending.fingerprint, 'pendingAppPorts.fingerprint'),
     detectorVersion: parseDetectorVersion(pending.detectorVersion, 'pendingAppPorts.detectorVersion'),
-    revision: parseRevision(pending.revision, 'pendingAppPorts.revision'),
+    ...(pending.revision === undefined ? {} : { revision: parseRevision(pending.revision, 'pendingAppPorts.revision') }),
   };
 }
 

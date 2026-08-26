@@ -135,16 +135,37 @@ async function runAppPortFlow(options: AppPortFlowOptions): Promise<AppPortFlowR
   }
 
   const revision = scan.revision;
+  const { candidates, conflicting } = scan.detection;
+  const fingerprint = revision === undefined
+    ? recorded?.fingerprint ?? scan.detection.fingerprint
+    : scan.detection.fingerprint;
   if (revision === undefined) {
-    if (options.exposePorts !== undefined) {
-      options.stderr.write(
-        'app ports: --expose-ports was not applied because the remote checkout revision could not be read\n',
-      );
+    const selected = options.exposePorts === undefined
+      ? [...(recorded?.selected ?? [])]
+      : [...options.exposePorts];
+    const logical = appPortsOf(buildDesiredPortSet(configured, selected));
+    if (logical.length === 0) {
+      if (options.exposePorts !== undefined) {
+        options.stderr.write(
+          'app ports: --expose-ports was not applied because the remote checkout revision could not be read\n',
+        );
+      }
+      return unchanged(options, recorded);
     }
-    return unchanged(options, recorded);
+    options.stderr.write(
+      `app ports: remote checkout revision could not be read; using configured/explicit ports only (${formatPorts(logical)})\n`,
+    );
+    return publishRelayRoutes(options, {
+      metadata,
+      recorded,
+      logical,
+      labels: appPortLabels(logical, [], devcontainer.labels),
+      selected,
+      fingerprint,
+      revision: revision ?? recorded?.revision,
+    });
   }
 
-  const { candidates, conflicting, fingerprint } = scan.detection;
   const reusable = previousSelection !== undefined
     && previousSelection.detectorVersion === APP_PORT_DETECTOR_VERSION
     && previousSelection.fingerprint === fingerprint
@@ -202,7 +223,7 @@ interface PublishRequest {
   labels: Record<number, string>;
   selected: number[];
   fingerprint: string;
-  revision: string;
+  revision?: string;
 }
 
 /**

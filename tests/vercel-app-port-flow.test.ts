@@ -730,15 +730,24 @@ describe('zero-config app port flow', () => {
     expect(metadata?.appPorts).toBeUndefined();
   });
 
-  it('does not expose anything when the checkout revision cannot be read', async () => {
-    const { updates, output } = await run({
+  it('still publishes configured ports when the checkout revision cannot be read', async () => {
+    const { updates, result, output, ...harness } = await run({
       client: { revision: 'not-a-sha' },
-      exposePorts: [5173],
+      forwardPorts: [4000],
       tty: false,
     });
 
-    expect(updates).toEqual([]);
-    expect(output).toContain('--expose-ports was not applied');
+    expect(updates).toEqual([[DEVBOX_NOVNC_PROXY_PORT, relayPortFor(4000)]]);
+    expect(result).toMatchObject({
+      selected: [],
+      applied: [DEVBOX_NOVNC_PROXY_PORT, relayPortFor(4000)],
+    });
+    expect(output).toContain('remote checkout revision could not be resolved');
+    expect((await harness.metadata())?.appPorts).toMatchObject({
+      selected: [],
+      relays: [{ logicalPort: 4000, relayPort: relayPortFor(4000) }],
+      applied: [DEVBOX_NOVNC_PROXY_PORT, relayPortFor(4000)],
+    });
   });
 
   it('keeps secrets out of scan failure notices', async () => {
