@@ -767,7 +767,7 @@ jobs:
 
       # Tag and GitHub Release only after npm publish succeeds. Marked as a
       # prerelease so it never becomes Latest over stables. Idempotent: re-runs
-      # reuse an existing tag/release rather than failing.
+      # reuse an existing tag/release when it already points at SOURCE_COMMIT.
       - name: Create prerelease tag
         id: prerelease_tag
         if: ${{ success() && (github.event_name == 'schedule' || inputs.publish) }}
@@ -785,13 +785,33 @@ jobs:
           }
 
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            echo "Local tag ${tag} already exists"
+            local_target="$(git rev-parse "${tag}^{}")"
+            [[ "${local_target}" == "${SOURCE_COMMIT}" ]] || {
+              echo "refusing to reuse local tag ${tag}: points at ${local_target}, expected ${SOURCE_COMMIT}" >&2
+              exit 1
+            }
+            echo "Local tag ${tag} already exists at ${SOURCE_COMMIT}"
           else
             git tag "${tag}" "${SOURCE_COMMIT}"
           fi
 
-          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "Tag ${tag} already on origin"
+          remote_listing="$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}" || true)"
+          if [[ -n "${remote_listing}" ]]; then
+            # Prefer the peeled commit (annotated tags); fall back to lightweight.
+            remote_target="$(printf '%s\n' "${remote_listing}" | awk '
+              $2 ~ /\^\{\}$/ { print $1; found = 1; exit }
+              { sha = $1 }
+              END { if (!found && sha != "") print sha }
+            ')"
+            [[ -n "${remote_target}" ]] || {
+              echo "refusing to reuse tag ${tag}: could not resolve origin target" >&2
+              exit 1
+            }
+            [[ "${remote_target}" == "${SOURCE_COMMIT}" ]] || {
+              echo "refusing to reuse tag ${tag}: origin points at ${remote_target}, expected ${SOURCE_COMMIT}" >&2
+              exit 1
+            }
+            echo "Tag ${tag} already on origin at ${SOURCE_COMMIT}"
           else
             git push origin "refs/tags/${tag}"
             echo "Pushed tag ${tag} at ${SOURCE_COMMIT}"

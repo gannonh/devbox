@@ -248,7 +248,7 @@ describe('nightly workflow GitHub release contract', () => {
     expect(String(tag.if ?? '')).toContain('success()');
     expect(tagRun).toContain('git tag');
     expect(tagRun).toContain('git push origin');
-    expect(tagRun).toContain('already on origin');
+    expect(tagRun).toContain('already on origin at ${SOURCE_COMMIT}');
 
     const create = publishStepByName(wf, 'Create GitHub Release');
     const run = String(create.run ?? '');
@@ -262,6 +262,25 @@ describe('nightly workflow GitHub release contract', () => {
     const env = create.env as Record<string, string> | undefined;
     expect(env?.GH_TOKEN).toBeDefined();
     expect(env?.DIST_TAG).toBe('${{ steps.channel.outputs.tag }}');
+  });
+
+  it('refuses to reuse a prerelease tag that points at a different commit', async () => {
+    const wf = await loadNightly();
+    const tagRun = String(publishStepByName(wf, 'Create prerelease tag').run ?? '');
+    // Remote (and local) reuse must dereference the tag and match SOURCE_COMMIT.
+    // gh release create --target does not retarget an existing tag.
+    expect(tagRun).toContain('git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}"');
+    expect(tagRun).toContain('refusing to reuse tag ${tag}: origin points at ${remote_target}, expected ${SOURCE_COMMIT}');
+    expect(tagRun).toContain('refusing to reuse local tag ${tag}: points at ${local_target}, expected ${SOURCE_COMMIT}');
+    expect(tagRun).toContain('git rev-parse "${tag}^{}"');
+    expect(tagRun).toContain('already on origin at ${SOURCE_COMMIT}');
+    // Mismatch fails closed before push/reuse; matching target still reuses.
+    const remoteMismatchIdx = tagRun.indexOf(
+      'refusing to reuse tag ${tag}: origin points at ${remote_target}, expected ${SOURCE_COMMIT}',
+    );
+    const reuseIdx = tagRun.indexOf('already on origin at ${SOURCE_COMMIT}');
+    expect(remoteMismatchIdx).toBeGreaterThanOrEqual(0);
+    expect(reuseIdx).toBeGreaterThan(remoteMismatchIdx);
   });
 
   it('skips republish when the prerelease version is already on npm', async () => {
