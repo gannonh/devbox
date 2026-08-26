@@ -128,8 +128,10 @@ describe('Vercel display credentials', () => {
       branch: 'feature/display',
     });
     const appPorts = {
+      sandboxId: 'sbx-display',
       selected: [5173],
-      applied: [5173, 6080],
+      relays: [{ logicalPort: 5173, relayPort: 45173, label: 'vite' }],
+      applied: [6080, 45173],
       fingerprint: 'a'.repeat(64),
       detectorVersion: 2,
       revision: 'b'.repeat(40),

@@ -168,6 +168,70 @@ describe('Vercel lifecycle', () => {
     await expect(metadata.read()).resolves.toBeNull();
   });
 
+  it('creates with only the noVNC route, whatever forwardPorts configures', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-create-ports-'));
+    await mkdir(join(repoRoot, '.devcontainer'));
+    await writeFile(
+      join(repoRoot, '.devcontainer', 'devcontainer.json'),
+      JSON.stringify({ forwardPorts: [5173, 3000] }),
+    );
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-create-ports-state-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox();
+    let requestedPorts: number[] | undefined;
+    const client = {
+      getOrCreate: vi.fn(async (request: { ports?: number[] }) => {
+        requestedPorts = request.ports;
+        return handle;
+      }),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: { ...source, requestedBranchExists: true, needsBranchSetup: false, source: { ...source.source, revision: source.requestedBranch } },
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.up()).resolves.toBe(handle);
+
+    // A configured port is a logical app port, published later as a relay. It
+    // must never reach the create request, or the app's own listener would be
+    // exposed for the window before the app-port flow runs.
+    expect(requestedPorts).toEqual([6080]);
+  });
+
+  it('still fails a create on a forwardPorts value it refuses to expose', async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-create-forbidden-'));
+    await mkdir(join(repoRoot, '.devcontainer'));
+    await writeFile(
+      join(repoRoot, '.devcontainer', 'devcontainer.json'),
+      JSON.stringify({ forwardPorts: [5900] }),
+    );
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-create-forbidden-state-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const client = {
+      getOrCreate: vi.fn(async () => sandbox()),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot,
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: { ...source, requestedBranchExists: true, needsBranchSetup: false, source: { ...source.source, revision: source.requestedBranch } },
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    // Validation did not move just because the value no longer reaches create.
+    await expect(lifecycle.up()).rejects.toThrow(/forbidden\/private/);
+    expect(client.getOrCreate).not.toHaveBeenCalled();
+  });
+
   it('accepts an alternate Sandbox image serialization when the digest matches', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-image-digest-'));
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
@@ -1157,6 +1221,40 @@ describe('Vercel lifecycle', () => {
     await expect(metadata.read()).resolves.toMatchObject({ identity: expect.any(Object) });
   });
 
+  it('stops the box even when the relay teardown cannot run', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-relay-stop-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox();
+    const client = {
+      getOrCreate: vi.fn(async () => handle),
+      get: vi.fn(async () => handle),
+      // A box on its way down may not answer commands at all; that must not
+      // stand between the user and a stopped sandbox.
+      runCommand: vi.fn(async () => {
+        throw new Error('sandbox is not accepting commands');
+      }),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
+      stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source: { ...source, requestedBranchExists: true, needsBranchSetup: false, source: { ...source.source, revision: source.requestedBranch } },
+      branchMetadataStore: metadata,
+      client,
+    });
+    await lifecycle.up();
+
+    await expect(lifecycle.stop()).resolves.toMatchObject({ name: handle.name });
+
+    expect(client.runCommand).toHaveBeenCalledOnce();
+    // The record survives for a resume; only the live resources are gone.
+    await expect(metadata.read()).resolves.toMatchObject({ identity: expect.any(Object) });
+  });
+
   it('resumes after remote branch state changes without changing bootstrap configuration', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
@@ -1204,7 +1302,11 @@ describe('Vercel lifecycle', () => {
     await laterLifecycle.stop();
 
     expect(client.getOrCreate).toHaveBeenCalledTimes(2);
-    expect(client.runCommand).toHaveBeenCalledOnce();
+    // One branch-setup command on create, plus the relay teardown on stop.
+    expect(client.runCommand).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(client.runCommand).mock.calls[1][1]).toMatchObject({
+      args: [expect.stringContaining('app-relay-control.sh'), 'stop-all'],
+    });
     await expect(metadata.read()).resolves.toMatchObject({
       configuration: {
         sourceRevision: 'main',

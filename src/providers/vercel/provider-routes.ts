@@ -12,12 +12,15 @@ import {
 } from './ports.js';
 import { VercelProviderError } from './errors.js';
 import type { AppPortFlowResult } from './app-port-flow.js';
+import { DEFAULT_APP_PORT_LABEL, type VercelRelayMapping } from './app-relay.js';
 import type { SandboxRoute, VercelSandboxHandle } from './client.js';
 import type { ProviderBranchRequest } from '../types.js';
 import { renderSetupNotice, type VercelSetupStatus } from './setup.js';
 
 export interface RenderedVercelRoute {
   route: SandboxRoute;
+  /** The port the user chose, which is not the port the route exposes. */
+  logicalPort: number;
   url: string;
   line: string;
 }
@@ -33,6 +36,7 @@ export async function renderedRoutesForSandbox(
     routesForRender(sandbox, appPorts),
     { ...await resolveRouteLabels(repoRoot), ...extraLabels },
     token,
+    appPorts?.relays ?? [],
   );
 }
 
@@ -122,27 +126,46 @@ export async function renderVercelAttachNotice(
   await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed', appPorts);
 }
 
+/**
+ * Render actual Sandbox routes as the logical ports the user chose.
+ *
+ * An app route points at a relay listener whose port is an implementation
+ * detail -- the kernel picked it, and it changes whenever the relay restarts.
+ * Every line is joined back through the persisted mapping and labelled with
+ * the logical port, so the number printed is the one the dev server binds and
+ * the one `--expose-ports` would name. A route with no mapping is printed as
+ * itself rather than invented.
+ */
 export function renderVercelRoutes(
   routes: readonly SandboxRoute[],
   labels: Record<number, string>,
   token: string,
+  relays: readonly VercelRelayMapping[] = [],
 ): RenderedVercelRoute[] {
+  const logicalOf = new Map(relays.map((mapping) => [mapping.relayPort, mapping]));
   return [...routes]
-    .sort((left, right) => left.port - right.port)
     .map((route) => {
+      const mapping = logicalOf.get(route.port);
+      const logicalPort = mapping?.logicalPort ?? route.port;
       const safe = assertSafeRouteUrl(route.url);
       const url = route.port === DEVBOX_NOVNC_PROXY_PORT
         ? novncPairingUrl(safe, token)
         : safe;
+      // The default label says only "the user asked for this port", which the
+      // port number already says; print those as plain public routes.
+      const named = labels[logicalPort] ?? mapping?.label;
+      const label = named === DEFAULT_APP_PORT_LABEL ? undefined : named;
       const description = route.port === DEVBOX_NOVNC_PROXY_PORT
         ? 'noVNC display'
-        : labels[route.port] ? `${labels[route.port]} — public` : 'public';
+        : label ? `${label} — public` : 'public';
       return {
         route,
+        logicalPort,
         url,
-        line: `${route.port}: ${url}  (${description})`,
+        line: `${logicalPort}: ${url}  (${description})`,
       };
-    });
+    })
+    .sort((left, right) => left.logicalPort - right.logicalPort);
 }
 
 // The display link carries the branch access code so a click pairs the browser.

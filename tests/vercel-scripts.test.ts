@@ -977,6 +977,20 @@ describe('Vercel supply-chain script boundaries', () => {
     }
   });
 
+  it('preserves binary screenshot evidence while redacting text artifacts', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'vercel-redaction-binary-'));
+    try {
+      const artifact = join(temp, 'hmr-before.png');
+      const bytes = Buffer.from([0, 137, 80, 78, 71, 13, 10, 26, 10, 255, 0, 42]);
+      await writeFile(artifact, bytes);
+      const result = await runNode('scripts/vercel/redact-artifacts.mjs', process.env, [temp]);
+      expect(result.code).toBe(0);
+      expect(await readFile(artifact)).toEqual(bytes);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it('redacts fixture identities, scope IDs, URL-encoded values, and short secrets', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-redaction-identities-'));
     try {

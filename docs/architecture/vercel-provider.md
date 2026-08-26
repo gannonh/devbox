@@ -28,16 +28,21 @@ provider.
 3. Inject the explicit `--env` values, upload runtime-only state with mode
    `0600`, authenticate `gh`, start the display explicitly, and report setup as
    a separate background status.
-4. Expose port `6080`, the configured app ports, and any app ports the user
-   accepts from the bounded remote detector. `5900` and the internal noVNC
-   listener remain private. The display proxy pairs a browser from the access
-   code on the printed link, exchanging it for an HttpOnly cookie and
-   redirecting the code out of the URL (ADR 0003).
-5. Scan the remote checkout's root `package.json` for Vite/Next app ports,
-   confirm them once, and apply the full desired port list through
-   `Sandbox.update({ ports })` on the running Sandbox. The selection is bound to
-   the candidate fingerprint, detector version, and remote `HEAD`, and is
-   written pending-then-commit so an interrupted update is reconcilable.
+4. Create with port `6080` only. `5900` and the internal noVNC listener remain
+   private, and no app port is exposed before it has been confirmed. The
+   display proxy pairs a browser from the access code on the printed link,
+   exchanging it for an HttpOnly cookie and redirecting the code out of the URL
+   (ADR 0003).
+5. Scan the remote checkout's `package.json` files for Vite/Next app ports and
+   confirm them once. For each confirmed logical port, start one fixed-target
+   HTTP/WebSocket relay inside the Sandbox, prove its listener is bound, and
+   apply the relay ports — not the app ports — through
+   `Sandbox.update({ ports })` on the running Sandbox (ADR 0007). Output joins
+   routes back to logical ports through the persisted mapping. The selection is
+   bound to the Sandbox identity, the candidate fingerprint, the detector
+   version, and remote `HEAD`, and is written pending-then-commit so an
+   interrupted update is reconcilable against actual routes and PID-verified
+   relay processes.
 6. Stop, resume, and remove use terminal session proof plus snapshot relisting.
    Metadata is removed only after cloud cleanup converges; residual IDs remain
    in a mode-`0600` retry record after partial cleanup.
@@ -55,10 +60,12 @@ flowchart LR
   SDK --> TTY[Interactive terminal]
   Vercel --> Detect[Bounded Vite/Next detector]
   Detect --> Confirm[Public-route confirmation]
-  Confirm --> Update[Sandbox.update ports]
-  SDK --> Routes[6080 + explicit + accepted app ports]
+  Confirm --> Relays[One relay per logical app port]
+  Relays --> Update[Sandbox.update relay ports]
+  SDK --> Routes[6080 + one relay route per app port]
   Update --> Routes
   Runtime --> Routes
+  Relays --> App[localhost app listeners]
 ```
 
 ## CI and acceptance
@@ -66,7 +73,8 @@ flowchart LR
 Local quality runs on the supported Node 22 LTS lane.
 Credentialed image, provider-UAT, and five-run benchmark workflows are
 secret-gated, serialized by concurrency, and triggered only by an owner-
-authorized PR, a default-branch manual dispatch, or the release workflow.
+authorized branch/default-branch dispatch or the release workflow. Pull
+requests stay on the credential-free CI path.
 They redact evidence before upload and fail on residual Sandboxes, snapshots,
 running sessions, leaked credentials, or a benchmark median above 10 seconds.
 
