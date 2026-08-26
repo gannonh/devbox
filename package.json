@@ -15,13 +15,6 @@
   "engines": {
     "node": ">=22"
   },
-  "devEngines": {
-    "packageManager": {
-      "name": "npm",
-      "version": "12.0.2",
-      "onFail": "download"
-    }
-  },
   "scripts": {
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc",
