@@ -409,19 +409,21 @@ jobs:
             echo "GitHub Release v${TARGET_VERSION} already exists"
             exit 0
           fi
-          cat > /tmp/release-notes.md <<'EOF'
+          cat > /tmp/release-notes.md <<EOF
           ## Install
 
-          ```sh
+          \`\`\`sh
           npx @gannonh/devbox init
-          ```
+          \`\`\`
 
           or
 
-          ```sh
+          \`\`\`sh
           npm install -g @gannonh/devbox
           devbox init
-          ```
+          \`\`\`
+
+          Resolves the \`latest\` dist-tag (\`${TARGET_VERSION}\`).
           EOF
           gh release create "v${TARGET_VERSION}" \
             --title "v${TARGET_VERSION}" \

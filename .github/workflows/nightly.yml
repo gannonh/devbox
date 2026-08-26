@@ -2,8 +2,10 @@ name: Nightly
 
 # Builds the Sandbox image from the current ref, proves it with independent
 # publisher and consumer smoke gates, then publishes a prerelease carrying that
-# exact digest.  Nothing here opens a pull request: the image pin is a build
-# output, so a commit's code and its image always come from the same commit.
+# exact digest. After a successful npm publish it also cuts a GitHub prerelease
+# tag (for example, v0.1.11-nightly.42) with install notes. Nothing here opens a
+# pull request: the image pin is a build output, so a commit's code and its
+# image always come from the same commit.
 #
 # Runs automatically against main, and on demand against any ref so a branch can
 # be verified -- or installed with npx -- before it merges.
@@ -579,8 +581,10 @@ jobs:
       needs.candidate.result == 'success' &&
       needs.candidate.outputs.candidate_digest != ''
     runs-on: ubuntu-latest
+    # contents:write is only for the post-publish git tag + GitHub Release.
+    # This job still must not open a pull request or rewrite the image pin in source.
     permissions:
-      contents: read
+      contents: write
     env:
       SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
       CANDIDATE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
@@ -720,12 +724,94 @@ jobs:
 
       # `latest` is unreachable from this workflow: only the release workflow
       # may move it, and only from the default branch.
+      #
+      # Re-runs that already published skip republish and only ensure the
+      # channel dist-tag, then finish the GitHub tag/release below.
       - name: Publish prerelease to npm
         if: ${{ github.event_name == 'schedule' || inputs.publish }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          version='${{ steps.channel.outputs.version }}'
           tag='${{ steps.channel.outputs.tag }}'
           [[ "${tag}" != 'latest' ]] || { echo 'nightly must never publish to latest' >&2; exit 1; }
-          npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag "${tag}"
+          existing="$(npm view "@gannonh/devbox@${version}" version 2>/dev/null || true)"
+          if [[ "${existing}" == "${version}" ]]; then
+            echo "@gannonh/devbox@${version} already on the registry; ensuring dist-tag ${tag}"
+            npm dist-tag add "@gannonh/devbox@${version}" "${tag}"
+          else
+            echo "Publishing @gannonh/devbox@${version} to dist-tag ${tag}"
+            npm publish '${{ steps.pack.outputs.tarball }}' --access public --tag "${tag}"
+          fi
+
+      # Tag and GitHub Release only after npm publish succeeds. Marked as a
+      # prerelease so it never becomes Latest over stables. Idempotent: re-runs
+      # reuse an existing tag/release rather than failing.
+      - name: Create prerelease tag
+        id: prerelease_tag
+        if: ${{ success() && (github.event_name == 'schedule' || inputs.publish) }}
+        run: |
+          set -euo pipefail
+          version='${{ steps.channel.outputs.version }}'
+          tag="v${version}"
+          [[ "${version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(nightly|dev)\.[0-9A-Za-z.-]+)?$ ]] || {
+            echo "refusing to tag malformed prerelease version: ${version}" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "${SOURCE_COMMIT}" ]] || {
+            echo 'tag checkout does not match verified source commit' >&2
+            exit 1
+          }
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Local tag ${tag} already exists"
+          else
+            git tag "${tag}" "${SOURCE_COMMIT}"
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already on origin"
+          else
+            git push origin "refs/tags/${tag}"
+            echo "Pushed tag ${tag} at ${SOURCE_COMMIT}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: ${{ success() && (github.event_name == 'schedule' || inputs.publish) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.prerelease_tag.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.channel.outputs.version }}
+          DIST_TAG: ${{ steps.channel.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ -n "${RELEASE_TAG}" ]] || { echo 'prerelease tag was not resolved' >&2; exit 1; }
+          [[ "${DIST_TAG}" != 'latest' ]] || { echo 'nightly must never advertise latest' >&2; exit 1; }
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "GitHub Release ${RELEASE_TAG} already exists"
+            exit 0
+          fi
+          cat > /tmp/release-notes.md <<EOF
+          ## Install
+
+          \`\`\`sh
+          npx @gannonh/devbox@${DIST_TAG} init
+          \`\`\`
+
+          or
+
+          \`\`\`sh
+          npm install -g @gannonh/devbox@${DIST_TAG}
+          devbox init
+          \`\`\`
+
+          Published version: \`${RELEASE_VERSION}\` (\`${DIST_TAG}\` dist-tag).
+          EOF
+          gh release create "${RELEASE_TAG}" \
+            --prerelease \
+            --title "${RELEASE_TAG}" \
+            --notes-file /tmp/release-notes.md \
+            --target "${SOURCE_COMMIT}"
+          echo "Created GitHub prerelease ${RELEASE_TAG}"

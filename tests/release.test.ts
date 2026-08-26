@@ -179,6 +179,9 @@ describe('release workflow contract', () => {
     // Install instructions for both npx and npm i -g.
     expect(run).toContain('npx @gannonh/devbox init');
     expect(run).toContain('npm install -g @gannonh/devbox');
+    expect(run).toContain('latest');
+    // Idempotent: re-runs reuse an existing release.
+    expect(run).toContain('already exists');
     // GH_TOKEN must be available for gh release create.
     const env = create.env as Record<string, string> | undefined;
     expect(env?.GH_TOKEN).toBeDefined();
@@ -193,5 +196,88 @@ describe('release workflow contract', () => {
     expect(publishIdx).toBeGreaterThanOrEqual(0);
     expect(tagIdx).toBeGreaterThan(publishIdx);
     expect(releaseIdx).toBeGreaterThan(tagIdx);
+  });
+});
+
+describe('nightly workflow GitHub release contract', () => {
+  async function loadNightly(): Promise<Record<string, unknown>> {
+    const yaml = await import('js-yaml');
+    const path = resolve('.github/workflows/nightly.yml');
+    const content = readFileSync(path, 'utf-8');
+    return yaml.load(content) as Record<string, unknown>;
+  }
+
+  function publishJob(wf: Record<string, unknown>): Record<string, unknown> {
+    const jobs = wf.jobs as Record<string, Record<string, unknown>>;
+    return jobs.publish;
+  }
+
+  function publishSteps(wf: Record<string, unknown>): Array<Record<string, unknown>> {
+    return (publishJob(wf).steps as Array<Record<string, unknown>>) ?? [];
+  }
+
+  function publishStepByName(wf: Record<string, unknown>, name: string): Record<string, unknown> {
+    const step = publishSteps(wf).find((s) => String(s.name) === name);
+    if (!step) throw new Error(`publish step "${name}" not found`);
+    return step;
+  }
+
+  it('gives the publish job contents:write for tags and releases only', async () => {
+    const wf = await loadNightly();
+    const jobs = wf.jobs as Record<string, Record<string, unknown>>;
+    const top = wf.permissions as Record<string, string>;
+    expect(top.contents).toBe('read');
+    expect((jobs.candidate.permissions as Record<string, string>).contents).toBe('read');
+    expect((jobs.publish.permissions as Record<string, string>).contents).toBe('write');
+  });
+
+  it('creates a prerelease tag and GitHub Release after npm publish', async () => {
+    const wf = await loadNightly();
+    const names = publishSteps(wf).map((s) => String(s.name ?? ''));
+    const publishIdx = names.indexOf('Publish prerelease to npm');
+    const tagIdx = names.indexOf('Create prerelease tag');
+    const releaseIdx = names.indexOf('Create GitHub Release');
+    expect(publishIdx).toBeGreaterThanOrEqual(0);
+    expect(tagIdx).toBeGreaterThan(publishIdx);
+    expect(releaseIdx).toBeGreaterThan(tagIdx);
+
+    const tag = publishStepByName(wf, 'Create prerelease tag');
+    const tagRun = String(tag.run ?? '');
+    expect(String(tag.if ?? '')).toContain('success()');
+    expect(tagRun).toContain('git tag');
+    expect(tagRun).toContain('git push origin');
+    expect(tagRun).toContain('already on origin');
+
+    const create = publishStepByName(wf, 'Create GitHub Release');
+    const run = String(create.run ?? '');
+    expect(String(create.if ?? '')).toContain('success()');
+    expect(run).toContain('gh release create');
+    expect(run).toContain('--prerelease');
+    expect(run).toContain('already exists');
+    expect(run).toContain('npx @gannonh/devbox@${DIST_TAG} init');
+    expect(run).toContain('npm install -g @gannonh/devbox@${DIST_TAG}');
+    expect(run).not.toContain('@latest');
+    const env = create.env as Record<string, string> | undefined;
+    expect(env?.GH_TOKEN).toBeDefined();
+    expect(env?.DIST_TAG).toBe('${{ steps.channel.outputs.tag }}');
+  });
+
+  it('skips republish when the prerelease version is already on npm', async () => {
+    const wf = await loadNightly();
+    const publish = publishStepByName(wf, 'Publish prerelease to npm');
+    const run = String(publish.run ?? '');
+    expect(run).toContain('npm view "@gannonh/devbox@${version}" version');
+    expect(run).toContain('already on the registry');
+    expect(run).toContain('npm dist-tag add');
+    expect(run).toContain("npm publish '${{ steps.pack.outputs.tarball }}'");
+    expect(run).toContain("\"${tag}\" != 'latest'");
+  });
+
+  it('never opens a pull request from Nightly', async () => {
+    const wf = await loadNightly();
+    const text = JSON.stringify(wf);
+    expect(text).not.toContain('gh pr create');
+    expect(text).not.toContain('gh pr merge');
+    expect(text).not.toContain('pull-requests: write');
   });
 });
