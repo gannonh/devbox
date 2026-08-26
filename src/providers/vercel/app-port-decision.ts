@@ -23,6 +23,8 @@ export interface DecideAppPortSelectionInput {
   branch: string;
   exposePorts?: readonly number[];
   reusable: boolean;
+  /** False when the remote checkout could not be read, so inference is unavailable. */
+  inferenceAvailable: boolean;
   previousSelected: readonly number[];
   candidates: readonly AppPortCandidate[];
   configured: readonly number[];
@@ -66,6 +68,14 @@ export function decideAppPortSelection(input: DecideAppPortSelectionInput): AppP
         ? { notice: `app ports: reusing the confirmed selection ${formatPorts(selected)}` }
         : {}),
     };
+  }
+
+  // A failed remote scan must never turn a routine boot into a blocking
+  // prompt. Trusted configured ports are still added by the flow, and a
+  // previously confirmed selection is retained until the checkout can be
+  // inspected again.
+  if (!input.inferenceAvailable) {
+    return { kind: 'selected', selected: [...input.previousSelected] };
   }
 
   if (input.candidates.length > 0 && !candidatesFitCapacity(input.configured, input.candidates)) {

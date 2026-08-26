@@ -121,7 +121,7 @@ On the boot that creates the sandbox, `--timeout <minutes>` sets the Sandbox tim
 npx @gannonh/devbox --provider vercel my-branch --timeout 90 --vcpus 4
 ```
 
-Your application must listen on the exposed port. For Vite, run `npm run dev -- --host 0.0.0.0 --strictPort`. On Vite 5.4.12 or newer, add `server.allowedHosts: ['.vercel.run']`.
+Run your project's ordinary dev command. Devbox publishes each approved port through a small relay inside the sandbox that forwards HTTP and WebSocket traffic to `localhost:<port>`, so a loopback-bound server works without `--host`, and Vite's `server.allowedHosts` check passes without a config change. Until the app starts listening, the URL returns a `502`; it serves the app as soon as the server is up, with no new URL. See [ADR 0007](docs/adrs/0007-relay-backed-public-app-routes.md).
 
 See the [Vercel provider reference](docs/reference/vercel-provider.md) for command details, configuration order, and recovery behavior.
 

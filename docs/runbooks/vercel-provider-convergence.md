@@ -46,8 +46,9 @@ failed run, residual resource, or median over `10000ms` exits nonzero.
 
 The `Vercel provider UAT` workflow is called by the release workflow after the
 provider terminal smoke, or dispatched manually on the default branch with the
-image reference to exercise. Pull requests never reach it. It is serialized and requires the consumer Vercel triad,
-a private fixture repository, and the fixture Electron/Vite/OAuth contract.
+image reference to exercise. Pull requests never reach it. It is serialized and
+requires the consumer Vercel triad, a private fixture repository, and the
+fixture Electron/Vite/OAuth contract plus the relay-backed app-route fixture.
 The run must prove private clone, branch creation, interactive terminal,
 Pi/Claude/Codex/OpenCode, authenticated noVNC HTTP and WebSocket access,
 Chromium localhost OAuth, Electron/Vite, authenticated push, stop/resume with
@@ -73,20 +74,21 @@ fixture token, Vercel token, display access code (`token=` or
 `devbox_novnc=`), `.env` values, URLs with
 credentials, port `5900`, and residual resource IDs. Any match fails the run.
 
-## Zero-config app-port UAT
+## Relay-backed app-route UAT
 
-`scripts/vercel/app-port-uat.mjs` proves the public app-route path from
-[#13](https://github.com/gannonh/devbox/issues/13) against real infrastructure.
-It drives production CLI dispatch — real credentials, source, image, lifecycle,
-runtime sync, detector, prompt, port update, and metadata — and injects only the
-terminal adapter, so the run needs no PTY.
+`scripts/vercel/app-port-uat.mjs` proves the relay-backed public app-route path
+from [#17](https://github.com/gannonh/devbox/issues/17) against real
+infrastructure. It drives production CLI dispatch — real credentials, source,
+image, lifecycle, runtime sync, detector, prompt, relay manager, port update,
+and metadata — and injects only the terminal adapter, so the run needs no PTY.
 
-It expects two disposable branches in a throwaway remote repository: one whose
-root `package.json` has `"dev": "vite"`, one whose root has `"dev": "next dev"`,
-each with a single page carrying a known marker string, no
-`.devcontainer/devcontainer.json`, and no secrets. The Vite branch also sets
-`server.allowedHosts` — Vite 5.4.12+ rejects the generated sandbox host, which
-is the app's own reverse-proxy setting and not a devbox concern.
+The default scenario clones `gannonh/uat-devbox` at
+`180442037b52775618b2d56cdf7f218514aa9b00` on `main`. That pinned commit is a
+pnpm monorepo whose `apps/web` member runs the ordinary `pnpm --filter web dev`
+command and contains the initial browser marker. It has no
+`.devcontainer/devcontainer.json`, `server.allowedHosts`, or `--host` flag.
+Routes point at the Sandbox-local relay, which presents the app a `Host` of
+`localhost:<port>` (ADR 0007).
 
 ```bash
 (set -a; . "$PWD/.env"; set +a; \
@@ -98,14 +100,16 @@ is the app's own reverse-proxy setting and not a devbox concern.
   node scripts/vercel/app-port-uat.mjs)
 ```
 
-`DEVBOX_UAT_ONLY=vite|next` runs one scenario. Each phase asserts before it
-records, so a green run is proof rather than a transcript: the candidate is
-offered, the route set changes without the Sandbox identity changing, the public
-route returns the fixture marker, `--url` labels the app route public and `6080`
-as noVNC, a resume neither re-prompts nor re-updates, the injected
-metadata-commit failure leaves a reconcilable pending record that the next run
-commits, and removal leaves no Sandbox, no non-deleted snapshot, and no local
-metadata.
+`DEVBOX_UAT_ONLY=monorepo|vite|next|both` selects a scenario. Each phase asserts
+before it records, so a green run is proof rather than a transcript: the
+candidate is offered, the fresh Sandbox exposes `6080` only, the route set
+changes without changing Sandbox identity, the public route returns the fixture
+marker, `--url` labels the logical app port and `6080` as noVNC, a real browser
+observes HMR without a navigation or URL change, same-Sandbox attach reuses the
+transport, the live port-limit boundary is measured, the injected
+metadata-commit failure leaves a reconcilable pending record, snapshot resume
+reconstructs the mapping, changed selection refreshes it, and removal leaves no
+Sandbox, no non-deleted snapshot, and no local metadata.
 
 The `port-limit-boundary` phase measures the service maximum rather than
 trusting a declaration. Reproduce it alone if the API changes: it should accept

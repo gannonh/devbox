@@ -37,6 +37,8 @@ result to the exact checkout.**
   port.
 - Accepted ports reach the running Sandbox through
   `Sandbox.update({ ports: <full desired list> })`. Nothing is recreated.
+  Since [ADR 0007](0007-relay-backed-public-app-routes.md), the list carries
+  each port's relay listener rather than the app port itself.
 - The selection is stored with the candidate fingerprint, the detector version,
   and the exact remote `git rev-parse HEAD`, so a resume re-applies it silently
   and a changed project asks again.
@@ -112,17 +114,22 @@ recorded next to it.
   claiming a route that does not exist. Pending-first means the untracked
   direction is the safe one: a route that exists is always described by a
   record.
-- **Launch the dev server, or relay loopback to the public port.** Out of scope
-  and a much larger trust decision; devbox exposes the port and says so.
+- **Launch the dev server.** Out of scope and a much larger trust decision;
+  devbox exposes the port and says so. (Relaying loopback to the public port
+  was rejected here too, and later accepted on its own evidence in
+  [ADR 0007](0007-relay-backed-public-app-routes.md) — launching the dev
+  command was not.)
 
 ## Consequences
 
 - A normal Vite or Next repository works with no devbox-specific configuration,
   which was the point.
-- Serving on the route stays the app's job. Binding externally is required, and
-  Vite 5.4.12+ additionally rejects the generated host until the project sets
-  `server.allowedHosts`. Documented rather than worked around, because it is
-  identical behind any tunnel.
+- Serving on the route stays the app's job, but reaching the app no longer
+  requires the project's help. This ADR originally required the developer to
+  bind externally and, on Vite 5.4.12+, to add `server.allowedHosts`, because
+  devbox exposed the app's own listener. [ADR 0007](0007-relay-backed-public-app-routes.md)
+  supersedes that: a relay is published instead, so a loopback-bound dev server
+  with a default host check works unedited.
 - A port update regenerates every route's subdomain, so a URL copied before an
   update goes stale. Devbox re-reads routes after updating and always prints
   current URLs.
