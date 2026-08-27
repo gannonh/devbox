@@ -67,7 +67,3 @@ If the skill is unavailable in this environment, install it with...
 `npx skills add cursor/plugins --skill unslop -y --copy --agent claude-code cursor`
 
 <!-- end  global rules -->
-
-## Codex pstack routing
-
-When the active coding harness is Codex, read and follow `.codex/pstack-models.md` before dispatching any pstack role. That file applies only to Codex. Other coding harnesses use their own pstack model configuration.
