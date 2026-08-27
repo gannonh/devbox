@@ -44,9 +44,32 @@ describe('local command output', () => {
     expect(output).toContain('(none)');
   });
 
+  it('lists running, paused, and stopped containers distinctly', async () => {
+    const shell = runner({
+      execQuiet: vi.fn().mockResolvedValue({
+        stdout: [
+          'main\tdevbox-main\trunning',
+          'feature/pause\tdevbox-pause\tpaused',
+          'feature/stop\tdevbox-stop\texited',
+        ].join('\n'),
+        code: 0,
+      }),
+    });
+    const ctx = context(shell);
+    let output = '';
+    ctx.stderr.on('data', (chunk) => { output += chunk.toString(); });
+
+    expect(await list(ctx)).toBe(0);
+    expect(output).toContain('main                   running');
+    expect(output).toContain('feature/pause          paused');
+    expect(output).toContain('resume with: devbox feature/pause --attach');
+    expect(output).toContain('feature/stop           stopped');
+    expect(output).toContain('start with: devbox feature/stop');
+  });
+
   it('writes URL output to the caller-provided stdout stream', async () => {
     const shell = runner({
-      execQuiet: vi.fn().mockResolvedValue({ stdout: 'cid\n', code: 0 }),
+      execQuiet: vi.fn().mockResolvedValue({ stdout: 'cid\trunning\n', code: 0 }),
       exec: vi.fn().mockResolvedValue('/box'),
     });
     const ctx = context(shell);
@@ -80,7 +103,7 @@ describe('local command output', () => {
           return { stdout: 'build output\n', code: 0 };
         }
         if (command === 'docker' && args[0] === 'ps') {
-          return { stdout: devcontainerStarted && args[1] === '-q' ? 'cid\n' : '', code: 0 };
+          return { stdout: devcontainerStarted ? 'cid\trunning\n' : '', code: 0 };
         }
         return { stdout: '', code: 0 };
       }),

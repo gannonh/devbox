@@ -13,6 +13,7 @@ issue: https://github.com/gannonh/devbox/issues/7
 ```sh
 devbox --provider vercel <branch>
 devbox --provider vercel <branch> --attach
+devbox --provider vercel <branch> --pause
 devbox --provider vercel <branch> --url
 devbox --provider vercel <branch> --password
 devbox --provider vercel <branch> --stop
@@ -29,6 +30,14 @@ that surprises you.
 
 In a Vercel terminal, `Ctrl-C` reaches the remote foreground process and
 `Ctrl-]` detaches without stopping the Sandbox.
+
+`--pause` stops the persistent Sandbox session and keeps its latest snapshot.
+`--attach` or a normal boot resumes that snapshot without recloning,
+reinstalling dependencies, or rerunning the post-create hook. Runtime secrets,
+Pi configuration, display services, and recorded public relays are refreshed
+before the terminal opens. `--stop` uses the same persistent stop operation and
+reports the result as paused. `--rm` removes the Sandbox and all matching
+retained snapshots after cleanup verification.
 
 ## Configuration and precedence
 
@@ -205,10 +214,12 @@ when both match `desired`, cleared when both match `previous`, and otherwise
 restored to `previous`. A route that cannot be verified is never reported ready.
 
 A second attach to the same running Sandbox verifies the recorded relays and
-reuses them, so the URLs do not change. A snapshot resume, or metadata that no
-longer describes this Sandbox, takes the full provisioning path; the recorded
-relay port is preferred when it is still free, so a reconstructed relay often
-keeps its URL.
+reuses them, so the URLs do not change. A snapshot resume rescans the retained
+checkout and rebinds the recorded logical selection when the revision,
+fingerprint, and detector version still match. It provisions fresh relays
+without prompting; changed evidence takes the normal decision path. The
+recorded relay port is preferred when it is still free, so a reconstructed
+relay often keeps its URL.
 
 Devbox never launches or rewrites your dev command, and never edits your
 project. A route can exist before the app starts; that window returns the
@@ -267,6 +278,27 @@ all sessions are `stopped`/`aborted`, deletes the Sandbox and its snapshots,
 and relists until every matching snapshot is absent or `deleted`. A failed
 cleanup retains non-secret scope/residual IDs in mode-`0600` metadata for
 retry; metadata is removed only after verification.
+
+### Idle pause
+
+The TTY adapter writes `/vercel/.devbox/runtime/heartbeat` with mode `0600` when
+the user sends input, and a successful display health poll refreshes it while
+the display is healthy.
+WebSocket pings and the existence of an attach process are not activity. The
+new session created by a snapshot resume gets one bootstrap heartbeat before
+the idle timer starts. The default window is 15 minutes. Set
+`DEVBOX_IDLE_PAUSE_MINUTES=0` to disable automatic pause, or choose an integer
+from 1 through 1440. The value is stored per branch and can be changed on a
+later attach. A fresh heartbeat suppresses the pause. A missing or unreadable
+heartbeat is treated as idle only after the full window, and setup is never
+paused while `setup.status` is `running`. When the idle controller pauses a
+box, the next successful attach reports the UTC timestamp of that idle pause.
+`Ctrl-]` (or stdin EOF) detaches the remote TTY without stopping the Sandbox;
+the local CLI keeps the idle monitor running until that pause fires, then exits.
+
+`--list` reports Vercel records with `running`, `paused`, or `stopped` state.
+A stopped record with a retained snapshot is `paused` and includes its
+snapshot ID and age. A stopped record without a snapshot remains `stopped`.
 
 Sandbox limits and pricing change over time; check the [official pricing and
 limits](https://vercel.com/docs/sandbox/pricing) page before selecting a

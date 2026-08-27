@@ -715,10 +715,19 @@ describe('Vercel supply-chain script boundaries', () => {
     const temp = await mkdtemp(join(tmpdir(), 'vercel-display-status-'));
     const bin = join(temp, 'bin');
     const fakePgrep = join(bin, 'pgrep');
+    const fakeMkdir = join(bin, 'mkdir');
+    const fakeDate = join(bin, 'date');
+    const fakeChmod = join(bin, 'chmod');
     try {
       await mkdir(bin);
       await writeFile(fakePgrep, '#!/bin/sh\nprintf "123\\n"\n');
+      await writeFile(fakeMkdir, '#!/bin/sh\nexit 0\n');
+      await writeFile(fakeDate, '#!/bin/sh\nprintf "1700000000\\n"\n');
+      await writeFile(fakeChmod, '#!/bin/sh\nexit 0\n');
       await chmod(fakePgrep, 0o755);
+      await chmod(fakeMkdir, 0o755);
+      await chmod(fakeDate, 0o755);
+      await chmod(fakeChmod, 0o755);
 
       const { stdout, stderr } = await execFileAsync('bash', ['images/vercel/status-devbox.sh'], {
         env: {
@@ -732,6 +741,9 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(stdout).toBe('[devbox-status] display=running\n');
       expect(stdout).not.toContain('=working');
       expect(stdout).not.toContain('image checks passed');
+      const status = await readFile('images/vercel/status-devbox.sh', 'utf8');
+      expect(status).toContain('write_display_heartbeat');
+      expect(status).toContain('chmod 600');
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

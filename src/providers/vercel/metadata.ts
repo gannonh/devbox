@@ -14,6 +14,7 @@ export type {
   MetadataLockOptions,
 } from './metadata-lock.js';
 export {
+  patchBranchMetadata,
   toBranchMetadataInput,
   withAppPortFields,
 } from './metadata-schema.js';
@@ -29,6 +30,7 @@ export type {
   VercelMetadataInput,
   VercelResidualMetadata,
   VercelDisplayCredentials,
+  VercelPausedSnapshot,
   VercelBranchMetadata,
   VercelBranchMetadataInput,
   VercelScopeMetadata,

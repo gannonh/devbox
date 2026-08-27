@@ -190,6 +190,7 @@ interface RunOptions {
   answers?: string[];
   store?: VercelBranchMetadataStore;
   secrets?: string[];
+  restoreRecorded?: boolean;
 }
 
 async function run(options: RunOptions = {}) {
@@ -234,6 +235,7 @@ async function run(options: RunOptions = {}) {
     stderr,
     ...(options.exposePorts === undefined ? {} : { exposePorts: options.exposePorts }),
     ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
+    ...(options.restoreRecorded === undefined ? {} : { restoreRecorded: options.restoreRecorded }),
     prompt: promptSpy as never,
   });
   return {
@@ -477,6 +479,34 @@ describe('zero-config app port flow', () => {
     // Preferring the recorded port is what lets the printed URL survive.
     expect(second.relays.get(5173)).toBe(relayPortFor(5173));
     expect(second.updates).toEqual([]);
+  });
+
+  it('restores recorded app routes after a snapshot only when checkout evidence matches', async () => {
+    const first = await run();
+    const resumed = await run({
+      store: first.store,
+      ports: [DEVBOX_NOVNC_PROXY_PORT],
+      restoreRecorded: true,
+      answers: [],
+    });
+
+    expect(resumed.prompt).not.toHaveBeenCalled();
+    expect(resumed.updates).toEqual([[DEVBOX_NOVNC_PROXY_PORT, relayPortFor(5173)]]);
+    expect(resumed.relayCommands.filter(([command]) => command === 'start')).toHaveLength(1);
+  });
+
+  it('falls back to the normal app-port decision when snapshot evidence changes', async () => {
+    const first = await run();
+    const resumed = await run({
+      store: first.store,
+      ports: [DEVBOX_NOVNC_PROXY_PORT],
+      client: { packageJson: NEXT_PACKAGE },
+      restoreRecorded: true,
+      answers: ['n'],
+    });
+
+    expect(resumed.prompt).toHaveBeenCalledTimes(1);
+    expect(resumed.updates).toEqual([]);
   });
 
   it('re-applies a confirmed selection when the Sandbox lost the route', async () => {

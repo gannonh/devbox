@@ -16,6 +16,7 @@ function provider(name: 'local' | 'vercel'): DevboxProvider {
     name,
     up: vi.fn(action),
     attach: vi.fn(action),
+    pause: vi.fn(action),
     stop: vi.fn(action),
     remove: vi.fn(action),
     list: vi.fn(action),
@@ -340,8 +341,9 @@ describe('CLI provider routing', () => {
     const root = repoRoot();
     const local = provider('local');
     const registry: ProviderRegistry = { local, vercel: provider('vercel') };
-    const actions: Array<{ args: string[]; method: 'up' | 'stop' | 'remove' | 'url' }> = [
+    const actions: Array<{ args: string[]; method: 'up' | 'pause' | 'stop' | 'remove' | 'url' }> = [
       { args: ['feature'], method: 'up' },
+      { args: ['feature', '--pause'], method: 'pause' },
       { args: ['feature', '--stop'], method: 'stop' },
       { args: ['feature', '--rm'], method: 'remove' },
       { args: ['feature', '--url', '--open'], method: 'url' },

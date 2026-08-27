@@ -2,6 +2,7 @@ import { setLogStreams } from '../../lib/log.js';
 import type { ShellRunner } from '../../lib/shell.js';
 import { attach } from './attach.js';
 import { list } from './list.js';
+import { pause } from './pause.js';
 import { rm } from './rm.js';
 import { stop } from './stop.js';
 import { up } from './up.js';
@@ -48,6 +49,9 @@ export function createLocalProvider(runner: ShellRunner): DevboxProvider {
     },
     async attach(request: ProviderBranchRequest): Promise<ProviderActionResult> {
       return action(await attach(launcherContext(request, runner), request.branch));
+    },
+    async pause(request: ProviderBranchRequest): Promise<ProviderActionResult> {
+      return action(await pause(launcherContext(request, runner), request.branch));
     },
     async stop(request: ProviderBranchRequest): Promise<ProviderActionResult> {
       return action(await stop(launcherContext(request, runner), request.branch));

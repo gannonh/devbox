@@ -1,0 +1,13 @@
+---
+description: sub-agent model routing
+alwaysApply: true
+---
+## Sub-agents
+
+Use sub-agents to delegate work. Focus on coordination, review and integration. Use fthe following guidance when dispatching tasks:
+
+- `inherit` — Default: keep the child on this chat’s model when you want the same judgment, context, and Auto routing, not a different brain.
+- `composer-2.5` — Use for hard implementation, refactors, and bugs where you want Composer’s stronger coding pass, not speed.
+- `composer-2.5-fast` — Use for mechanical, high-volume, or latency-sensitive work: targeted fixes, perf/hillclimb loops, tooling, and swarm workers.
+- `cursor-grok-4.6-xhigh` — Use for exploration, explanation, judgment, and prose when you want current Grok at extra-high reasoning.
+- `cursor-grok-4.5-high-fast` — Use as a second, cheaper Grok lane in panels so critics/arena/architects are not all the same model.

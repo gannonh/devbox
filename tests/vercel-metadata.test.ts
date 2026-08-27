@@ -118,6 +118,35 @@ describe('Vercel metadata', () => {
     expect('vcpus' in stored).toBe(false);
   });
 
+  it('round-trips paused snapshot and idle policy metadata', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-pause-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/new',
+    });
+
+    await store.write({
+      pausedSnapshot: {
+        id: 'snapshot-1',
+        sourceSessionId: 'session-1',
+        createdAt: 1_700_000_000_000,
+        idlePausedAt: 1_700_000_001_000,
+      },
+      idlePauseMinutes: 15,
+    });
+
+    await expect(store.read()).resolves.toMatchObject({
+      pausedSnapshot: {
+        id: 'snapshot-1',
+        sourceSessionId: 'session-1',
+        createdAt: 1_700_000_000_000,
+        idlePausedAt: 1_700_000_001_000,
+      },
+      idlePauseMinutes: 15,
+    });
+  });
+
   it.each([
     ['zero', 0],
     ['negative', -4],
