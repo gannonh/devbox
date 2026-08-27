@@ -95,7 +95,9 @@ to 15 minutes; set
 `DEVBOX_IDLE_PAUSE_MINUTES=0` to disable it or choose 1 through 1440. A missing
 heartbeat becomes idle only after the full window. A freshly snapshot-resumed
 session receives one bootstrap heartbeat before the idle timer starts; an
-ordinary attach does not reset an old heartbeat just by existing.
+ordinary attach does not reset an old heartbeat just by existing. After `Ctrl-]`
+detaches the remote TTY, the local CLI keeps watching that heartbeat until
+auto-pause fires, then exits.
 
 For long-running work without terminal input, an agent may refresh the heartbeat
 explicitly:

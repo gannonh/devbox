@@ -125,6 +125,34 @@ describe('idle pause monitor', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(pause).toHaveBeenCalledOnce();
     expect(output.join('')).toContain('auto-paused');
-    stop();
+    await expect(stop.done).resolves.toBeUndefined();
+    stop.stop();
+  });
+
+  it('exposes a done promise that settles on explicit stop before pause', async () => {
+    let callback: (() => void) | undefined;
+    const scheduler = {
+      setTimeout: vi.fn((next: () => void) => {
+        callback = next;
+        return 1;
+      }),
+      clearTimeout: vi.fn(),
+    };
+    const monitor = startIdlePauseMonitor({
+      sandbox,
+      client: {} as VercelSandboxClient,
+      idlePauseMinutes: 1,
+      pause: vi.fn(async () => {}),
+      stderr: new PassThrough(),
+      readyAtMs: 0,
+      now: () => 0,
+      scheduler,
+      pollIntervalMs: 1_000,
+      readHeartbeat: async () => 0,
+      readSetup: async () => null,
+    });
+    expect(callback).toBeTypeOf('function');
+    monitor.stop();
+    await expect(monitor.done).resolves.toBeUndefined();
   });
 });

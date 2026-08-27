@@ -17,6 +17,7 @@ import {
   resolveProvider,
   type ProviderRegistry,
 } from './providers/registry.js';
+import { awaitPendingIdleGuards } from './providers/vercel/provider.js';
 import { describeProviderChoice, resolveProviderChoice } from './providers/preference.js';
 import { parseExposePortsList, VercelPortsError } from './providers/ports.js';
 import { readEnvironmentFile } from './providers/local/env.js';
@@ -866,6 +867,10 @@ async function main() {
     stdout: process.stdout,
     stderr: process.stderr,
   });
+  // Clean Ctrl-] detach returns from the provider immediately so the TTY is
+  // released, but the idle cost-guard may still be running. Wait for it before
+  // forcing process exit; otherwise no process remains to observe the heartbeat.
+  await awaitPendingIdleGuards();
   process.exit(code);
 }
 

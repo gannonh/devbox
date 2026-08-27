@@ -146,10 +146,24 @@ export interface IdlePauseMonitorOptions extends RemoteHeartbeatOptions {
   pollIntervalMs?: number;
 }
 
-export function startIdlePauseMonitor(options: IdlePauseMonitorOptions): () => void {
-  if (options.idlePauseMinutes === 0) return () => {};
+export interface IdlePauseMonitorHandle {
+  stop(): void;
+  /** Settles when the monitor stops after a successful pause or an explicit stop. */
+  readonly done: Promise<void>;
+}
+
+export function startIdlePauseMonitor(options: IdlePauseMonitorOptions): IdlePauseMonitorHandle {
+  if (options.idlePauseMinutes === 0) {
+    return { stop() {}, done: Promise.resolve() };
+  }
   const scheduler = options.scheduler ?? {
-    setTimeout: (callback: () => void, delay: number) => setTimeout(callback, delay),
+    setTimeout: (callback: () => void, delay: number) => {
+      const handle = setTimeout(callback, delay);
+      // Detached terminals leave this monitor running after attach returns. Keep
+      // the handle unref'd so a test process can exit if it does not await done.
+      handle.unref?.();
+      return handle;
+    },
     clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   } satisfies IdlePauseScheduler;
   const now = options.now ?? (() => Date.now());
@@ -167,11 +181,16 @@ export function startIdlePauseMonitor(options: IdlePauseMonitorOptions): () => v
   let stopped = false;
   let checking = false;
   let timer: unknown;
+  let settleDone!: () => void;
+  const done = new Promise<void>((resolve) => {
+    settleDone = resolve;
+  });
   const stop = () => {
     if (stopped) return;
     stopped = true;
     if (timer !== undefined) scheduler.clearTimeout(timer);
     timer = undefined;
+    settleDone();
   };
   const schedule = () => {
     if (stopped || options.signal?.aborted) return;
@@ -212,8 +231,11 @@ export function startIdlePauseMonitor(options: IdlePauseMonitorOptions): () => v
   };
   schedule();
   options.signal?.addEventListener('abort', stop, { once: true });
-  return () => {
-    stop();
-    options.signal?.removeEventListener('abort', stop);
+  return {
+    stop: () => {
+      stop();
+      options.signal?.removeEventListener('abort', stop);
+    },
+    done,
   };
 }

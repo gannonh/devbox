@@ -293,6 +293,8 @@ later attach. A fresh heartbeat suppresses the pause. A missing or unreadable
 heartbeat is treated as idle only after the full window, and setup is never
 paused while `setup.status` is `running`. When the idle controller pauses a
 box, the next successful attach reports the UTC timestamp of that idle pause.
+`Ctrl-]` (or stdin EOF) detaches the remote TTY without stopping the Sandbox;
+the local CLI keeps the idle monitor running until that pause fires, then exits.
 
 `--list` reports Vercel records with `running`, `paused`, or `stopped` state.
 A stopped record with a retained snapshot is `paused` and includes its

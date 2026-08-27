@@ -34,7 +34,8 @@ per-branch default, accepts zero to disable, and never treats WebSocket pings or
 host-side attachment as activity. A newly snapshot-resumed session gets one
 bootstrap heartbeat before the timer starts. It waits through the complete
 window for a missing or unreadable heartbeat and does not pause while setup
-status is `running`.
+status is `running`. A clean terminal detach (`Ctrl-]`, stdin EOF) releases the
+TTY but keeps the idle monitor in the CLI process until auto-pause fires.
 
 ## Consequences
 

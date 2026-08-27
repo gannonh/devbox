@@ -81,6 +81,8 @@ import {
   resolveIdlePauseMinutes,
   startIdlePauseMonitor,
   type HeartbeatWriter,
+  type IdlePauseMonitorHandle,
+  type IdlePauseScheduler,
 } from './idle-pause.js';
 import {
   renderVercelAttachNotice,
@@ -100,6 +102,13 @@ export interface VercelConfirmationBoundary {
 }
 export type VercelOpener = (url: string) => void | Promise<void>;
 
+export interface VercelIdlePauseTestHooks {
+  scheduler?: IdlePauseScheduler;
+  now?: () => number;
+  pollIntervalMs?: number;
+  readyAtMs?: number;
+}
+
 export interface VercelProviderOptions {
   runner?: ShellRunner;
   /** Resolve the Sandbox image reference; defaults to release pin or channel. */
@@ -115,6 +124,8 @@ export interface VercelProviderOptions {
   signalSource?: EventEmitter;
   /** Injection seam for the public app-port confirmation prompt. */
   appPortPrompt?: AppPortPrompt;
+  /** Test-only idle-monitor clock and scheduler controls. */
+  idlePause?: VercelIdlePauseTestHooks;
 }
 
 interface PreparedOperation {
@@ -246,6 +257,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         sandbox,
         secrets,
         runtime.snapshotResumed,
+        options.idlePause,
       );
       await renderVercelReadyBlock(
         request,
@@ -330,6 +342,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         sandbox,
         secrets,
         runtime.snapshotResumed,
+        options.idlePause,
       );
       await renderVercelAttachNotice(
         request,
@@ -845,6 +858,7 @@ async function terminalResult(
     ...(signalSource === undefined ? {} : { signalSource }),
     ...(idle === undefined ? {} : { onInputActivity: idle.heartbeat.onInputActivity }),
   };
+  let retainIdleAfterDetach = false;
   try {
     const result = await terminal.attach(sandbox, terminalOptions);
     if (result.status === 'detached' && result.reason === 'error') {
@@ -855,15 +869,41 @@ async function terminalResult(
         secrets,
       });
     }
+    // Clean detach ends the TTY session but leaves the Sandbox running. Keep the
+    // idle monitor alive so the default cost guard still fires without holding the
+    // attach transport open. Heartbeat writes from local input stop; remote display
+    // or agent heartbeats still count.
+    retainIdleAfterDetach = idle !== undefined
+      && result.status === 'detached'
+      && result.reason !== 'error';
+    if (retainIdleAfterDetach && idle !== undefined) {
+      idle.heartbeat.stop();
+      retainIdleGuard(idle);
+    }
     return mapTerminalResult(result);
   } finally {
-    idle?.stop();
+    if (!retainIdleAfterDetach) idle?.stop();
   }
 }
 
 interface IdleControl {
   heartbeat: HeartbeatWriter;
   stop(): void;
+  readonly done: Promise<void>;
+}
+
+const pendingIdleGuards = new Set<IdleControl>();
+
+function retainIdleGuard(idle: IdleControl): void {
+  pendingIdleGuards.add(idle);
+  void idle.done.finally(() => {
+    pendingIdleGuards.delete(idle);
+  });
+}
+
+/** Wait for idle monitors retained after a clean terminal detach. */
+export async function awaitPendingIdleGuards(): Promise<void> {
+  await Promise.all([...pendingIdleGuards].map((idle) => idle.done));
 }
 
 async function startIdleControl(
@@ -875,6 +915,7 @@ async function startIdleControl(
   sandbox: VercelSandboxHandle,
   secrets: readonly string[],
   initialHeartbeat: boolean,
+  idlePause?: VercelIdlePauseTestHooks,
 ): Promise<IdleControl | undefined> {
   const idlePauseMinutes = resolveIdlePauseMinutes(
     request.env.DEVBOX_IDLE_PAUSE_MINUTES,
@@ -888,7 +929,7 @@ async function startIdleControl(
     request.stderr.write(`Vercel idle pause disabled for this session: ${redactSecrets(error, secrets)}\n`);
     return undefined;
   }
-  const stopMonitor = startIdlePauseMonitor({
+  const monitor: IdlePauseMonitorHandle = startIdlePauseMonitor({
     sandbox,
     client,
     idlePauseMinutes,
@@ -905,12 +946,17 @@ async function startIdleControl(
       return report;
     },
     readHeartbeat: () => readRemoteHeartbeat({ sandbox, client }),
+    ...(idlePause?.scheduler === undefined ? {} : { scheduler: idlePause.scheduler }),
+    ...(idlePause?.now === undefined ? {} : { now: idlePause.now }),
+    ...(idlePause?.pollIntervalMs === undefined ? {} : { pollIntervalMs: idlePause.pollIntervalMs }),
+    ...(idlePause?.readyAtMs === undefined ? {} : { readyAtMs: idlePause.readyAtMs }),
   });
   return {
     heartbeat,
+    done: monitor.done,
     stop: () => {
       heartbeat.stop();
-      stopMonitor();
+      monitor.stop();
     },
   };
 }
