@@ -11,6 +11,12 @@
  */
 import type { ShellRunner } from '../../lib/shell.js';
 
+export type LocalContainer =
+  | { kind: 'missing' }
+  | { kind: 'running'; id: string }
+  | { kind: 'paused'; id: string }
+  | { kind: 'stopped'; id: string };
+
 /**
  * Format the id-label used to tag containers for a branch.
  */
@@ -18,13 +24,31 @@ export function idLabel(branch: string): string {
   return `devbox.branch=${branch}`;
 }
 
-/**
- * Find the running container id for a branch.
- * Returns empty string if none found.
- */
+export async function containerState(runner: ShellRunner, branch: string): Promise<LocalContainer> {
+  const result = await runner.execQuiet(
+    'docker',
+    [
+      'ps',
+      '-a',
+      '--filter',
+      `label=${idLabel(branch)}`,
+      '--format',
+      '{{.ID}}\t{{.State}}',
+    ],
+    {},
+  );
+  const [line = ''] = result.stdout.trim().split('\n');
+  const [id = '', state = ''] = line.split('\t');
+  if (!id) return { kind: 'missing' };
+  if (state === 'running') return { kind: 'running', id };
+  if (state === 'paused') return { kind: 'paused', id };
+  return { kind: 'stopped', id };
+}
+
+/** Find the running container id for a branch, or an empty string. */
 export async function containerFor(runner: ShellRunner, branch: string): Promise<string> {
-  const result = await runner.execQuiet('docker', ['ps', '-q', '--filter', `label=${idLabel(branch)}`], {});
-  return result.stdout.trim();
+  const container = await containerState(runner, branch);
+  return container.kind === 'running' ? container.id : '';
 }
 
 /**
@@ -32,8 +56,8 @@ export async function containerFor(runner: ShellRunner, branch: string): Promise
  * Returns empty string if none found.
  */
 export async function containerForAll(runner: ShellRunner, branch: string): Promise<string> {
-  const result = await runner.execQuiet('docker', ['ps', '-aq', '--filter', `label=${idLabel(branch)}`], {});
-  return result.stdout.trim();
+  const container = await containerState(runner, branch);
+  return container.kind === 'missing' ? '' : container.id;
 }
 
 /**

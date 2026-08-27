@@ -99,6 +99,8 @@ export interface VercelTerminalOptions {
   /** Provider-neutral TTY fact; avoids consulting a global process stream. */
   tty?: boolean;
   signal?: AbortSignal;
+  /** Records real terminal input as remote user activity. */
+  onInputActivity?: () => void;
   signalSource?: EventEmitter;
   detachSignals?: readonly ('SIGTERM' | 'SIGHUP')[];
   getSize?: () => VercelTerminalSize;
@@ -613,6 +615,13 @@ async function attachTerminal(input: {
         reportError(error);
         requestTerminal({ status: 'detached', reason: 'error' });
         return;
+      }
+      if (input.length > 0) {
+        try {
+          options.onInputActivity?.();
+        } catch {
+          // Activity recording must not break terminal input.
+        }
       }
       const escapeAt = input.indexOf(0x1d);
       if (escapeAt >= 0) {

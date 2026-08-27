@@ -52,6 +52,7 @@ npx @gannonh/devbox init                              # generate default .devbox
 npx @gannonh/devbox <branch>                          # boot a local box
 npx @gannonh/devbox <branch> --env PATH               # load dotenv values for this run
 npx @gannonh/devbox <branch> --attach                 # enter a running box
+npx @gannonh/devbox <branch> --pause                  # pause it but keep its resources
 npx @gannonh/devbox <branch> --stop                   # stop the box but keep its resources
 npx @gannonh/devbox <branch> --rm                     # remove the box, worktree, and branch
 npx @gannonh/devbox <branch> --url                    # print provider routes
@@ -59,7 +60,7 @@ npx @gannonh/devbox <branch> --open                   # open the first route
 npx @gannonh/devbox --list                            # list local boxes
 ```
 
-`--attach` reuses the environment stored with the box. Passing `--env` again replaces it. `--stop` rejects `--env` because stopping a box transfers no environment values.
+`--attach` reuses the environment stored with the box. Passing `--env` again replaces it. `--pause` pauses a local container and resumes it without restarting the display. On Vercel, pause and stop retain one persistent snapshot, and attach resumes that snapshot without recloning or reinstalling dependencies. `--stop` rejects `--env` because stopping a box transfers no environment values.
 
 ## How it works
 
@@ -95,6 +96,7 @@ The Vercel provider runs without a local Docker runtime and makes the display av
 ```bash
 npx @gannonh/devbox --provider vercel my-branch
 npx @gannonh/devbox my-branch --password
+npx @gannonh/devbox my-branch --pause
 ```
 
 The Sandbox clones the GitHub origin. Dirty files and unpushed commits remain on your machine.
@@ -108,6 +110,10 @@ On first use, devbox prints the Vercel team and project, then asks for confirmat
 The display URL contains a one-use access code. Opening the complete URL exchanges the code for a session cookie. If the URL is stale or incomplete, run `--password` and enter the printed code in the pairing form.
 
 In the remote terminal, `Ctrl-C` reaches the foreground process. `Ctrl-]` disconnects without stopping the Sandbox.
+
+`--pause` stops the Vercel Sandbox session and retains its latest snapshot. The next boot or attach restores that snapshot, refreshes GitHub credentials, dotenv values, Pi configuration, display services, and public relays, then opens the terminal without recloning or reinstalling dependencies. The snapshot ID and source session are stored in mode-`0600` host metadata. `--stop` reports the same Vercel snapshot as paused. `--rm` deletes the Sandbox and retained snapshots after verification.
+
+Re-entry records terminal input and successful display health polls at `/vercel/.devbox/runtime/heartbeat` with mode `0600`. A resumed Vercel box pauses automatically after 15 idle minutes by default. Set `DEVBOX_IDLE_PAUSE_MINUTES=0` to disable it, or use another integer from 1 through 1440. A fresh heartbeat prevents pausing; a missing or unreadable heartbeat becomes idle only after the full window. The next attach reports when an idle pause occurred.
 
 After checkout, devbox reads `package.json` files without executing them and suggests common application ports such as Vite's `5173`. It also scans npm workspace members. Approved ports become public without recreating the Sandbox. To skip the prompt, pass the ports explicitly:
 

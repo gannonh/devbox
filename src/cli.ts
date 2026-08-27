@@ -17,6 +17,7 @@ import {
   resolveProvider,
   type ProviderRegistry,
 } from './providers/registry.js';
+import { awaitPendingIdleGuards } from './providers/vercel/provider.js';
 import { describeProviderChoice, resolveProviderChoice } from './providers/preference.js';
 import { parseExposePortsList, VercelPortsError } from './providers/ports.js';
 import { readEnvironmentFile } from './providers/local/env.js';
@@ -41,6 +42,7 @@ USAGE
   devbox [--provider local|vercel] <branch>                    create/boot a box
   devbox [--provider local|vercel] <branch> --attach|-a        re-enter a running box
   devbox [--provider local|vercel] <branch> --url [--open|-o]  print or open provider routes
+  devbox [--provider local|vercel] <branch> --pause            pause (keeps box resources)
   devbox [--provider local|vercel] <branch> --stop             stop (keeps worktree + container)
   devbox [--provider local|vercel] <branch> --rm               remove container, worktree, and branch
   devbox [--provider local|vercel] <branch> --password         print the display access code (when supported)
@@ -112,6 +114,7 @@ USAGE
 
 ACTIONS
   --attach|-a    re-enter a running box
+  --pause        local: docker pause; Vercel: retain one snapshot
   --stop         stop the box (keeps local resources)
   --rm           remove the box and local resources
   --url [--open|-o]  print or open provider routes
@@ -134,6 +137,7 @@ FLAGS
 EXAMPLES
   devbox ${branch}                       # boot or re-enter a local box
   devbox ${branch} --attach              # re-enter the running box
+  devbox ${branch} --pause               # pause it
   devbox ${branch} --stop                # stop it
   devbox ${branch} --password            # print the display access code
   devbox --provider vercel ${branch}     # no init; remote sandbox, confirm scope on first use
@@ -178,8 +182,9 @@ USAGE
   devbox [--provider local|vercel] <branch> --attach|-a
 
 DESCRIPTION
-  Re-enters a running box for the branch. If the box is stopped, starts it
-  and re-brings the display stack up, then drops into a shell in /workspace.
+  Re-enters a box for the branch. If the local box is paused, resumes it
+  without restarting the display. If it is stopped, starts it and re-brings
+  the display stack up, then drops into a shell in /workspace.
   For Vercel, Ctrl-C reaches the remote process and Ctrl-] detaches without
   stopping the sandbox, and confirmed app routes are re-applied without a new
   prompt; --expose-ports <list> changes the exposed app ports.
@@ -187,6 +192,19 @@ DESCRIPTION
 EXAMPLES
   devbox ${branch} --attach
   devbox --provider local ${branch} --attach`;
+
+const PAUSE_HELP = (branch: string) => `devbox ${branch} --pause
+
+USAGE
+  devbox [--provider local|vercel] <branch> --pause
+
+DESCRIPTION
+  Pauses the selected provider's box without removing its resources. Re-enter
+  with: devbox ${branch} --attach
+
+EXAMPLES
+  devbox ${branch} --pause
+  devbox --provider local ${branch} --pause`;
 
 const STOP_HELP = (branch: string) => `devbox ${branch} --stop — stop the box (keeps worktree + container)
 
@@ -244,6 +262,7 @@ EXAMPLES
 const BRANCH_FLAGS = new Set([
   '--attach',
   '-a',
+  '--pause',
   '--stop',
   '--rm',
   '--url',
@@ -255,6 +274,7 @@ const BRANCH_FLAGS = new Set([
 export type BranchAction =
   | { action: 'up' }
   | { action: 'attach' }
+  | { action: 'pause' }
   | { action: 'stop' }
   | { action: 'rm' }
   | { action: 'url'; open: boolean }
@@ -365,6 +385,8 @@ function formatBranchUsage(branch: string, action: BranchAction): string {
   switch (action.action) {
     case 'attach':
       return ATTACH_HELP(branch);
+    case 'pause':
+      return PAUSE_HELP(branch);
     case 'stop':
       return STOP_HELP(branch);
     case 'rm':
@@ -387,6 +409,7 @@ export function resolveBranchAction(rest: string[]): BranchAction {
   const canonical = actionFlags.map((flag) => {
     if (flag === '--attach' || flag === '-a') return 'attach';
     if (flag === '--url' || flag === '--open' || flag === '-o') return 'url';
+    if (flag === '--pause') return 'pause';
     if (flag === '--stop') return 'stop';
     if (flag === '--rm') return 'rm';
     return 'password';
@@ -402,6 +425,7 @@ export function resolveBranchAction(rest: string[]): BranchAction {
     return { action: 'url', open: rest.includes('--open') || rest.includes('-o') };
   }
   if (action === 'attach') return { action: 'attach' };
+  if (action === 'pause') return { action: 'pause' };
   if (action === 'stop') return { action: 'stop' };
   if (action === 'rm') return { action: 'rm' };
   return { action: 'password' };
@@ -814,6 +838,14 @@ export async function dispatch(
       return runProviderOperation(() => provider.up(request), io);
     case 'attach':
       return runProviderOperation(() => provider.attach(request), io);
+    case 'pause': {
+      const pause = provider.pause;
+      if (pause === undefined) {
+        io.stderr.write(`[devbox] --pause is not supported by the ${provider.name} provider\n`);
+        return 2;
+      }
+      return runProviderOperation(() => pause(request), io);
+    }
     case 'stop':
       return runProviderOperation(() => provider.stop(request), io);
     case 'rm':
@@ -835,6 +867,10 @@ async function main() {
     stdout: process.stdout,
     stderr: process.stderr,
   });
+  // Clean Ctrl-] detach returns from the provider immediately so the TTY is
+  // released, but the idle cost-guard may still be running. Wait for it before
+  // forcing process exit; otherwise no process remains to observe the heartbeat.
+  await awaitPendingIdleGuards();
   process.exit(code);
 }
 

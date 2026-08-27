@@ -1685,6 +1685,45 @@ describe('Vercel lifecycle', () => {
     });
   });
 
+  it('projects a stopped Sandbox with a retained snapshot as paused and reports snapshot age', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-paused-list-'));
+    const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });
+    const handle = sandbox();
+    const createdAt = Math.floor((Date.now() - 120_000) / 1_000);
+    const client = {
+      listSandboxes: vi.fn(async () => [{
+        name: handle.name,
+        status: 'stopped' as const,
+        currentSnapshotId: 'snapshot-paused',
+        tags: { ...handle.tags },
+      }]),
+      listSnapshots: vi.fn(async () => [{
+        id: 'snapshot-paused',
+        status: 'created' as const,
+        createdAt,
+      }]),
+    } as unknown as VercelSandboxClient;
+    const lifecycle = createVercelLifecycle({
+      resolveImage: resolveTestImage,
+      repoRoot: '/repo',
+      branch: source.requestedBranch,
+      packageVersion: '0.1.2',
+      credentials,
+      source,
+      branchMetadataStore: metadata,
+      client,
+    });
+
+    await expect(lifecycle.list()).resolves.toEqual([expect.objectContaining({
+      name: handle.name,
+      status: 'paused',
+      sessionStatus: 'stopped',
+      currentSnapshotId: 'snapshot-paused',
+      snapshotCreatedAt: createdAt * 1_000,
+    })]);
+    expect(client.listSnapshots).toHaveBeenCalledWith({ credentials, name: handle.name });
+  });
+
   it('attaches to matching routes and rejects an unconfigured URL port', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-'));
     const metadata = createVercelBranchMetadataStore({ stateHome, repoKey: source.remote.canonical, branch: source.requestedBranch });

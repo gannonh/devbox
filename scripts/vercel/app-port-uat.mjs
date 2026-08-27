@@ -51,6 +51,7 @@ const MONOREPO_BRANCH = process.env.DEVBOX_UAT_MONOREPO_BRANCH ?? 'main';
 const MONOREPO_REVISION = '180442037b52775618b2d56cdf7f218514aa9b00';
 const MONOREPO_INITIAL_MARKER = 'Project ready!';
 const MONOREPO_UPDATED_MARKER = 'devbox-uat-hmr-updated';
+const MONOREPO_SNAPSHOT_SENTINEL = 'devbox-uat-snapshot-preserved';
 const VITE_BRANCH = process.env.DEVBOX_UAT_VITE_BRANCH ?? 'uat/vite-zero-config';
 const NEXT_BRANCH = process.env.DEVBOX_UAT_NEXT_BRANCH ?? 'uat/next-zero-config';
 const VITE_MARKER = 'devbox-uat-vite-zero-config-ok';
@@ -229,6 +230,18 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   record('monorepo-pre-listen', preListen);
 
   await runInSandbox(realClient, handle, workspace, 'pnpm', ['install', '--frozen-lockfile'], 600_000);
+  await runInSandbox(realClient, handle, workspace, 'sh', [
+    '-c',
+    `printf '%s\\n' '${MONOREPO_SNAPSHOT_SENTINEL}' > .devbox-uat-snapshot-sentinel && test -d node_modules`,
+  ], 60_000);
+  const setupLogBeforeResume = (await runInSandbox(
+    realClient,
+    handle,
+    workspace,
+    'sha256sum',
+    ['/vercel/.devbox/runtime/setup.log'],
+    60_000,
+  )).trim();
   await realClient.runCommand(handle, {
     cmd: 'pnpm',
     args: ['--filter', 'web', 'dev'],
@@ -374,9 +387,20 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
     urlShape: describeUrl(changedUrl),
   });
 
-  const stop = await runCli(['--provider', 'vercel', branch, '--stop'], { env, stateHome, registry });
-  assert(stop.code === 0, `monorepo stop exited ${stop.code}`);
-  assert(/snapshot|stopped/i.test(stop.stderr), 'monorepo stop did not report a stopped Sandbox');
+  const pause = await runCli(['--provider', 'vercel', branch, '--pause'], { env, stateHome, registry });
+  assert(pause.code === 0, `monorepo pause exited ${pause.code}`);
+  assert(/paused/i.test(pause.stderr), 'monorepo pause did not report a paused Sandbox');
+  const pausedMetadata = await store.read();
+  const pausedSnapshotId = pausedMetadata?.pausedSnapshot?.id;
+  assert(pausedSnapshotId !== undefined, 'monorepo pause did not retain a snapshot record');
+  const pausedList = await runCli(['--provider', 'vercel', '--list'], { env, stateHome, registry });
+  assert(pausedList.code === 0, `monorepo paused --list exited ${pausedList.code}`);
+  assert(/paused/.test(pausedList.stderr), 'monorepo --list did not report the paused Sandbox');
+  record('monorepo-paused-list', {
+    paused: true,
+    hasSnapshotId: true,
+    listReportsPaused: true,
+  });
   const resumed = await runCli(['--provider', 'vercel', branch], {
     env,
     stateHome,
@@ -386,16 +410,72 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   assert(resumed.code === 0, `monorepo snapshot resume exited ${resumed.code}`);
   const resumedMetadata = await store.read();
   handle = await realClient.get({ credentials, name, resume: true });
+  assert(resumedMetadata?.pausedSnapshot === undefined, 'snapshot metadata was not cleared after resume');
+  assert(handle.sourceSnapshotId === pausedSnapshotId, 'resumed Sandbox did not identify its source snapshot');
+  await runInSandbox(realClient, handle, workspace, 'sh', [
+    '-c',
+    `test -d node_modules && test -f .devbox-uat-snapshot-sentinel && test "$(cat .devbox-uat-snapshot-sentinel)" = '${MONOREPO_SNAPSHOT_SENTINEL}'`,
+  ], 60_000);
+  const setupLogAfterResume = (await runInSandbox(
+    realClient,
+    handle,
+    workspace,
+    'sha256sum',
+    ['/vercel/.devbox/runtime/setup.log'],
+    60_000,
+  )).trim();
+  assert(setupLogAfterResume === setupLogBeforeResume, 'snapshot resume reran the setup script');
   const resumedUrl = appRouteUrl(handle, resumedMetadata, 5173);
   assert(resumedUrl !== undefined, 'snapshot resume did not reconstruct the 5173 mapping');
+  assert(!/Expose the detected app port/.test(resumed.stderr), 'snapshot resume re-prompted for recorded app routes');
   await realClient.runCommand(handle, { cmd: 'pnpm', args: ['--filter', 'web', 'dev'], cwd: workspace, detached: true });
   const resumedFetch = await fetchMarker(resumedUrl, MONOREPO_UPDATED_MARKER, 300_000);
   assert(resumedFetch.markerPresent, 'snapshot-resumed monorepo route did not serve the app');
+  const runningList = await runCli(['--provider', 'vercel', '--list'], { env, stateHome, registry });
+  assert(runningList.code === 0, `monorepo running --list exited ${runningList.code}`);
+  assert(/running/.test(runningList.stderr), 'monorepo --list did not report the resumed Sandbox as running');
   record('monorepo-snapshot-resume', {
     routes: portsOf(handle),
     urlShape: describeUrl(resumedUrl),
     status: resumedFetch.status,
     markerPresent: resumedFetch.markerPresent,
+    sourceSnapshotProved: true,
+    dependenciesPreserved: true,
+    setupNotRerun: true,
+    routeReprompted: false,
+    listReportsRunning: true,
+  });
+
+  const idleRegistry = idleProviderRegistry(client, stateHome);
+  const idleRun = await runCli(['--provider', 'vercel', branch, '--attach'], {
+    env: { ...env, DEVBOX_IDLE_PAUSE_MINUTES: '1' },
+    stateHome,
+    registry: idleRegistry,
+  });
+  assert(idleRun.code === 0, `monorepo idle run exited ${idleRun.code}`);
+  assert(/auto-paused after the idle window/.test(idleRun.stderr), 'idle controller did not pause the stale-heartbeat box');
+  const idleMetadata = await store.read();
+  assert(idleMetadata?.pausedSnapshot?.idlePausedAt !== undefined, 'idle pause timestamp was not retained');
+  const idleList = await runCli(['--provider', 'vercel', '--list'], { env, stateHome, registry });
+  assert(idleList.code === 0 && /paused/.test(idleList.stderr), 'idle-paused box was not listed as paused');
+  record('monorepo-idle-pause', {
+    paused: true,
+    heartbeat: 'stale',
+    timestampRecorded: true,
+    listReportsPaused: true,
+  });
+
+  const resumedAfterIdle = await runCli(['--provider', 'vercel', branch, '--attach'], {
+    env,
+    stateHome,
+    registry,
+  });
+  assert(resumedAfterIdle.code === 0, `idle snapshot resume exited ${resumedAfterIdle.code}`);
+  assert(/idle-paused at \d{4}-\d{2}-\d{2}T/.test(resumedAfterIdle.stderr), 'next attach did not report the idle pause timestamp');
+  assert((await store.read())?.pausedSnapshot === undefined, 'idle pause metadata was not cleared after resume');
+  record('monorepo-idle-resume', {
+    noticeReported: true,
+    pausedMetadataCleared: true,
   });
 
   await removeAndVerify(cleanupContext);
@@ -753,6 +833,14 @@ async function removeAndVerify({ branch, env, stateHome, registry, realClient, c
 // --- harness ---------------------------------------------------------------
 
 function providerRegistry(client, stateHome) {
+  return providerRegistryWithTerminal(client, stateHome, {
+    // The only injected seam: the run has no PTY, and the interactive
+    // terminal is covered by the existing provider UAT.
+    attach: async () => ({ status: 'detached', reason: 'escape' }),
+  });
+}
+
+function providerRegistryWithTerminal(client, stateHome, terminal) {
   return {
     local: createLocalProvider(new RealShellRunner()),
     vercel: createVercelProvider({
@@ -761,11 +849,27 @@ function providerRegistry(client, stateHome) {
       // not the operator's, so the run proves first-use confirmation and
       // leaves nothing behind.
       stateHome,
-      // The only injected seam: the run has no PTY, and the interactive
-      // terminal is covered by the existing provider UAT.
-      terminal: { attach: async () => ({ status: 'detached', reason: 'escape' }) },
+      terminal,
     }),
   };
+}
+
+function idleProviderRegistry(client, stateHome) {
+  return providerRegistryWithTerminal(client, stateHome, {
+    attach: async (sandbox) => {
+      await client.runCommand(sandbox, {
+        cmd: 'sh',
+        args: [
+          '-c',
+          'umask 077; mkdir -p /vercel/.devbox/runtime; printf "1\\n" > /vercel/.devbox/runtime/heartbeat; chmod 600 /vercel/.devbox/runtime/heartbeat; touch -d @1 /vercel/.devbox/runtime/heartbeat',
+        ],
+      });
+      // One full one-minute policy window plus a margin lets the production
+      // idle monitor issue the real stop-and-snapshot operation.
+      await new Promise((resolve) => setTimeout(resolve, 70_000));
+      return { status: 'detached', reason: 'escape' };
+    },
+  });
 }
 
 function recordingClient(client, updates) {
@@ -846,6 +950,7 @@ async function runInSandbox(client, sandbox, cwd, cmd, args, timeoutMs) {
     const stderrText = result.stderr ? await result.stderr() : '';
     throw new Error(`${cmd} failed with exit code ${result.exitCode}: ${redact(stderrText).slice(0, 400)}`);
   }
+  return result.stdout ? await result.stdout() : '';
 }
 
 /**

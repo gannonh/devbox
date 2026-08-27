@@ -11,7 +11,8 @@ import {
 } from './display-startup.js';
 import { launchBackgroundSetup, type VercelSetupStatus } from './setup.js';
 import { sandboxIdentifier } from './lifecycle.js';
-import type { VercelBranchMetadataStore } from './metadata.js';
+import type { VercelBranchMetadataStore, VercelPausedSnapshot } from './metadata.js';
+import { parseVercelImageReference } from './image.js';
 import type { ShellRunner } from '../../lib/shell.js';
 import {
   resolveGitHubToken,
@@ -33,18 +34,58 @@ export const RUNTIME_PREPARATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 const PREPARATION_EVIDENCE_SENTINEL = '--DEVBOX--';
 
-/** Positive evidence that this Sandbox instance completed full preparation. */
-export interface RuntimePreparationMarker {
+/** Positive evidence that this Sandbox instance has a reusable runtime state. */
+export interface RuntimePreparationBase {
+  sandboxName: string;
+  sourceRevision: string;
+  imageDigest: string;
+  githubTokenSha256: string;
+  envSha256: string;
+}
+
+export type RuntimePreparationMarker = RuntimePreparationBase & (
+  | {
+    kind: 'running-session';
+    sessionInstanceId: string;
+  }
+  | {
+    kind: 'snapshot';
+    snapshotId: string;
+  }
+);
+
+export interface RuntimePreparationActualEvidence extends RuntimePreparationBase {
+  sessionInstanceId: string;
+  sourceSnapshotId?: string;
+}
+
+/** Legacy marker shape accepted for one-way compatibility with older boxes. */
+export interface LegacyRuntimePreparationMarker {
   sandboxId: string;
   revision: string;
   githubTokenHash: string;
   environmentHash: string;
 }
 
+export type RuntimePreparationActual =
+  | RuntimePreparationMarker
+  | RuntimePreparationActualEvidence
+  | LegacyRuntimePreparationMarker;
+
+export type RuntimePreparationEvidenceKind =
+  | 'full'
+  | 'running-session'
+  | 'running-sync'
+  | 'snapshot'
+  | 'snapshot-sync';
+
 export interface PreparedSandboxRuntime {
   setupStatus: VercelSetupStatus | null;
   /** True when evidence proved the box already prepared and work was skipped. */
   reused: boolean;
+  evidence: RuntimePreparationEvidenceKind;
+  /** True when the current SDK session was created from a retained snapshot. */
+  snapshotResumed: boolean;
 }
 
 export class VercelRuntimeSyncError extends Error {
@@ -71,28 +112,117 @@ export interface PrepareSandboxRuntimeOptions {
   signal?: AbortSignal;
   displayCredentialsStore?: VercelBranchMetadataStore;
   secrets?: string[];
+  pausedSnapshot?: VercelPausedSnapshot;
   /** `attach` attempts an evidence-backed skip before full preparation. */
   mode?: 'boot' | 'attach';
 }
 
 /**
- * A skip is only correct with positive evidence tied to this Sandbox instance
- * at an unchanged HEAD. Any absent, unreadable, or stale field means full
- * preparation, which is also the documented route by which a rotated host
- * `.env` or GitHub token reaches the box.
+ * Reuse is only correct with positive evidence tied to this Sandbox instance
+ * or to a retained snapshot at an unchanged HEAD. Any absent, unreadable, or
+ * stale stable field means full preparation. A rotated host `.env` or GitHub
+ * token takes the runtime-sync path so secrets are refreshed without trusting
+ * stale checkout evidence.
  */
 export function evaluatePreparation(
   marker: unknown,
-  actual: RuntimePreparationMarker,
+  actual: RuntimePreparationActual,
 ): boolean {
   if (typeof marker !== 'object' || marker === null || Array.isArray(marker)) return false;
   const candidate = marker as Record<string, unknown>;
-  return (
-    candidate.sandboxId === actual.sandboxId &&
-    candidate.revision === actual.revision &&
-    candidate.githubTokenHash === actual.githubTokenHash &&
-    candidate.environmentHash === actual.environmentHash
-  );
+  if (isLegacyPreparation(actual)) {
+    return (
+      candidate.sandboxId === actual.sandboxId &&
+      candidate.revision === actual.revision &&
+      candidate.githubTokenHash === actual.githubTokenHash &&
+      candidate.environmentHash === actual.environmentHash
+    );
+  }
+  if (candidate.kind === 'running-session') {
+    const actualSessionInstanceId = 'sessionInstanceId' in actual ? actual.sessionInstanceId : undefined;
+    return (
+      candidate.sandboxName === actual.sandboxName &&
+      candidate.sessionInstanceId === actualSessionInstanceId &&
+      candidate.sourceRevision === actual.sourceRevision &&
+      candidate.imageDigest === actual.imageDigest &&
+      candidate.githubTokenSha256 === actual.githubTokenSha256 &&
+      candidate.envSha256 === actual.envSha256
+    );
+  }
+  if (candidate.kind === 'snapshot') {
+    const actualSnapshotId = 'sourceSnapshotId' in actual
+      ? actual.sourceSnapshotId
+      : 'kind' in actual && actual.kind === 'snapshot' ? actual.snapshotId : undefined;
+    return (
+      candidate.sandboxName === actual.sandboxName &&
+      candidate.snapshotId === actualSnapshotId &&
+      candidate.sourceRevision === actual.sourceRevision &&
+      candidate.imageDigest === actual.imageDigest &&
+      candidate.githubTokenSha256 === actual.githubTokenSha256 &&
+      candidate.envSha256 === actual.envSha256
+    );
+  }
+  return false;
+}
+
+/** Classify the evidence before deciding which preparation work is safe. */
+export function classifyPreparation(
+  marker: unknown,
+  actual: RuntimePreparationActualEvidence,
+  pausedSnapshot?: VercelPausedSnapshot,
+): RuntimePreparationEvidenceKind {
+  if (typeof marker !== 'object' || marker === null || Array.isArray(marker)) return 'full';
+  const candidate = marker as Record<string, unknown>;
+  if ('sandboxId' in candidate || 'revision' in candidate) {
+    if (candidate.revision !== actual.sourceRevision) return 'full';
+    const hashesMatch = candidate.githubTokenHash === actual.githubTokenSha256
+      && candidate.environmentHash === actual.envSha256;
+    if (actual.sourceSnapshotId !== undefined) {
+      return pausedSnapshot?.id === actual.sourceSnapshotId
+        && pausedSnapshot.sourceSessionId === candidate.sandboxId
+        ? hashesMatch ? 'snapshot' : 'snapshot-sync'
+        : 'full';
+    }
+    if (candidate.sandboxId !== actual.sessionInstanceId) return 'full';
+    return hashesMatch ? 'running-session' : 'running-sync';
+  }
+  const stable = candidate.sandboxName === actual.sandboxName
+    && candidate.sourceRevision === actual.sourceRevision
+    && candidate.imageDigest === actual.imageDigest;
+  if (!stable) return 'full';
+  const hashesMatch = candidate.githubTokenSha256 === actual.githubTokenSha256
+    && candidate.envSha256 === actual.envSha256;
+  if (candidate.kind === 'running-session' && typeof candidate.sessionInstanceId === 'string') {
+    // Once a resumed session has rewritten the marker, its exact current
+    // session ID is sufficient proof on later attaches. The SDK may continue
+    // to expose the session's sourceSnapshotId for its whole lifetime.
+    if (candidate.sessionInstanceId === actual.sessionInstanceId) {
+      return hashesMatch ? 'running-session' : 'running-sync';
+    }
+    if (
+      actual.sourceSnapshotId !== undefined
+      && pausedSnapshot?.id === actual.sourceSnapshotId
+      && pausedSnapshot.sourceSessionId === candidate.sessionInstanceId
+    ) {
+      return hashesMatch ? 'snapshot' : 'snapshot-sync';
+    }
+    return 'full';
+  }
+  if (candidate.kind === 'snapshot' && typeof candidate.snapshotId === 'string') {
+    if (candidate.snapshotId !== actual.sourceSnapshotId) return 'full';
+    return hashesMatch ? 'snapshot' : 'snapshot-sync';
+  }
+  return 'full';
+}
+
+function isLegacyPreparation(actual: RuntimePreparationActual): actual is LegacyRuntimePreparationMarker {
+  return 'sandboxId' in actual;
+}
+
+function isLegacyMarker(marker: unknown): marker is LegacyRuntimePreparationMarker {
+  return isRecord(marker)
+    && typeof marker.sandboxId === 'string'
+    && typeof marker.revision === 'string';
 }
 
 function environmentStateHash(environment: Record<string, string>): string {
@@ -142,7 +272,7 @@ async function readPreparationEvidence(
 
 async function reusePreparedRuntime(
   options: PrepareSandboxRuntimeOptions,
-  secrets: readonly string[],
+  secrets: string[],
 ): Promise<PreparedSandboxRuntime> {
   const store = options.displayCredentialsStore;
   if (store && !await isDisplayStackRunning({ sandbox: options.sandbox, client: options.client })) {
@@ -150,7 +280,7 @@ async function reusePreparedRuntime(
       sandbox: options.sandbox,
       client: options.client,
       store,
-      secrets: [...secrets],
+      secrets,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     }));
   }
@@ -163,7 +293,12 @@ async function reusePreparedRuntime(
     ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   }));
-  return { setupStatus, reused: true };
+  return {
+    setupStatus,
+    reused: true,
+    evidence: 'running-session',
+    snapshotResumed: false,
+  };
 }
 
 export async function prepareSandboxRuntime(
@@ -186,16 +321,81 @@ export async function prepareSandboxRuntime(
   );
   const githubTokenHash = createHash('sha256').update(token, 'utf8').digest('hex');
   const environmentHash = environmentStateHash(runtimeEnvironment);
-  if (options.mode === 'attach') {
+  if (options.mode === 'attach' || options.mode === 'boot') {
     const evidence = await readPreparationEvidence(options);
-    const prepared = evidence !== null && evaluatePreparation(evidence.marker, {
-      sandboxId: sandboxIdentifier(options.sandbox),
-      revision: evidence.revision,
-      githubTokenHash,
-      environmentHash,
-    });
-    if (prepared) return reusePreparedRuntime(options, secrets);
+    if (evidence !== null) {
+      const actual: RuntimePreparationActualEvidence = {
+        sandboxName: options.sandbox.name,
+        sessionInstanceId: sandboxIdentifier(options.sandbox),
+        sourceRevision: evidence.revision,
+        imageDigest: sandboxImageDigest(options.sandbox),
+        githubTokenSha256: githubTokenHash,
+        envSha256: environmentHash,
+        ...(options.sandbox.sourceSnapshotId === undefined
+          ? {}
+          : { sourceSnapshotId: options.sandbox.sourceSnapshotId }),
+      };
+      const evidenceKind = classifyPreparation(evidence.marker, actual, options.pausedSnapshot);
+      if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
+      if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
+        await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
+        // Same relaunch semantics as reusePreparedRuntime: a snapshot can retain
+        // setup.status=running after --pause killed the setup PID. Verify/restart.
+        const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
+          sandbox: options.sandbox,
+          client: options.client,
+          workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+          ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        }));
+        await writePreparationMarker(options, secrets, {
+          kind: 'running-session',
+          sandboxName: options.sandbox.name,
+          sessionInstanceId: actual.sessionInstanceId,
+          sourceRevision: actual.sourceRevision,
+          imageDigest: actual.imageDigest,
+          githubTokenSha256: githubTokenHash,
+          envSha256: environmentHash,
+        });
+        return {
+          setupStatus,
+          reused: !(evidenceKind === 'running-sync' && isLegacyMarker(evidence.marker)),
+          evidence: evidenceKind,
+          snapshotResumed: evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync',
+        };
+      }
+    }
   }
+  await synchronizeRuntimeState(options, token, secrets, true);
+  const revision = await readRemoteRevision(options);
+  const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
+    sandbox: options.sandbox,
+    client: options.client,
+    workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+    ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  }));
+  if (revision !== undefined) {
+    // Written last: moving it earlier would let a crash mid-preparation fake evidence.
+    await writePreparationMarker(options, secrets, {
+      kind: 'running-session',
+      sandboxName: options.sandbox.name,
+      sessionInstanceId: sandboxIdentifier(options.sandbox),
+      sourceRevision: revision,
+      imageDigest: sandboxImageDigest(options.sandbox),
+      githubTokenSha256: githubTokenHash,
+      envSha256: environmentHash,
+    });
+  }
+  return { setupStatus, reused: false, evidence: 'full', snapshotResumed: false };
+}
+
+async function synchronizeRuntimeState(
+  options: PrepareSandboxRuntimeOptions,
+  token: string,
+  secrets: string[],
+  restartDisplay: boolean,
+): Promise<void> {
   const piBundle = await runRuntimeOperation('Pi config collection', secrets, () => collectPiBundle({
     ...(options.piRoot === undefined ? {} : { root: options.piRoot }),
     ...(options.hostHome === undefined ? {} : { home: options.hostHome }),
@@ -219,7 +419,7 @@ export async function prepareSandboxRuntime(
   const files = [
     ...(options.envPath === undefined ? [] : [{
       path: VERCEL_RUNTIME_ENV_STATE_PATH,
-      content: Buffer.from(JSON.stringify(runtimeEnvironment)),
+      content: Buffer.from(JSON.stringify(options.runtimeEnvironment ?? {})),
       mode: 0o600,
     }]),
     {
@@ -270,7 +470,11 @@ export async function prepareSandboxRuntime(
     throw error;
   }
   const displayCredentialsStore = options.displayCredentialsStore;
-  if (displayCredentialsStore) {
+  if (displayCredentialsStore && (restartDisplay || !await isDisplayStackRunning({
+    sandbox: options.sandbox,
+    client: options.client,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  }))) {
     // Display services need the image's base environment; project dotenv values
     // belong to the terminal and background setup commands below.
     await runRuntimeOperation('Display startup', secrets, () => startDisplayStack({
@@ -281,29 +485,27 @@ export async function prepareSandboxRuntime(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     }));
   }
-  const revision = await readRemoteRevision(options);
-  const setupStatus = await launchBackgroundSetup({
-    sandbox: options.sandbox,
-    client: options.client,
-    workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
-    ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  });
-  if (revision !== undefined) {
-    // Written last: moving it earlier would let a crash mid-preparation fake evidence.
-    const marker: RuntimePreparationMarker = {
-      sandboxId: sandboxIdentifier(options.sandbox),
-      revision,
-      githubTokenHash,
-      environmentHash,
-    };
-    await uploadRuntimeFiles(options, [{
-      path: VERCEL_RUNTIME_PREPARATION_PATH,
-      content: Buffer.from(JSON.stringify(marker)),
-      mode: 0o600,
-    }], secrets);
+}
+
+async function writePreparationMarker(
+  options: PrepareSandboxRuntimeOptions,
+  secrets: readonly string[],
+  marker: RuntimePreparationMarker,
+): Promise<void> {
+  await uploadRuntimeFiles(options, [{
+    path: VERCEL_RUNTIME_PREPARATION_PATH,
+    content: Buffer.from(JSON.stringify(marker)),
+    mode: 0o600,
+  }], secrets);
+}
+
+function sandboxImageDigest(sandbox: VercelSandboxHandle): string {
+  if (sandbox.image === undefined) return '';
+  try {
+    return parseVercelImageReference(sandbox.image).digest;
+  } catch {
+    return '';
   }
-  return { setupStatus, reused: false };
 }
 
 async function readRemoteRevision(

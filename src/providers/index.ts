@@ -51,6 +51,7 @@ export {
   createVercelBranchMetadataStore,
   createVercelMetadataStore,
   createVercelScopeMetadataStore,
+  patchBranchMetadata,
 } from './vercel/metadata.js';
 export type {
   MetadataLock,
@@ -62,6 +63,7 @@ export type {
   VercelBranchMetadataStore,
   VercelCreateConfiguration,
   VercelDisplayCredentials,
+  VercelPausedSnapshot,
   VercelIdentityTags,
   VercelMetadata,
   VercelMetadataIdentity,
@@ -136,6 +138,17 @@ export type {
   VercelLifecycleOptions,
   VercelStopReport,
 } from './vercel/lifecycle.js';
+export {
+  DEFAULT_IDLE_PAUSE_MINUTES,
+  decideIdlePause,
+  parseIdlePauseMinutes,
+  resolveIdlePauseMinutes,
+  startIdlePauseMonitor,
+} from './vercel/idle-pause.js';
+export type {
+  IdlePauseObservation,
+  IdlePauseScheduler,
+} from './vercel/idle-pause.js';
 export {
   REDACTED_SECRET,
   redactSecrets,

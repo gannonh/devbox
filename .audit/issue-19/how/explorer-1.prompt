@@ -1,0 +1,13 @@
+# How explorer
+
+Read `/Users/gannonhall/dotfiles/codex/.codex/plugins/cache/open-pstack/pstack/1.2.0/skills/how/references/explorer-prompt.md` and follow it in full.
+
+## Question
+
+How does the current Vercel lifecycle provision, attach, stop, resume, and clean up a named sandbox, including preparation evidence, runtime sync, display startup, and app relay restoration? We need to implement issue #19, whose spec is the GitHub issue at https://github.com/gannonh/devbox/issues/19.
+
+## Your exploration angle
+
+Trace the Vercel runtime flow end to end. Start at `src/providers/vercel/provider.ts` and follow `lifecycle.ts`, `setup.ts`, `runtime.ts`, `display-startup.ts`, `display-credentials.ts`, `provider-routes.ts`, `app-relay.ts`, `terminal.ts`, and the client boundary. Include exact symbols, data shapes, and where a new session is identified after a stopped sandbox resumes. Note what currently runs on a cheap running-session attach versus a full provision. Identify the smallest ownership boundary for snapshot-resume preparation and idle heartbeat integration.
+
+Return the required Components Found, Flow, Files Read, Boundaries, Non-Obvious Things, and Open Questions sections from the template. Use repository-relative paths and line numbers.

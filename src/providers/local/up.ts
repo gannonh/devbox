@@ -11,7 +11,7 @@ import type { LauncherContext } from './context.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { containerFor, containerForAll, containerName } from './docker.js';
+import { containerFor, containerName, containerState } from './docker.js';
 import { branchToPath, resolveWorktreesDir, createWorktree, defaultBranch, ensureWorktreeConfig, resolveWorktreeStartPoint } from './worktree.js';
 import { assertSafeEnvironmentKeys, readEnvironmentFile, resolveGhToken } from './env.js';
 import { hyperlink } from '../../lib/display.js';
@@ -37,31 +37,38 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   const worktreesDir = resolveWorktreesDir(repoRoot, env);
   const path = branchToPath(worktreesDir, repoName, branch);
 
-  // 1. Re-enter a running box.
-  let cid = await containerFor(runner, branch);
-  if (cid) {
-    info(`attaching to running box for ${branch}`);
-    if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, cid, runtimeEnvironment);
-    return execIntoShell(runner, cid, tty);
-  }
-
-  // 2. Start a stopped box.
-  cid = await containerForAll(runner, branch);
-  if (cid) {
-    info(`starting stopped box for ${branch}`);
-    await runner.exec('docker', ['start', cid], {});
-    // Re-bring the display stack up. setsid so it survives this exec session.
-    const displayResult = await runner.execQuiet(
-      'docker',
-      ['exec', '-u', 'node', cid, 'bash', '-lc', 'setsid bash -c /usr/local/bin/devbox-start-display </dev/null >/tmp/devbox-display.log 2>&1 || true'],
-      {},
-    );
-    if (displayResult.code !== 0) {
-      warn('display stack restart may have failed');
+  const container = await containerState(runner, branch);
+  switch (container.kind) {
+    case 'running':
+      info(`attaching to running box for ${branch}`);
+      if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, container.id, runtimeEnvironment);
+      return execIntoShell(runner, container.id, tty);
+    case 'paused':
+      info(`resuming paused box for ${branch}`);
+      await runner.exec('docker', ['unpause', container.id], {});
+      if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, container.id, runtimeEnvironment);
+      return execIntoShell(runner, container.id, tty);
+    case 'stopped': {
+      info(`starting stopped box for ${branch}`);
+      await runner.exec('docker', ['start', container.id], {});
+      const displayResult = await runner.execQuiet(
+        'docker',
+        ['exec', '-u', 'node', container.id, 'bash', '-lc', 'setsid bash -c /usr/local/bin/devbox-start-display </dev/null >/tmp/devbox-display.log 2>&1 || true'],
+        {},
+      );
+      if (displayResult.code !== 0) {
+        warn('display stack restart may have failed');
+      }
+      await sleep(2000);
+      if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, container.id, runtimeEnvironment);
+      return execIntoShell(runner, container.id, tty);
     }
-    await sleep(2000);
-    if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, cid, runtimeEnvironment);
-    return execIntoShell(runner, cid, tty);
+    case 'missing':
+      break;
+    default: {
+      const _exhaustive: never = container;
+      return _exhaustive;
+    }
   }
 
   // 3. Fresh box: create the worktree.
@@ -134,7 +141,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   }
 
   // Look up the container by label (not CLI text parsing).
-  cid = await containerFor(runner, branch);
+  const cid = await containerFor(runner, branch);
   if (!cid) localFailure("container did not come up; check 'devcontainer up' output above");
 
   if (ctx.envPath !== undefined || ctx.runtimeEnvironment !== undefined) await syncLocalEnvironment(runner, cid, runtimeEnvironment);
@@ -164,6 +171,7 @@ export async function up(ctx: LauncherContext, branch: string): Promise<number> 
   stderr.write(`  Vite:       ${hyperlink(vite, vite)}    (when running)\n`);
   stderr.write(`  Re-enter:   npx @gannonh/devbox ${branch} --attach\n`);
   stderr.write(`  URL/open:   npx @gannonh/devbox ${branch} --url   (add --open to launch a browser)\n`);
+  stderr.write(`  Pause:      npx @gannonh/devbox ${branch} --pause\n`);
   stderr.write(`  Stop:       npx @gannonh/devbox ${branch} --stop\n`);
   stderr.write(`  Remove:     npx @gannonh/devbox ${branch} --rm\n\n`);
 

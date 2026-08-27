@@ -11,3 +11,6 @@ import { join } from 'node:path';
  * test that selects the Vercel provider would change what a later test sees.
  */
 process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), 'devbox-test-state-'));
+// Provider up/attach tests often detach immediately. Without this, the default
+// 15-minute idle monitor would be retained after detach and leave open handles.
+process.env.DEVBOX_IDLE_PAUSE_MINUTES ??= '0';

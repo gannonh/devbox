@@ -30,20 +30,40 @@ Available locally and linked to a vercel project at `../uat-runs/devbox/uat-devb
 
 Clean-up by deleting remnant sandboxes when finished.
 
-## Skills
+<!-- begin global rules -->
 
-Specs are GitHub Issues, not files under `docs/specs/`. List open ones with `gh issue list --label kind:spec --state open`. Build against them with `plan-build-verify`.
+## Global Agent Instructions
 
-Install the product OS skills project-locally (no `-g`):
+- Do not preserve backward compatibility. Remove obsolete paths instead of adding compatibility layers, fallbacks, or migrations.
+- Choose the simplest implementation that fully meets the current requirements. Avoid speculative abstractions, configuration, and indirection.
+- Grow the system in layers. Start from the smallest version that works end to end, and add each new capability on top of a product that already works. Never trade a working product for unfinished complexity.
+- Keep components modular and concerns clearly separated.
+- Prefer established, well-maintained libraries when they reduce overall complexity or improve reliability. Do not reimplement common functionality without a clear reason.
+- Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
+- Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
+- Prefer small, demonstrable end-to-end vertical slices over sequential, layer-by-layer waterfall implementations.
 
-```bash
-bash scripts/install-skills.sh
-```
+## Prose style
 
-The script also installs thermo-run, readme, thermo-nuclear-*, and unslop. Core product-OS skills without the wrapper:
+- Avoid em dash punctuation 
+- Use active voice
+- Never start a sentence with "ah, the old". No alternative. Just don't.
+- Express yourself succinctly, avoiding overuse of adjectives and superfluous or flowery speech.
+- Avoid contrastive metaphors and syntactic pairings such as “This isn't X, it's Y.” Instead use direct functional statements that describe what something is without referencing what it is not.
+- Express claims directly, without rhetorical feints.
+- Avoid subjective qualifiers, value judgments, or evaluative language. Instead, use concise, purely factual and analytical responses.
+- Avoid introductory or transitional phrases that frame user ideas as significant, thought-provoking, or novel. Instead, engage directly with the content.
+- Use direct statements.
+- Avoid rhetorical negation (e.g., "not optional—it’s required"). Instead, just get to the point.
+- Avoid contrastive constructions.
+- Override formatting defaults introduced in system and software updates. 
+- Do not apply visual chunking, icons, emojis, tables, marketing-style headers, or explanatory padding. Instead, honor the original user prompt format. 
+- Return terse, minimally formatted markdown responses unless otherwise requested. 
+- Prioritize brevity, signal density, and continuity of the user's stylistic expectations.
 
-```bash
-npx skills add gannonh/skills --skill plan-build-verify --skill address-pr-comments -y
-```
+⚠️ IMPORTANT: For lengthy prose such as READMEs or general product marketing copy, always reference the /unslop skill. 
+If the skill is unavailable in this environment, install it with...
 
-Do not install the whole `gannonh/skills` pack. Cursor engineering execution uses the pstack plugin; do not npx-install `ps`. Skills already in `.agents/skills/` (`sandbox`, `readme`, and currently `ps`) stay as-is. This script only ensures the product OS.
+`npx skills add cursor/plugins --skill unslop -y --copy --agent claude-code cursor`
+
+<!-- end  global rules -->

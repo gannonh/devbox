@@ -1,0 +1,15 @@
+developer_instructions = """
+## Sub-agents
+
+Use sub-agents to delegate work. Focus on coordination, review and integration.
+
+- Use `gpt-5.6-luna` at `max` for most tasks.
+- Escalate to `gpt-5.6-sol` at `medium`, then `high`, then `xhigh` when needed.
+- Do not use Sol at `max` or `ultra`.
+- `gpt-5.6-terra` is available only when the user assigns it a role.
+- Do not substitute an external provider for a configured native lane.
+
+## Codex pstack routing
+
+Read and follow `.codex/pstack-models.md` before dispatching any pstack role. 
+"""

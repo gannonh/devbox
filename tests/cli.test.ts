@@ -28,6 +28,7 @@ describe('cli dispatch', () => {
     expect(output).toContain('devbox');
     expect(output).toContain('init');
     expect(output).toContain('--attach');
+    expect(output).toContain('--pause');
     expect(output).toContain('--stop');
     expect(output).toContain('--rm');
     expect(output).toContain('--list');
@@ -129,6 +130,14 @@ describe('cli dispatch', () => {
     expect(output).toContain('USAGE');
   });
 
+  it('<branch> --pause --help prints pause usage and exits 0', async () => {
+    const { code, stdout, stderr } = await run(['my-feature', '--pause', '--help']);
+    expect(code).toBe(0);
+    const output = stdout + stderr;
+    expect(output).toContain('--pause');
+    expect(output).toContain('USAGE');
+  });
+
   it('<branch> --rm --help prints rm usage and exits 0', async () => {
     const { code, stdout, stderr } = await run(['my-feature', '--rm', '--help']);
     expect(code).toBe(0);
@@ -157,6 +166,10 @@ describe('resolveBranchAction', () => {
 
   it('returns { action: "stop" } for --stop', () => {
     expect(resolveBranchAction(['--stop'])).toEqual({ action: 'stop' });
+  });
+
+  it('returns { action: "pause" } for --pause', () => {
+    expect(resolveBranchAction(['--pause'])).toEqual({ action: 'pause' });
   });
 
   it('returns { action: "rm" } for --rm', () => {
@@ -200,6 +213,7 @@ describe('--env parsing', () => {
   });
 
   it.each([
+    ['--pause', /--env is not valid with --pause/],
     ['--stop', /--env is not valid with --stop/],
     ['--url', /--env is not valid with --url/],
     ['--rm', /--env is not valid with --rm/],
@@ -241,6 +255,7 @@ describe('--expose-ports parsing', () => {
   it.each([
     ['--url', /--expose-ports is not valid with --url/],
     ['--open', /--expose-ports is not valid with --url/],
+    ['--pause', /--expose-ports is not valid with --pause/],
     ['--stop', /--expose-ports is not valid with --stop/],
     ['--rm', /--expose-ports is not valid with --rm/],
     ['--password', /--expose-ports is not valid with --password/],
@@ -347,6 +362,7 @@ describe('--timeout and --vcpus parsing', () => {
   });
 
   it.each([
+    ['--pause', /--timeout is not valid with --pause/],
     ['--stop', /--timeout is not valid with --stop/],
     ['--rm', /--timeout is not valid with --rm/],
     ['--url', /--timeout is not valid with --url/],
@@ -357,6 +373,7 @@ describe('--timeout and --vcpus parsing', () => {
   });
 
   it.each([
+    ['--pause', /--vcpus is not valid with --pause/],
     ['--stop', /--vcpus is not valid with --stop/],
     ['--rm', /--vcpus is not valid with --rm/],
     ['--url', /--vcpus is not valid with --url/],

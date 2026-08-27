@@ -1,0 +1,11 @@
+Implement the bounded first delivery unit for issue #19 in the dedicated
+worktree provided to you. Add the provider-neutral `--pause` action and local
+provider parity only. The write scope is limited to src/cli.ts,
+src/providers/types.ts, src/providers/local/, and directly related local/CLI
+tests. Preserve existing behavior: local --stop remains docker stop; local
+--pause uses docker pause; attach and normal up must unpause a paused container
+without restarting its display; list must distinguish running, paused, and
+stopped. Keep the API small and type-safe. Update focused tests in the same
+scope. Run the focused tests and typecheck. Do not touch Vercel files, docs, or
+the unrelated package.json/package-lock.json changes in the parent checkout.
+Edit files directly, then report changed paths, tests, and any limitations.

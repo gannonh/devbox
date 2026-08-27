@@ -34,6 +34,7 @@ import {
 import {
   createVercelBranchMetadataStore,
   createVercelScopeMetadataStore,
+  patchBranchMetadata,
   type VercelBranchMetadata,
   type VercelBranchMetadataStore,
   type VercelScopeMetadata,
@@ -75,6 +76,15 @@ import {
 } from './app-port-flow.js';
 import { verifyRelayMappings, type VercelRelayMapping } from './app-relay.js';
 import {
+  createHeartbeatWriter,
+  readRemoteHeartbeat,
+  resolveIdlePauseMinutes,
+  startIdlePauseMonitor,
+  type HeartbeatWriter,
+  type IdlePauseMonitorHandle,
+  type IdlePauseScheduler,
+} from './idle-pause.js';
+import {
   renderVercelAttachNotice,
   renderVercelReadyBlock,
   renderVercelRoutes,
@@ -92,6 +102,13 @@ export interface VercelConfirmationBoundary {
 }
 export type VercelOpener = (url: string) => void | Promise<void>;
 
+export interface VercelIdlePauseTestHooks {
+  scheduler?: IdlePauseScheduler;
+  now?: () => number;
+  pollIntervalMs?: number;
+  readyAtMs?: number;
+}
+
 export interface VercelProviderOptions {
   runner?: ShellRunner;
   /** Resolve the Sandbox image reference; defaults to release pin or channel. */
@@ -107,6 +124,8 @@ export interface VercelProviderOptions {
   signalSource?: EventEmitter;
   /** Injection seam for the public app-port confirmation prompt. */
   appPortPrompt?: AppPortPrompt;
+  /** Test-only idle-monitor clock and scheduler controls. */
+  idlePause?: VercelIdlePauseTestHooks;
 }
 
 interface PreparedOperation {
@@ -207,8 +226,12 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         displayCredentialsStore: prepared.branchStore,
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
+        mode: 'boot' as const,
+        ...(prepared.metadata?.pausedSnapshot === undefined
+          ? {}
+          : { pausedSnapshot: prepared.metadata.pausedSnapshot }),
       };
-      const setupStatus = (await prepareSandboxRuntime(runtimeOptions)).setupStatus;
+      const runtime = await prepareSandboxRuntime(runtimeOptions);
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
       const appPorts = await resolveAppPorts(
         request,
@@ -218,11 +241,28 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         prepared.branchStore,
         prepared.source.remote.repository,
         secrets,
+        'boot',
+        runtime.snapshotResumed && request.exposePorts === undefined,
+      );
+      if (appPorts !== undefined && runtime.evidence !== 'full') {
+        await clearPausedSnapshot(prepared.branchStore, prepared.metadata);
+      }
+      renderIdlePauseNotice(request, prepared.metadata);
+      const idle = await startIdleControl(
+        request,
+        prepared.metadata,
+        lifecycle,
+        prepared.branchStore,
+        client,
+        sandbox,
+        secrets,
+        runtime.snapshotResumed,
+        options.idlePause,
       );
       await renderVercelReadyBlock(
         request,
         sandbox,
-        setupStatus,
+        runtime.setupStatus,
         await displayToken(prepared.branchStore, secrets),
         appPorts,
       );
@@ -234,6 +274,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         'up',
         prepared.source.remote.repository,
         secrets,
+        idle,
       );
     }),
     attach: (request) => providerErrors(request, 'attach', async (secrets) => {
@@ -261,6 +302,9 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
         mode: 'attach' as const,
+        ...(prepared.metadata?.pausedSnapshot === undefined
+          ? {}
+          : { pausedSnapshot: prepared.metadata.pausedSnapshot }),
       };
       const runtime = await prepareSandboxRuntime(runtimeOptions);
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
@@ -278,10 +322,28 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         repository,
         secrets,
         'resume',
+        runtime.snapshotResumed && request.exposePorts === undefined,
       );
-      if (runtime.reused) {
-        request.stderr.write('Re-entering the prepared sandbox (no re-provisioning)\n');
+      if (appPorts !== undefined && runtime.evidence !== 'full') {
+        await clearPausedSnapshot(prepared.branchStore!, prepared.metadata);
       }
+      renderIdlePauseNotice(request, prepared.metadata);
+      if (runtime.reused) {
+        request.stderr.write(runtime.snapshotResumed
+          ? 'Resumed from the retained snapshot (runtime services refreshed)\n'
+          : 'Re-entering the prepared sandbox (no re-provisioning)\n');
+      }
+      const idle = await startIdleControl(
+        request,
+        prepared.metadata,
+        prepared.lifecycle,
+        prepared.branchStore!,
+        client,
+        sandbox,
+        secrets,
+        runtime.snapshotResumed,
+        options.idlePause,
+      );
       await renderVercelAttachNotice(
         request,
         sandbox,
@@ -297,12 +359,21 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         'attach',
         repository,
         secrets,
+        idle,
       );
     }),
     stop: (request) => providerErrors(request, 'stop', async (secrets) => {
       const prepared = await prepareStored(request, 'stop', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
       const report = await prepared.lifecycle.stop();
       renderStopReport(request, report);
+      return { exitCode: 0 };
+    }),
+    pause: (request) => providerErrors(request, 'pause', async (secrets) => {
+      const prepared = await prepareStored(request, 'pause', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
+      const report = prepared.lifecycle.pause === undefined
+        ? await prepared.lifecycle.stop()
+        : await prepared.lifecycle.pause();
+      renderStopReport(request, report, 'pause');
       return { exitCode: 0 };
     }),
     remove: (request) => providerErrors(request, 'remove', async (secrets) => {
@@ -587,6 +658,9 @@ function createLifecycle(
   const requestedVcpus = 'branch' in request ? request.vcpus : undefined;
   const timeoutMs = requestedTimeoutMs ?? stored?.timeoutMs;
   const vcpus = requestedVcpus ?? stored?.vcpus;
+  const idlePauseMinutes = 'branch' in request
+    ? resolveIdlePauseMinutes(request.env.DEVBOX_IDLE_PAUSE_MINUTES, metadata?.idlePauseMinutes)
+    : undefined;
   return injectedLifecycle ?? makeLifecycle({
     repoRoot: request.repoRoot,
     ...(source?.requestedBranch === undefined ? {} : { branch: source.requestedBranch }),
@@ -603,6 +677,7 @@ function createLifecycle(
     ...(recovery === undefined ? {} : { recovery }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(vcpus === undefined ? {} : { vcpus }),
+    ...(idlePauseMinutes === undefined ? {} : { idlePauseMinutes }),
     ...(options.credentialOptions === undefined ? {} : { credentialOptions: options.credentialOptions }),
   });
 }
@@ -758,6 +833,7 @@ async function terminalResult(
   action: 'up' | 'attach',
   repository: string,
   secrets: readonly string[],
+  idle?: IdleControl,
 ): Promise<ProviderActionResult> {
   const cwd = resolveVercelRepositoryCwd(sandbox.cwd, repository);
   const streams: VercelTerminalStreams = {
@@ -780,17 +856,138 @@ async function terminalResult(
     }),
     ...(request.runtimeEnvironment === undefined ? {} : { env: request.runtimeEnvironment }),
     ...(signalSource === undefined ? {} : { signalSource }),
+    ...(idle === undefined ? {} : { onInputActivity: idle.heartbeat.onInputActivity }),
   };
-  const result = await terminal.attach(sandbox, terminalOptions);
-  if (result.status === 'detached' && result.reason === 'error') {
-    const failure = result.error ?? failures.at(-1);
-    throw mapVercelError(failure?.cause ?? new Error('Vercel terminal transport failed'), {
-      action,
-      branch: request.branch,
-      secrets,
-    });
+  let retainIdleAfterDetach = false;
+  try {
+    const result = await terminal.attach(sandbox, terminalOptions);
+    if (result.status === 'detached' && result.reason === 'error') {
+      const failure = result.error ?? failures.at(-1);
+      throw mapVercelError(failure?.cause ?? new Error('Vercel terminal transport failed'), {
+        action,
+        branch: request.branch,
+        secrets,
+      });
+    }
+    // Clean detach ends the TTY session but leaves the Sandbox running. Keep the
+    // idle monitor alive so the default cost guard still fires without holding the
+    // attach transport open. Heartbeat writes from local input stop; remote display
+    // or agent heartbeats still count.
+    retainIdleAfterDetach = idle !== undefined
+      && result.status === 'detached'
+      && result.reason !== 'error';
+    if (retainIdleAfterDetach && idle !== undefined) {
+      idle.heartbeat.stop();
+      retainIdleGuard(idle);
+    }
+    return mapTerminalResult(result);
+  } finally {
+    if (!retainIdleAfterDetach) idle?.stop();
   }
-  return mapTerminalResult(result);
+}
+
+interface IdleControl {
+  heartbeat: HeartbeatWriter;
+  stop(): void;
+  readonly done: Promise<void>;
+}
+
+const pendingIdleGuards = new Set<IdleControl>();
+
+function retainIdleGuard(idle: IdleControl): void {
+  pendingIdleGuards.add(idle);
+  void idle.done.finally(() => {
+    pendingIdleGuards.delete(idle);
+  });
+}
+
+/** Wait for idle monitors retained after a clean terminal detach. */
+export async function awaitPendingIdleGuards(): Promise<void> {
+  await Promise.all([...pendingIdleGuards].map((idle) => idle.done));
+}
+
+async function startIdleControl(
+  request: ProviderBranchRequest,
+  metadata: VercelBranchMetadata | null,
+  lifecycle: VercelLifecycle,
+  branchStore: VercelBranchMetadataStore,
+  client: VercelSandboxClient,
+  sandbox: VercelSandboxHandle,
+  secrets: readonly string[],
+  initialHeartbeat: boolean,
+  idlePause?: VercelIdlePauseTestHooks,
+): Promise<IdleControl | undefined> {
+  const idlePauseMinutes = resolveIdlePauseMinutes(
+    request.env.DEVBOX_IDLE_PAUSE_MINUTES,
+    metadata?.idlePauseMinutes,
+  );
+  if (idlePauseMinutes === 0) return undefined;
+  let heartbeat: HeartbeatWriter;
+  try {
+    heartbeat = await createHeartbeatWriter({ sandbox, client, initialTouch: initialHeartbeat });
+  } catch (error) {
+    request.stderr.write(`Vercel idle pause disabled for this session: ${redactSecrets(error, secrets)}\n`);
+    return undefined;
+  }
+  const monitor: IdlePauseMonitorHandle = startIdlePauseMonitor({
+    sandbox,
+    client,
+    idlePauseMinutes,
+    stderr: request.stderr,
+    pause: async () => {
+      const report = lifecycle.pause === undefined ? await lifecycle.stop() : await lifecycle.pause();
+      if (report.snapshot !== undefined) {
+        try {
+          await markIdlePause(branchStore, report.snapshot.id, Date.now());
+        } catch (error) {
+          request.stderr.write(`Vercel idle pause metadata update failed: ${redactSecrets(error, secrets)}\n`);
+        }
+      }
+      return report;
+    },
+    readHeartbeat: () => readRemoteHeartbeat({ sandbox, client }),
+    ...(idlePause?.scheduler === undefined ? {} : { scheduler: idlePause.scheduler }),
+    ...(idlePause?.now === undefined ? {} : { now: idlePause.now }),
+    ...(idlePause?.pollIntervalMs === undefined ? {} : { pollIntervalMs: idlePause.pollIntervalMs }),
+    ...(idlePause?.readyAtMs === undefined ? {} : { readyAtMs: idlePause.readyAtMs }),
+  });
+  return {
+    heartbeat,
+    done: monitor.done,
+    stop: () => {
+      heartbeat.stop();
+      monitor.stop();
+    },
+  };
+}
+
+async function markIdlePause(
+  branchStore: VercelBranchMetadataStore,
+  snapshotId: string,
+  idlePausedAt: number,
+): Promise<void> {
+  await branchStore.withLock(async () => {
+    const current = await branchStore.read();
+    if (current?.pausedSnapshot?.id !== snapshotId) return;
+    await branchStore.write(patchBranchMetadata(current, {
+      pausedSnapshot: {
+        ...current.pausedSnapshot,
+        idlePausedAt,
+      },
+    }));
+  });
+}
+
+async function clearPausedSnapshot(
+  branchStore: VercelBranchMetadataStore | undefined,
+  expected: VercelBranchMetadata | null,
+): Promise<void> {
+  if (!branchStore || expected?.pausedSnapshot === undefined) return;
+  await branchStore.withLock(async () => {
+    const current = await branchStore.read();
+    if (current?.pausedSnapshot?.id !== expected.pausedSnapshot?.id) return;
+    await branchStore.write(patchBranchMetadata(current, { pausedSnapshot: undefined }));
+  });
 }
 
 function mapTerminalResult(result: VercelTerminalResult): ProviderActionResult {
@@ -798,19 +995,45 @@ function mapTerminalResult(result: VercelTerminalResult): ProviderActionResult {
   return { exitCode: result.reason === 'error' ? 1 : 0 };
 }
 
-function renderStopReport(request: ProviderBranchRequest, report: VercelStopReport): void {
-  const status = report.finalSession?.status ?? 'stopped';
+function renderStopReport(
+  request: ProviderBranchRequest,
+  report: VercelStopReport,
+  action: 'stop' | 'pause' = 'stop',
+): void {
+  const status = action === 'pause' || report.snapshot !== undefined
+    ? 'paused'
+    : report.finalSession?.status ?? 'stopped';
   request.stderr.write(`Vercel sandbox ${report.name}: ${status}\n`);
-  if (report.snapshot) request.stderr.write(`snapshot: ${report.snapshot.id} ${report.snapshot.status}\n`);
+  if (report.snapshot) {
+    request.stderr.write(`snapshot: ${report.snapshot.id} ${report.snapshot.status}\n`);
+    request.stderr.write('attach resumes from this retained snapshot\n');
+  }
   if (report.activeCpuUsageMs !== undefined) request.stderr.write(`cpu: ${report.activeCpuUsageMs}ms\n`);
   if (report.networkTransfer) {
     request.stderr.write(`network: ingress=${report.networkTransfer.ingress} egress=${report.networkTransfer.egress}\n`);
   }
 }
 
+function renderIdlePauseNotice(
+  request: ProviderBranchRequest,
+  metadata: VercelBranchMetadata | null,
+): void {
+  const idlePausedAt = metadata?.pausedSnapshot?.idlePausedAt;
+  if (idlePausedAt === undefined) return;
+  const timestamp = new Date(idlePausedAt);
+  const rendered = Number.isNaN(timestamp.getTime()) ? String(idlePausedAt) : timestamp.toISOString();
+  request.stderr.write(`Vercel sandbox was idle-paused at ${rendered}\n`);
+}
+
 function renderList(
   request: ProviderListRequest,
-  records: ReadonlyArray<{ name: string; status: string; tags?: Record<string, string> }>,
+  records: ReadonlyArray<{
+    name: string;
+    status: string;
+    tags?: Record<string, string>;
+    currentSnapshotId?: string;
+    snapshotCreatedAt?: number;
+  }>,
 ): void {
   request.stderr.write('Vercel sandboxes for current repository:\n');
   if (records.length === 0) {
@@ -821,7 +1044,10 @@ function renderList(
     const identity = record.tags?.identity ?? 'unknown';
     const branchTag = record.tags?.branch;
     const branch = branchFromTag(branchTag) ?? branchTag ?? 'unknown';
-    request.stderr.write(`  ${record.name} ${record.status} branch=${branch} identity=${identity}\n`);
+    const snapshot = record.currentSnapshotId === undefined
+      ? ''
+      : ` snapshot=${record.currentSnapshotId} age=${snapshotAge(record.snapshotCreatedAt)}`;
+    request.stderr.write(`  ${record.name} ${record.status}${snapshot} branch=${branch} identity=${identity}\n`);
   }
   // Rows are not marked with the scope that owns them. The identity tag hashes
   // the team and project, and recomputing it needs the exact branch string --
@@ -831,6 +1057,15 @@ function renderList(
   // "every row is yours", so the listing stays neutral and `--rm` explains the
   // scope it declined to touch. Distinguishing them here needs a scope tag on
   // the sandbox itself.
+}
+
+function snapshotAge(createdAt: number | undefined): string {
+  if (createdAt === undefined || !Number.isFinite(createdAt)) return 'unknown';
+  const elapsed = Math.max(0, Date.now() - createdAt);
+  if (elapsed < 60_000) return `${Math.floor(elapsed / 1_000)}s`;
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h`;
+  return `${Math.floor(elapsed / 86_400_000)}d`;
 }
 
 /**
@@ -849,6 +1084,7 @@ async function resolveAppPorts(
   repository: string,
   secrets: readonly string[],
   mode: AppPortFlowMode = 'boot',
+  restoreRecorded = false,
 ): Promise<AppPortFlowResult | undefined> {
   try {
     return await applyAppPorts({
@@ -865,6 +1101,7 @@ async function resolveAppPorts(
       ...(request.exposePorts === undefined ? {} : { exposePorts: request.exposePorts }),
       secrets,
       ...(options.appPortPrompt === undefined ? {} : { prompt: options.appPortPrompt }),
+      ...(restoreRecorded ? { restoreRecorded: true } : {}),
     });
   } catch (error) {
     request.stderr.write(
