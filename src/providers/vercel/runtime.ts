@@ -9,7 +9,7 @@ import {
   startDisplayStack,
   VercelDisplayStartupError,
 } from './display-startup.js';
-import { launchBackgroundSetup, readSetupStatus, type VercelSetupStatus } from './setup.js';
+import { launchBackgroundSetup, type VercelSetupStatus } from './setup.js';
 import { sandboxIdentifier } from './lifecycle.js';
 import type { VercelBranchMetadataStore, VercelPausedSnapshot } from './metadata.js';
 import { parseVercelImageReference } from './image.js';
@@ -339,7 +339,15 @@ export async function prepareSandboxRuntime(
       if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
       if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
         await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
-        const setupStatus = await safeReadSetupStatus(options);
+        // Same relaunch semantics as reusePreparedRuntime: a snapshot can retain
+        // setup.status=running after --pause killed the setup PID. Verify/restart.
+        const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
+          sandbox: options.sandbox,
+          client: options.client,
+          workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+          ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        }));
         await writePreparationMarker(options, secrets, {
           kind: 'running-session',
           sandboxName: options.sandbox.name,
@@ -476,20 +484,6 @@ async function synchronizeRuntimeState(
       secrets,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     }));
-  }
-}
-
-async function safeReadSetupStatus(
-  options: PrepareSandboxRuntimeOptions,
-): Promise<VercelSetupStatus | null> {
-  try {
-    return await readSetupStatus({
-      sandbox: options.sandbox,
-      client: options.client,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-    });
-  } catch {
-    return null;
   }
 }
 

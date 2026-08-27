@@ -18,7 +18,7 @@ import {
   VERCEL_RUNTIME_PREPARATION_PATH,
 } from '../src/providers/vercel/runtime.js';
 import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
-import { SETUP_STATUS_PATH } from '../src/providers/vercel/setup.js';
+import { SETUP_PID_PATH, SETUP_STATUS_PATH } from '../src/providers/vercel/setup.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 
 const HEAD = 'b'.repeat(40);
@@ -83,6 +83,11 @@ function reattachClient(statusSequence: readonly string[] = [DISPLAY_STATUS_OUTP
           return content === undefined
             ? { exitCode: 1 }
             : { exitCode: 0, stdout: async () => content.toString('utf8') };
+        }
+        // Default: treat a recorded setup PID as dead so snapshot-resume tests can
+        // exercise relaunch of an interrupted setup.status=running marker.
+        if (request.cmd === 'sh' && (request.args?.[1] ?? '').includes(SETUP_PID_PATH)) {
+          return { exitCode: 1 };
         }
         if ((request.cmd === 'git' && request.args?.includes('rev-parse'))
           || script.includes('rev-parse HEAD')) {
@@ -212,6 +217,9 @@ describe('Vercel cheap re-attach', () => {
       client: harness.client,
       sandbox: original,
     }));
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
     const commandCount = harness.commands.length;
     const uploadCount = harness.uploads.length;
     const resumed = {
@@ -231,6 +239,7 @@ describe('Vercel cheap re-attach', () => {
       reused: true,
       evidence: 'snapshot',
       snapshotResumed: true,
+      setupStatus: { status: 'succeeded' },
     });
     const resumedCommands = harness.commands.slice(commandCount);
     expect(resumedCommands.some((command) => command.cmd === 'bash')).toBe(false);
@@ -256,6 +265,49 @@ describe('Vercel cheap re-attach', () => {
       evidence: 'running-session',
       snapshotResumed: false,
     });
+  });
+
+  it('relaunches interrupted setup when a snapshot resumes with a stale running status', async () => {
+    const harness = reattachClient();
+    const original = {
+      ...sandbox(),
+      currentSession: () => ({ sessionId: 'runtime-sync' }),
+    } as VercelSandboxHandle;
+    await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: original,
+    }));
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'running', startedAt: 1, finishedAt: null,
+    })));
+    harness.files.set(SETUP_PID_PATH, Buffer.from('4242\n'));
+    const commandCount = harness.commands.length;
+    const resumed = {
+      ...sandbox(),
+      sourceSnapshotId: 'snapshot-1',
+      currentSession: () => ({ sessionId: 'resumed-session' }),
+    } as VercelSandboxHandle;
+
+    const result = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: resumed,
+      mode: 'attach',
+      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
+    }));
+
+    expect(result).toMatchObject({
+      reused: true,
+      evidence: 'snapshot',
+      snapshotResumed: true,
+      setupStatus: { status: 'running' },
+    });
+    const resumedCommands = harness.commands.slice(commandCount);
+    expect(resumedCommands.some((command) =>
+      command.cmd === 'bash' && (command.args ?? []).includes('/vercel/.devbox/runtime/setup.sh'),
+    )).toBe(true);
+    expect(resumedCommands.some((command) =>
+      command.cmd === 'sh' && (command.args?.[1] ?? '').includes(SETUP_PID_PATH),
+    )).toBe(true);
   });
 
   it('hashes newline-bearing environments injectively', async () => {
