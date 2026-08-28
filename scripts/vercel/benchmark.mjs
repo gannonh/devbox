@@ -345,7 +345,7 @@ async function runOne(index, config, adapter) {
       const before = await adapter.listSessions(sandbox, { signal });
       if (before.some((session) => !TERMINAL_SESSION_STATES.has(session.status))) await adapter.stop(sandbox, { signal });
       const settled = await waitForTerminalSessionStates({
-        listSessions: async () => adapter.listSessions(sandbox, { signal }),
+        listSessions: async ({ signal: settleSignal }) => adapter.listSessions(sandbox, { signal: settleSignal }),
         timeoutMs: Math.min(config.cleanupTimeoutMs, 60_000),
         signal,
       });

@@ -108,10 +108,36 @@ export async function waitForTerminalSessionStates({
 
   while (true) {
     throwIfAborted(signal);
+    const remainingBefore = deadline - Date.now();
+    if (remainingBefore <= 0) {
+      throw new Error(
+        `sessions did not reach stopped/aborted within ${timeoutMs}ms: ${summarizeSessionStates(lastSessions)}`,
+      );
+    }
     attempts += 1;
-    lastSessions = await listSessions({ attempt: attempts, signal });
+    try {
+      lastSessions = await boundedCall(
+        (requestSignal) => listSessions({ attempt: attempts, signal: requestSignal }),
+        'session settle listing',
+        { signal, timeoutMs: remainingBefore },
+      );
+    } catch (error) {
+      if (deadline - Date.now() <= 0) {
+        throw new Error(
+          `sessions did not reach stopped/aborted within ${timeoutMs}ms: ${summarizeSessionStates(lastSessions)}`,
+        );
+      }
+      throw error;
+    }
     if (!Array.isArray(lastSessions)) lastSessions = [];
     onPoll?.({ attempt: attempts, sessions: lastSessions });
+    // A listing that started with remaining budget must not pass after the
+    // settle deadline, even if the response is already terminal.
+    if (Date.now() > deadline) {
+      throw new Error(
+        `sessions did not reach stopped/aborted within ${timeoutMs}ms: ${summarizeSessionStates(lastSessions)}`,
+      );
+    }
     if (hasTerminalSessionProof(lastSessions)) {
       return { sessions: lastSessions, attempts };
     }

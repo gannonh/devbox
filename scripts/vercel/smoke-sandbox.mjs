@@ -594,7 +594,7 @@ try {
         // stop() can return while the session is still `stopping` (Nightly #47).
         // Poll until stopped/aborted with a bound; a forever-running session still fails.
         await waitForTerminalSessionStates({
-          listSessions: () => listSessions('after-stop', sandbox, signal),
+          listSessions: ({ signal: settleSignal }) => listSessions('after-stop', sandbox, settleSignal),
           timeoutMs: sessionSettleTimeoutMs,
           signal,
         });

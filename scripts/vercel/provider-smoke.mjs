@@ -828,8 +828,8 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
       pathReport,
       'stop-final-settle',
       (requestSignal) => waitForTerminalSessionStates({
-        listSessions: async () => {
-          const sessions = await client.listSessions(resumed, { signal: requestSignal });
+        listSessions: async ({ signal: settleSignal }) => {
+          const sessions = await client.listSessions(resumed, { signal: settleSignal });
           pathReport.sessions.push({ phase: 'after-final-stop', states: sessions.map(sessionState) });
           return sessions;
         },
