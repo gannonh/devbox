@@ -63,6 +63,69 @@ function isRunning(states) {
   return states.some((session) => !TERMINAL_SESSION_STATES.has(session.status));
 }
 
+function hasTerminalSessionProof(sessions) {
+  return Array.isArray(sessions)
+    && sessions.length > 0
+    && sessions.every((session) => TERMINAL_SESSION_STATES.has(session?.status));
+}
+
+function summarizeSessionStates(sessions) {
+  if (!Array.isArray(sessions) || sessions.length === 0) return '(none)';
+  return sessions
+    .map((session) => `${session?.id ?? 'unknown'}:${session?.status ?? 'unknown'}`)
+    .join(', ');
+}
+
+/**
+ * Poll Sandbox session listings until every listed session is stopped/aborted.
+ *
+ * Vercel stop can return while a session is still `stopping`. Smoke gates must
+ * wait for that transition with a bound instead of treating the first sample as
+ * terminal failure. Empty listings are not proof; a session that stays
+ * running/pending/stopping past the deadline still fails.
+ */
+export async function waitForTerminalSessionStates({
+  listSessions,
+  timeoutMs = 60_000,
+  pollIntervalMs = DEFAULT_BACKOFF_MS * 2,
+  signal,
+  sleep = wait,
+  onPoll,
+}) {
+  if (typeof listSessions !== 'function') {
+    throw new TypeError('waitForTerminalSessionStates requires listSessions');
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('waitForTerminalSessionStates timeoutMs must be positive');
+  }
+  if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+    throw new TypeError('waitForTerminalSessionStates pollIntervalMs must be positive');
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
+  let lastSessions = [];
+
+  while (true) {
+    throwIfAborted(signal);
+    attempts += 1;
+    lastSessions = await listSessions({ attempt: attempts, signal });
+    if (!Array.isArray(lastSessions)) lastSessions = [];
+    onPoll?.({ attempt: attempts, sessions: lastSessions });
+    if (hasTerminalSessionProof(lastSessions)) {
+      return { sessions: lastSessions, attempts };
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error(
+        `sessions did not reach stopped/aborted within ${timeoutMs}ms: ${summarizeSessionStates(lastSessions)}`,
+      );
+    }
+    await sleep(Math.min(pollIntervalMs, remaining), signal);
+  }
+}
+
 /**
  * Verify eventual Sandbox deletion without ever resuming the looked-up VM.
  *

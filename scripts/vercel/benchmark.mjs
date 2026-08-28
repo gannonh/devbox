@@ -16,6 +16,7 @@ import {
   TERMINAL_SESSION_STATES,
   boundedCall,
   verifySandboxDeleted,
+  waitForTerminalSessionStates,
 } from './sandbox-cleanup.mjs';
 import { deleteListedSnapshot } from './snapshot-cleanup.mjs';
 
@@ -343,13 +344,15 @@ async function runOne(index, config, adapter) {
         await timedStage(run, 'stop', async (signal) => {
       const before = await adapter.listSessions(sandbox, { signal });
       if (before.some((session) => !TERMINAL_SESSION_STATES.has(session.status))) await adapter.stop(sandbox, { signal });
-      const after = await adapter.listSessions(sandbox, { signal });
+      const settled = await waitForTerminalSessionStates({
+        listSessions: async () => adapter.listSessions(sandbox, { signal }),
+        timeoutMs: Math.min(config.cleanupTimeoutMs, 60_000),
+        signal,
+      });
+      const after = settled.sessions;
       run.cleanup.sessionStates = after.map((session) => ({ id: session.id, status: session.status }));
-      run.residualResources.sessions = after
-        .filter((session) => !TERMINAL_SESSION_STATES.has(session.status))
-        .map((session) => ({ id: session.id, status: session.status }));
-          run.cleanup.terminalSessions = after.length > 0 && after.every((session) => TERMINAL_SESSION_STATES.has(session.status));
-          if (!run.cleanup.terminalSessions) throw new Error('Sandbox sessions did not reach a terminal state');
+      run.residualResources.sessions = [];
+          run.cleanup.terminalSessions = true;
           run.cleanup.stopped = true;
         }, config.cleanupTimeoutMs);
       } else {

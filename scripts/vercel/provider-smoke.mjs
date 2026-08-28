@@ -33,7 +33,7 @@ import {
   resolveVercelRepositoryCwd,
 } from '../../dist/providers/vercel/source.js';
 import { createVercelTerminalAdapter } from '../../dist/providers/vercel/terminal.js';
-import { boundedCall } from './sandbox-cleanup.mjs';
+import { boundedCall, waitForTerminalSessionStates } from './sandbox-cleanup.mjs';
 import {
   hasPreflightSandboxProof,
   isExactSmokeSandboxRecord,
@@ -90,6 +90,7 @@ const uatTimeoutMs = positiveTimeout('SMOKE_UAT_TIMEOUT_MS', smokeTimeoutMs);
 const operationTimeoutMs = positiveTimeout('SMOKE_OPERATION_TIMEOUT_MS', 30_000);
 const commandTimeoutMs = positiveTimeout('SMOKE_COMMAND_TIMEOUT_MS', 60_000);
 const cleanupTimeoutMs = positiveTimeout('SMOKE_CLEANUP_TIMEOUT_MS', 120_000);
+const sessionSettleTimeoutMs = positiveTimeout('SMOKE_SESSION_SETTLE_TIMEOUT_MS', 60_000);
 const terminalTimeoutMs = positiveTimeout('SMOKE_TERMINAL_TIMEOUT_MS', 90_000);
 const githubTimeoutMs = positiveTimeout('SMOKE_GITHUB_TIMEOUT_MS', 10_000);
 const fixtureValidationTimeoutMs = githubTimeoutMs * 3;
@@ -821,9 +822,24 @@ async function runPath(config, fixture, label, runSignal, client, terminalAdapte
 
     const finalStop = await timed(pathReport, 'stop-final', (requestSignal) => client.stopSandbox(resumed, { signal: requestSignal }), signal, operationTimeoutMs);
     recordCheck(pathReport, 'final stop snapshot metadata', validStopSnapshot(finalStop.snapshot), `snapshot status=${finalStop.snapshot?.status ?? 'not-created'}`);
-    const finalSessions = await client.listSessions(resumed, { signal });
-    pathReport.sessions.push({ phase: 'after-final-stop', states: finalSessions.map(sessionState) });
-    pathReport.cleanup.finalSessionStatesTerminal = finalSessions.length > 0 && finalSessions.every((session) => ['stopped', 'aborted'].includes(session.status));
+    // stopSandbox can return while a session is still `stopping` (Release #31).
+    // Wait for stopped/aborted with a bound; do not pass a forever-running session.
+    const finalSessions = await timed(
+      pathReport,
+      'stop-final-settle',
+      (requestSignal) => waitForTerminalSessionStates({
+        listSessions: async () => {
+          const sessions = await client.listSessions(resumed, { signal: requestSignal });
+          pathReport.sessions.push({ phase: 'after-final-stop', states: sessions.map(sessionState) });
+          return sessions;
+        },
+        timeoutMs: sessionSettleTimeoutMs,
+        signal: requestSignal,
+      }).then((result) => result.sessions),
+      signal,
+      sessionSettleTimeoutMs,
+    );
+    pathReport.cleanup.finalSessionStatesTerminal = hasTerminalSessionProof(finalSessions);
     recordCheck(pathReport, 'every created session terminal', pathReport.cleanup.finalSessionStatesTerminal, 'all listed sessions are stopped or aborted');
     pathReport.cleanup.stopped = pathReport.cleanup.finalSessionStatesTerminal;
     pathReport.knownSnapshotIds = [initialStop.snapshot?.id, finalStop.snapshot?.id].filter((value) => typeof value === 'string');

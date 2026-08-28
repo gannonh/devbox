@@ -18,7 +18,7 @@ import {
 } from './smoke-contract.mjs';
 import { readAgentManifest } from './agent-manifest.mjs';
 import { fetchWithTimeout } from './http-probe.mjs';
-import { TERMINAL_SESSION_STATES, verifySandboxDeleted, boundedCall } from './sandbox-cleanup.mjs';
+import { TERMINAL_SESSION_STATES, verifySandboxDeleted, boundedCall, waitForTerminalSessionStates } from './sandbox-cleanup.mjs';
 import {
   applyOwnedRecoveryEvidence,
   recoverOwnedResources,
@@ -54,6 +54,7 @@ const sdkTimeoutMs = positiveTimeout('SMOKE_SDK_TIMEOUT_MS', 30_000);
 const commandTimeoutMs = positiveTimeout('SMOKE_COMMAND_TIMEOUT_MS', 60_000);
 const httpTimeoutMs = positiveTimeout('SMOKE_HTTP_TIMEOUT_MS', 10_000);
 const cleanupTimeoutMs = positiveTimeout('SMOKE_CLEANUP_TIMEOUT_MS', 120_000);
+const sessionSettleTimeoutMs = positiveTimeout('SMOKE_SESSION_SETTLE_TIMEOUT_MS', 60_000);
 const deleteVerifyTimeoutMs = positiveTimeout('SMOKE_DELETE_VERIFY_TIMEOUT_MS', 30_000);
 const terminalLongevityIdleMs = process.env.SMOKE_TERMINAL_LONGEVITY_IDLE_MS === undefined
   ? 0
@@ -590,9 +591,14 @@ try {
     try {
       await timed('stop', async (signal) => {
         if (!TERMINAL_SESSION_STATES.has(sandbox.status)) await sandbox.stop({ signal });
-        const finalStates = await listSessions('after-stop', sandbox, signal);
-        report.cleanup.stopped = finalStates.length > 0 && finalStates.every((session) => TERMINAL_SESSION_STATES.has(session.status));
-        if (!report.cleanup.stopped) throw new Error('not every final Sandbox session is stopped or aborted');
+        // stop() can return while the session is still `stopping` (Nightly #47).
+        // Poll until stopped/aborted with a bound; a forever-running session still fails.
+        await waitForTerminalSessionStates({
+          listSessions: () => listSessions('after-stop', sandbox, signal),
+          timeoutMs: sessionSettleTimeoutMs,
+          signal,
+        });
+        report.cleanup.stopped = true;
       }, { signal: cleanupSignal, timeoutMs: cleanupTimeoutMs, respectSmokeDeadline: false });
     } catch (error) {
       markCleanupFailure('stopped', error instanceof Error ? error.message : error);
