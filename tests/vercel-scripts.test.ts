@@ -14,7 +14,7 @@ import {
   REQUIRED_SMOKE_TIMINGS,
 } from '../scripts/vercel/smoke-contract.mjs';
 import { fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
-import { verifySandboxDeleted } from '../scripts/vercel/sandbox-cleanup.mjs';
+import { verifySandboxDeleted, waitForTerminalSessionStates } from '../scripts/vercel/sandbox-cleanup.mjs';
 import {
   applyOwnedRecoveryEvidence,
   recoverOwnedResources,
@@ -196,6 +196,109 @@ describe('Vercel supply-chain script boundaries', () => {
     expect(lookups).toBeGreaterThanOrEqual(3);
     expect(stops).toBeGreaterThanOrEqual(3);
     expect(deletes).toBeGreaterThanOrEqual(3);
+  });
+
+  it('waits through a post-stop stopping sample before accepting terminal sessions', async () => {
+    const polls: Array<Array<{ id: string; status: string }>> = [
+      [
+        { id: 'sbx_new', status: 'stopping' },
+        { id: 'sbx_old', status: 'stopped' },
+      ],
+      [
+        { id: 'sbx_new', status: 'stopped' },
+        { id: 'sbx_old', status: 'stopped' },
+      ],
+    ];
+    const observed: string[][] = [];
+    const result = await waitForTerminalSessionStates({
+      timeoutMs: 1_000,
+      pollIntervalMs: 1,
+      listSessions: async () => {
+        const sessions = polls.shift() ?? [];
+        observed.push(sessions.map((session) => session.status));
+        return sessions;
+      },
+      sleep: async () => {},
+    });
+    expect(result.attempts).toBe(2);
+    expect(result.sessions.map((session) => session.status)).toEqual(['stopped', 'stopped']);
+    expect(observed).toEqual([['stopping', 'stopped'], ['stopped', 'stopped']]);
+  });
+
+  it('rejects a post-stop wait when sessions stay non-terminal past the settle bound', async () => {
+    await expect(waitForTerminalSessionStates({
+      timeoutMs: 20,
+      pollIntervalMs: 5,
+      listSessions: async () => [{ id: 'sbx_stuck', status: 'stopping' }],
+      sleep: async () => {},
+    })).rejects.toThrow(/sessions did not reach stopped\/aborted within 20ms: sbx_stuck:stopping/);
+  });
+
+  it('rejects empty session listings as terminal proof during settle', async () => {
+    await expect(waitForTerminalSessionStates({
+      timeoutMs: 20,
+      pollIntervalMs: 5,
+      listSessions: async () => [],
+      sleep: async () => {},
+    })).rejects.toThrow(/sessions did not reach stopped\/aborted within 20ms: \(none\)/);
+  });
+
+  it('rejects forever-running sessions during settle without treating stopping as success', async () => {
+    await expect(waitForTerminalSessionStates({
+      timeoutMs: 20,
+      pollIntervalMs: 5,
+      listSessions: async () => [{ id: 'sbx_live', status: 'running' }],
+      sleep: async () => {},
+    })).rejects.toThrow(/sbx_live:running/);
+  });
+
+  it('rejects a listing that stalls past the settle deadline even if it would later be terminal', async () => {
+    let sawAbort = false;
+    await expect(waitForTerminalSessionStates({
+      timeoutMs: 40,
+      pollIntervalMs: 5,
+      listSessions: async ({ signal: settleSignal }) => {
+        await new Promise<void>((_resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error('stalled listing was not aborted'));
+          }, 5_000);
+          settleSignal?.addEventListener('abort', () => {
+            sawAbort = true;
+            clearTimeout(timer);
+            reject(settleSignal.reason ?? new Error('session settle listing aborted'));
+          }, { once: true });
+        });
+        return [{ id: 'sbx_late', status: 'stopped' }];
+      },
+      sleep: async () => {},
+    })).rejects.toThrow(/sessions did not reach stopped\/aborted within 40ms/);
+    expect(sawAbort).toBe(true);
+  });
+
+  it('rejects a terminal listing that only arrives after the settle deadline', async () => {
+    const started = Date.now();
+    await expect(waitForTerminalSessionStates({
+      timeoutMs: 30,
+      pollIntervalMs: 5,
+      listSessions: async () => {
+        const delay = Math.max(0, 45 - (Date.now() - started));
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return [{ id: 'sbx_after_deadline', status: 'stopped' }];
+      },
+      sleep: async () => {},
+    })).rejects.toThrow(/sessions did not reach stopped\/aborted within 30ms|session settle listing timed out/);
+  });
+
+  it('wires post-stop settle waits into provider and Nightly Sandbox smoke gates', async () => {
+    const provider = await readFile('scripts/vercel/provider-smoke.mjs', 'utf8');
+    const sandbox = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
+    for (const source of [provider, sandbox]) {
+      expect(source).toContain('waitForTerminalSessionStates');
+      expect(source).toContain('SMOKE_SESSION_SETTLE_TIMEOUT_MS');
+      expect(source).toContain('stopping');
+    }
+    expect(provider).toContain('stop-final-settle');
+    expect(sandbox).toContain("listSessions('after-stop'");
   });
 
   // The publisher smoke gate fails closed on `requiredChecksComplete` when a
