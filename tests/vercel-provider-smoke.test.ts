@@ -565,4 +565,53 @@ describe('Vercel provider smoke configuration', () => {
     expect(source).toContain('DEVBOX_UAT_REFRESH=');
     expect(source).not.toContain('resume runtime secret changed');
   });
+
+  it('keys the relay-backed app-route UAT metadata store by remote.canonical', async () => {
+    const workflow = await readFile('.github/workflows/vercel-provider-uat.yml', 'utf8');
+    const source = await readFile('scripts/vercel/app-port-uat.mjs', 'utf8');
+    const { normalizeGitHubRemote } = await import('../src/providers/vercel/identity.js');
+    const { createVercelBranchMetadataStore } = await import('../src/providers/vercel/metadata.js');
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    // The provider persists under remote.canonical (`github.com/<owner>/<repo>`).
+    // Release #33 set DEVBOX_UAT_REPO_KEY to the short owner/repo form, so the
+    // UAT read a different hashed metadata path and the pin assert saw null.
+    const defaultMatch = source.match(
+      /DEVBOX_UAT_REPO_KEY \?\? '([^']+)'/,
+    );
+    expect(defaultMatch?.[1]).toMatch(/^github\.com\/[^/]+\/[^/]+$/);
+    const canonical = defaultMatch![1];
+    expect(normalizeGitHubRemote(`https://${canonical}.git`).canonical).toBe(canonical);
+
+    const repoKeyLines = workflow
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('DEVBOX_UAT_REPO_KEY:'));
+    expect(repoKeyLines).toEqual([`DEVBOX_UAT_REPO_KEY: ${canonical}`]);
+    expect(source).toContain('assertRepoKeyMatchesOrigin');
+    expect(source).toContain('MONOREPO_REVISION = \'180442037b52775618b2d56cdf7f218514aa9b00\'');
+    expect(source).toContain('got ${metadata.appPorts.revision}, expected ${MONOREPO_REVISION}');
+
+    // Path isolation uses a synthetic host/owner/repo pair so this test never
+    // embeds the consumer project slug.
+    const stateHome = await mkdtemp(join(tmpdir(), 'repo-key-isolation-'));
+    try {
+      const providerStore = createVercelBranchMetadataStore({
+        stateHome,
+        repoKey: 'github.com/acme/fixture',
+        branch: 'main',
+      });
+      const shortKeyStore = createVercelBranchMetadataStore({
+        stateHome,
+        repoKey: 'acme/fixture',
+        branch: 'main',
+      });
+      expect(providerStore.path).not.toBe(shortKeyStore.path);
+      await expect(shortKeyStore.read()).resolves.toBeNull();
+    } finally {
+      await rm(stateHome, { recursive: true, force: true });
+    }
+  });
 });

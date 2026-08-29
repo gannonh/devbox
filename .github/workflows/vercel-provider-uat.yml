@@ -178,7 +178,10 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
-          DEVBOX_UAT_REPO_KEY: gannonh/uat-devbox
+          # Must match remote.canonical (github.com/<owner>/<repo>). A short
+          # owner/repo key hashes to a different metadata file than the
+          # provider writes, so the pin assert reads null and fails.
+          DEVBOX_UAT_REPO_KEY: github.com/gannonh/uat-devbox
           DEVBOX_UAT_MONOREPO_BRANCH: main
           DEVBOX_UAT_ONLY: monorepo
           DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/app-port-uat.json
