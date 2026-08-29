@@ -6,13 +6,13 @@
     "pi": {
       "package": "@earendil-works/pi-coding-agent",
       "binary": "pi",
-      "version": "0.84.3",
+      "version": "0.84.4",
       "versionFlag": "--version"
     },
     "claude": {
       "package": "@anthropic-ai/claude-code",
       "binary": "claude",
-      "version": "2.1.250",
+      "version": "2.1.251",
       "versionFlag": "--version"
     },
     "codex": {
