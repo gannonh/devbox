@@ -2,20 +2,29 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Copy a skill onto disk. Best-effort: a registry or network hiccup for a single
+# skill must not abort dependency setup (this script runs from worktree:setup and
+# from the Cloud Agent environment install).
+add_skill() {
+  if ! npx skills add "$@" -y --copy --agent claude-code cursor; then
+    echo "install-skills: skipped 'skills add $*' (command failed)" >&2
+  fi
+}
+
 # gannonh/skills
-npx skills add gannonh/skills --skill plan-build-verify -y --copy --agent claude-code cursor
-npx skills add gannonh/skills --skill thermo-run -y --copy --agent claude-code cursor
-npx skills add gannonh/skills --skill readme -y --copy --agent claude-code cursor
+add_skill gannonh/skills --skill plan-build-verify
+add_skill gannonh/skills --skill thermo-run
+add_skill gannonh/skills --skill readme
 
 # cursor/plugins
-npx skills add cursor/plugins --skill thermo-nuclear-code-quality-review -y --copy --agent claude-code cursor
-npx skills add cursor/plugins --skill thermo-nuclear-review -y --copy --agent claude-code cursor
-npx skills add cursor/plugins --skill unslop -y --copy --agent claude-code cursor
+add_skill cursor/plugins --skill thermo-nuclear-code-quality-review
+add_skill cursor/plugins --skill thermo-nuclear-review
+add_skill cursor/plugins --skill unslop
 
 # misc
-npx skills add anthropics/claude-plugins-community --skill eli5 -y --copy --agent claude-code cursor
-npx skills add humanlayer/skills --skill show-me -y --copy --agent claude-code cursor
-npx skills add warpdotdev/common-skills --skill skill-doctor -y --copy --agent claude-code cursor
+add_skill anthropics/claude-plugins-community --skill eli5
+add_skill humanlayer/skills --skill show-me
+add_skill warpdotdev/common-skills --skill skill-doctor
 
 # plugins
 # codex
@@ -28,4 +37,3 @@ npx skills add warpdotdev/common-skills --skill skill-doctor -y --copy --agent c
 
 # # cursor (no plugin install CLI; copy official plugin onto disk)
 # scripts/install-cursor-pstack.sh
-
