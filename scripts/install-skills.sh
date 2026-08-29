@@ -19,13 +19,13 @@ npx skills add warpdotdev/common-skills --skill skill-doctor -y --copy --agent c
 
 # plugins
 # codex
-codex plugin marketplace add ericlitman/open-pstack --ref main
-codex plugin add pstack@open-pstack
+# codex plugin marketplace add ericlitman/open-pstack --ref main
+# codex plugin add pstack@open-pstack
 
-# claude
-claude plugin marketplace add ericlitman/open-pstack --scope project
-claude plugin install pstack@open-pstack --scope project -y
+# # claude
+# claude plugin marketplace add ericlitman/open-pstack --scope project
+# claude plugin install pstack@open-pstack --scope project -y
 
-# cursor (no plugin install CLI; copy official plugin onto disk)
-scripts/install-cursor-pstack.sh
+# # cursor (no plugin install CLI; copy official plugin onto disk)
+# scripts/install-cursor-pstack.sh
 
