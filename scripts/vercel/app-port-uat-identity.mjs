@@ -7,6 +7,10 @@
  * `app-port-uat.mjs` so a previous gate's leftover cannot strand a recut.
  */
 
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_ATTEMPTS = 8;
+const DEFAULT_BACKOFF_MS = 250;
+
 export const STALE_SANDBOX_IDENTITY_CONFLICT =
   /The Vercel sandbox identity conflicts with this repository or branch/;
 
@@ -26,14 +30,24 @@ export function isAmbiguousSandboxRemoval(text) {
  * the listing is empty. Foreign-scope names are reported and never cleaned.
  *
  * `inspect` and `cleanup` are caller-owned. This module never talks to Vercel.
+ * A verified delete can still appear in the next collection listing, so leftover
+ * inspects retry for a bounded window before failing closed.
  */
-export async function removeEachMatchingLeftover({ inspect, cleanup }) {
+export async function removeEachMatchingLeftover({
+  inspect,
+  cleanup,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  backoffMs = DEFAULT_BACKOFF_MS,
+  sleep = wait,
+}) {
   if (typeof inspect !== 'function' || typeof cleanup !== 'function') {
     throw new TypeError('removeEachMatchingLeftover requires inspect and cleanup functions');
   }
+  validateRelistOptions({ timeoutMs, maxAttempts, backoffMs, sleep });
 
   const listed = await inspect();
-  const matches = Array.isArray(listed?.matches) ? listed.matches : [];
+  const matches = listedMatches(listed);
   const foreignScope = Array.isArray(listed?.foreignScope) ? listed.foreignScope : [];
   const removed = [];
   for (const record of matches) {
@@ -44,7 +58,13 @@ export async function removeEachMatchingLeftover({ inspect, cleanup }) {
     removed.push(record.name);
   }
 
-  const leftover = (await inspect())?.matches ?? [];
+  const leftover = await waitForEmptyMatches({
+    inspect,
+    timeoutMs,
+    maxAttempts,
+    backoffMs,
+    sleep,
+  });
   if (leftover.length > 0) {
     const error = new Error(
       `matching-remove left ${leftover.length} live sandbox(es) for this repository and branch`,
@@ -126,4 +146,47 @@ function removeFailed(phase, result) {
   error.phase = phase;
   error.result = result;
   return error;
+}
+
+function listedMatches(listed) {
+  return Array.isArray(listed?.matches) ? listed.matches : [];
+}
+
+function validateRelistOptions({ timeoutMs, maxAttempts, backoffMs, sleep }) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('removeEachMatchingLeftover timeoutMs must be positive');
+  }
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new TypeError('removeEachMatchingLeftover maxAttempts must be a positive integer');
+  }
+  if (!Number.isFinite(backoffMs) || backoffMs < 0) {
+    throw new TypeError('removeEachMatchingLeftover backoffMs must be non-negative');
+  }
+  if (typeof sleep !== 'function') {
+    throw new TypeError('removeEachMatchingLeftover requires a sleep function');
+  }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Relist until the collection is empty or the owned-resource retry budget is
+ * spent. cleanupVercelSandbox can verify deletion while list still returns the
+ * deleted record; a single immediate inspect is not proof of leftover.
+ */
+async function waitForEmptyMatches({ inspect, timeoutMs, maxAttempts, backoffMs, sleep }) {
+  const deadline = Date.now() + timeoutMs;
+  let leftover = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    leftover = listedMatches(await inspect());
+    if (leftover.length === 0) return leftover;
+    if (attempt >= maxAttempts) break;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const delay = Math.min(backoffMs * attempt, remaining);
+    if (delay > 0) await sleep(delay);
+  }
+  return leftover;
 }

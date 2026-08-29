@@ -184,17 +184,59 @@ describe('app-route UAT multi-match leftover cleanup', () => {
     expect(remaining).toEqual([foreign]);
   });
 
+  it('retries a stale post-delete listing until the collection converges', async () => {
+    const ownA = { name: 'devbox-v-0-1-11-uat-main-aaaa' };
+    const ownB = { name: 'devbox-v-0-1-12-uat-main-bbbb' };
+    const delays: number[] = [];
+    let inspects = 0;
+    const cleaned: string[] = [];
+
+    const result = await removeEachMatchingLeftover({
+      timeoutMs: 1_000,
+      maxAttempts: 8,
+      backoffMs: 250,
+      sleep: async (ms: number) => {
+        delays.push(ms);
+      },
+      inspect: async () => {
+        inspects += 1;
+        if (inspects <= 2) {
+          return { matches: [ownA, ownB], foreignScope: [] };
+        }
+        return { matches: [], foreignScope: [] };
+      },
+      cleanup: async (record: { name: string }) => {
+        cleaned.push(record.name);
+        return { verified: true };
+      },
+    });
+
+    expect(cleaned).toEqual([ownA.name, ownB.name]);
+    expect(inspects).toBe(3);
+    expect(delays).toEqual([250]);
+    expect(result).toEqual({ removed: [ownA.name, ownB.name], foreignScope: [] });
+  });
+
   it('fails closed when a matching leftover still exists after cleanup', async () => {
+    let inspects = 0;
     await expect(removeEachMatchingLeftover({
-      inspect: async () => ({
-        matches: [{ name: 'leftover-a' }, { name: 'leftover-b' }],
-        foreignScope: [],
-      }),
+      timeoutMs: 1_000,
+      maxAttempts: 3,
+      backoffMs: 250,
+      sleep: async () => {},
+      inspect: async () => {
+        inspects += 1;
+        return {
+          matches: [{ name: 'leftover-a' }, { name: 'leftover-b' }],
+          foreignScope: [],
+        };
+      },
       cleanup: async () => ({ verified: true }),
     })).rejects.toMatchObject({
       message: expect.stringContaining('matching-remove left 2 live sandbox(es)'),
       phase: 'matching-remove',
     });
+    expect(inspects).toBe(4);
   });
 
   it('fails closed when cleanup does not verify a named leftover', async () => {
