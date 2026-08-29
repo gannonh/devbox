@@ -43,6 +43,7 @@ import {
 } from '../../dist/providers/vercel/source.js';
 import { MAX_VERCEL_SANDBOX_PORTS } from '../../dist/providers/vercel/ports.js';
 import { RealShellRunner } from '../../dist/lib/shell.js';
+import { bootClearingStaleIdentity } from './app-port-uat-identity.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -169,17 +170,28 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   const client = recordingClient(realClient, updates);
   const registry = providerRegistry(client, stateHome);
 
-  const boot = await runCli(['--provider', 'vercel', branch], {
+  const boot = await bootScenario(branch, {
     env,
     stateHome,
     registry,
-    answers: [
-      [/Create this Vercel sandbox\?/, 'y\n', true],
+    answers: ({ attempt }) => [
+      [/Create this Vercel sandbox\?/, 'y\n', attempt === 1],
       [/Expose the detected app port\(s\)\?/, '\n', true],
     ],
   });
   assert(boot.code === 0, `monorepo boot exited ${boot.code}`);
+  if (boot.retried) record('monorepo-stale-identity-retry', { retried: true });
   scopeConfirmed = true;
+  const metadata = await rememberCleanup({
+    branch,
+    env,
+    stateHome,
+    registry,
+    realClient,
+    credentials,
+    store,
+    label: 'monorepo',
+  });
   assert(/candidate: 5173 \(vite default — apps\/web\)/.test(boot.stderr), 'monorepo Vite candidate was not offered');
   assert(/accepted app routes are PUBLIC/.test(boot.stderr), 'public-route warning was not shown');
   assert(updates.length === 1, `expected exactly one monorepo port update, saw ${updates.length}`);
@@ -188,7 +200,6 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   assert(update.before.length === 1 && update.before[0] === NOVNC_PORT, 'monorepo Sandbox was not created with 6080 only');
   assert(!update.requested.includes(5173), 'the raw monorepo app port reached the route set');
 
-  const metadata = await store.read();
   assert(
     metadata?.appPorts !== undefined,
     `monorepo metadata missing under repoKey ${REPO_KEY}; the provider keys stores by remote.canonical`,
@@ -210,6 +221,7 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
     routesAfterUpdate: update.after,
     sandboxRecreated: update.sandboxIdBefore !== update.sandboxIdAfter,
     readyBlock: readyBlock(boot.stderr),
+    staleIdentityRetried: boot.retried === true,
   });
   record('monorepo-selection-metadata', {
     selected: metadata.appPorts.selected,
@@ -222,17 +234,6 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   report.fixture.pinnedRevision = MONOREPO_REVISION;
 
   const name = metadata.identity.name;
-  cleanupContext = {
-    branch,
-    env,
-    stateHome,
-    registry,
-    realClient,
-    credentials,
-    name,
-    store,
-    label: 'monorepo',
-  };
   let handle = await realClient.get({ credentials, name, resume: true });
   const workspace = resolveVercelRepositoryCwd(handle.cwd, REPO_NAME);
   let appUrl = appRouteUrl(handle, metadata, 5173);
@@ -506,21 +507,32 @@ async function viteScenario({ env, stateHome, credentials, realClient }) {
   const registry = providerRegistry(client, stateHome);
 
   // --- boot: scan, prompt, live port update -------------------------------
-  const boot = await runCli(['--provider', 'vercel', branch], {
+  const boot = await bootScenario(branch, {
     env,
     stateHome,
     registry,
-    answers: [
-      [/Create this Vercel sandbox\?/, 'y\n', !scopeConfirmed],
+    answers: ({ attempt }) => [
+      [/Create this Vercel sandbox\?/, 'y\n', attempt === 1 && !scopeConfirmed],
       [/Expose the detected app port\(s\)\?/, '\n', true],
     ],
   });
   assert(boot.code === 0, `boot exited ${boot.code}`);
+  if (boot.retried) record('vite-stale-identity-retry', { retried: true });
   assert(
     scopeConfirmed || /Create this Vercel sandbox\?/.test(boot.stderr),
     'the first boot of the run did not confirm the Vercel scope',
   );
   scopeConfirmed = true;
+  const metadata = await rememberCleanup({
+    branch,
+    env,
+    stateHome,
+    registry,
+    realClient,
+    credentials,
+    store,
+    label: 'vite',
+  });
   assert(/candidate: 5173 \(vite default\)/.test(boot.stderr), 'Vite 5173 candidate was not offered');
   assert(/accepted app routes are PUBLIC/.test(boot.stderr), 'public-route warning was not shown');
   assert(updates.length === 1, `expected exactly one port update, saw ${updates.length}`);
@@ -541,9 +553,9 @@ async function viteScenario({ env, stateHome, credentials, realClient }) {
     routesAfterUpdate: update.after,
     sandboxRecreated: update.sandboxIdBefore !== update.sandboxIdAfter,
     readyBlock: readyBlock(boot.stderr),
+    staleIdentityRetried: boot.retried === true,
   });
 
-  const metadata = await store.read();
   assert(metadata?.appPorts?.selected?.includes(5173), 'selection metadata missing 5173');
   assert(metadata.pendingAppPorts === undefined, 'a pending record survived a successful update');
   const viteRelay = metadata.appPorts.relays.find((entry) => entry.logicalPort === 5173);
@@ -560,17 +572,6 @@ async function viteScenario({ env, stateHome, credentials, realClient }) {
   report.fixture.viteRevision = metadata.appPorts.revision;
 
   const name = metadata.identity.name;
-  cleanupContext = {
-    branch,
-    env,
-    stateHome,
-    registry,
-    realClient,
-    credentials,
-    name,
-    store,
-    label: 'vite',
-  };
   let handle = await realClient.get({ credentials, name, resume: true });
   const workspace = resolveVercelRepositoryCwd(handle.cwd, REPO_NAME);
   const appUrl = appRouteUrl(handle, metadata, 5173);
@@ -753,16 +754,17 @@ async function nextScenario({ env, stateHome, credentials, realClient }) {
   const client = recordingClient(realClient, updates);
   const registry = providerRegistry(client, stateHome);
 
-  const boot = await runCli(['--provider', 'vercel', branch], {
+  const boot = await bootScenario(branch, {
     env,
     stateHome,
     registry,
-    answers: [
-      [/Create this Vercel sandbox\?/, 'y\n', !scopeConfirmed],
+    answers: ({ attempt }) => [
+      [/Create this Vercel sandbox\?/, 'y\n', attempt === 1 && !scopeConfirmed],
       [/Expose the detected app port\(s\)\?/, '\n', true],
     ],
   });
   assert(boot.code === 0, `next boot exited ${boot.code}`);
+  if (boot.retried) record('next-stale-identity-retry', { retried: true });
   assert(
     scopeConfirmed || /Create this Vercel sandbox\?/.test(boot.stderr),
     'the first boot of the run did not confirm the Vercel scope',
@@ -770,22 +772,20 @@ async function nextScenario({ env, stateHome, credentials, realClient }) {
   const reconfirmedScope = scopeConfirmed && /Create this Vercel sandbox\?/.test(boot.stderr);
   assert(!reconfirmedScope, 'a second branch in the same repository re-confirmed the Vercel scope');
   scopeConfirmed = true;
-  assert(/candidate: 3000 \(next default\)/.test(boot.stderr), 'Next 3000 candidate was not offered');
-  assert(updates.length === 1, `expected exactly one port update, saw ${updates.length}`);
-  const metadata = await store.read();
-  report.fixture.nextRevision = metadata.appPorts.revision;
-  const name = metadata.identity.name;
-  cleanupContext = {
+  const metadata = await rememberCleanup({
     branch,
     env,
     stateHome,
     registry,
     realClient,
     credentials,
-    name,
     store,
     label: 'next',
-  };
+  });
+  assert(/candidate: 3000 \(next default\)/.test(boot.stderr), 'Next 3000 candidate was not offered');
+  assert(updates.length === 1, `expected exactly one port update, saw ${updates.length}`);
+  report.fixture.nextRevision = metadata.appPorts.revision;
+  const name = metadata.identity.name;
   const handle = await realClient.get({ credentials, name, resume: true });
   const workspace = resolveVercelRepositoryCwd(handle.cwd, REPO_NAME);
   const appUrl = appRouteUrl(handle, metadata, 3000);
@@ -827,11 +827,59 @@ async function nextScenario({ env, stateHome, credentials, realClient }) {
   cleanupContext = undefined;
 }
 
+/**
+ * Preflight `--rm` the stable fixture identity, then boot. A leftover from a
+ * previous gate (Release #33 booted, then failed the pin assert before cleanup
+ * was registered) is an identity conflict, not a confirmation hang. The UAT
+ * answers the create prompt; this path is what actually unblocks CI.
+ *
+ * Human `devbox --provider vercel <branch>` still fails closed on conflict.
+ */
+async function bootScenario(branch, { env, stateHome, registry, answers }) {
+  return bootClearingStaleIdentity({
+    remove: () => runCli(['--provider', 'vercel', branch, '--rm'], { env, stateHome, registry }),
+    boot: ({ attempt }) => runCli(['--provider', 'vercel', branch], {
+      env,
+      stateHome,
+      registry,
+      answers: answers({ attempt }),
+    }),
+  });
+}
+
+/**
+ * Register failure cleanup as soon as boot has a live box, before later
+ * asserts. Release #33 left the leftover because cleanupContext was assigned
+ * after the pin check.
+ */
+async function rememberCleanup(context) {
+  const metadata = await context.store.read().catch(() => null);
+  cleanupContext = {
+    ...context,
+    name: metadata?.identity?.name,
+  };
+  return metadata;
+}
+
 async function removeAndVerify({ branch, env, stateHome, registry, realClient, credentials, name, store, label }) {
   const removal = await runCli(['--provider', 'vercel', branch, '--rm'], { env, stateHome, registry });
   assert(removal.code === 0, `remove exited ${removal.code}`);
-  assert(/cleanup verified/.test(removal.stderr), 'remove did not report verified cleanup');
 
+  if (!name) {
+    assert(
+      /cleanup verified/.test(removal.stderr) || /nothing to remove/.test(removal.stderr),
+      'remove did not report verified cleanup',
+    );
+    record(`${label}-cleanup`, {
+      identityNameMissing: true,
+      cleanupVerified: /cleanup verified/.test(removal.stderr),
+    });
+    const metadata = await store.read().catch(() => null);
+    assert(metadata === null, 'local selected-port metadata survived removal');
+    return;
+  }
+
+  assert(/cleanup verified/.test(removal.stderr), 'remove did not report verified cleanup');
   const remaining = await realClient.listSandboxes({ credentials, namePrefix: name });
   const snapshots = await realClient.listSnapshots({ credentials, name }).catch(() => []);
   const liveSnapshots = snapshots.filter((snapshot) => snapshot.status !== 'deleted');
