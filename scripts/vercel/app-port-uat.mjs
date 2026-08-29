@@ -37,13 +37,21 @@ import { createVercelSandboxClient } from '../../dist/providers/vercel/client.js
 import { createVercelBranchMetadataStore } from '../../dist/providers/vercel/metadata.js';
 import { resolveVercelCredentials } from '../../dist/providers/vercel/auth.js';
 import { applyAppPorts } from '../../dist/providers/vercel/app-port-flow.js';
-import { resolveVercelRepositoryCwd } from '../../dist/providers/vercel/source.js';
+import {
+  normalizeGitHubSourceRemote,
+  resolveVercelRepositoryCwd,
+} from '../../dist/providers/vercel/source.js';
 import { MAX_VERCEL_SANDBOX_PORTS } from '../../dist/providers/vercel/ports.js';
 import { RealShellRunner } from '../../dist/lib/shell.js';
 
 const execFile = promisify(execFileCallback);
 
 const REPO_ROOT = required('DEVBOX_UAT_REPO_ROOT');
+/**
+ * Metadata is keyed by `remote.canonical` (`github.com/<owner>/<repo>`). The
+ * provider always writes under that form; a short `owner/repo` override reads
+ * a different file and makes the pin assert fail against a null store.
+ */
 const REPO_KEY = process.env.DEVBOX_UAT_REPO_KEY ?? 'github.com/gannonh/uat-devbox';
 /** Clone directory name inside the Sandbox; the last path element of the key. */
 const REPO_NAME = REPO_KEY.split('/').at(-1);
@@ -99,6 +107,7 @@ async function main() {
   for (const key of ['VERCEL_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID']) required(key);
   const githubToken = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? await ghToken();
   addSecret(process.env.VERCEL_TOKEN, githubToken);
+  await assertRepoKeyMatchesOrigin(REPO_ROOT, REPO_KEY);
 
   const stateHome = await mkdtemp(join(tmpdir(), 'devbox-app-port-uat-state-'));
   const fakeHome = await mkdtemp(join(tmpdir(), 'devbox-app-port-uat-home-'));
@@ -180,7 +189,14 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   assert(!update.requested.includes(5173), 'the raw monorepo app port reached the route set');
 
   const metadata = await store.read();
-  assert(metadata?.appPorts?.revision === MONOREPO_REVISION, 'UAT did not use the pinned monorepo revision');
+  assert(
+    metadata?.appPorts !== undefined,
+    `monorepo metadata missing under repoKey ${REPO_KEY}; the provider keys stores by remote.canonical`,
+  );
+  assert(
+    metadata.appPorts.revision === MONOREPO_REVISION,
+    `UAT did not use the pinned monorepo revision (got ${metadata.appPorts.revision}, expected ${MONOREPO_REVISION})`,
+  );
   assert(metadata.pendingAppPorts === undefined, 'a pending record survived the monorepo update');
   const viteRelay = metadata.appPorts.relays.find((entry) => entry.logicalPort === 5173);
   assert(viteRelay !== undefined, 'no monorepo relay mapping was committed for 5173');
@@ -1344,4 +1360,21 @@ function required(key) {
   const value = process.env[key];
   if (!value) throw new Error(`${key} is required`);
   return value;
+}
+
+/**
+ * The provider persists branch metadata under `remote.canonical`. The UAT must
+ * read the same key or every post-boot assert against the store is a false
+ * negative (null metadata), including the pinned-revision gate.
+ */
+async function assertRepoKeyMatchesOrigin(repoRoot, repoKey) {
+  const { stdout } = await execFile('git', ['remote', 'get-url', 'origin'], {
+    cwd: repoRoot,
+    timeout: 15_000,
+  });
+  const canonical = normalizeGitHubSourceRemote(stdout.trim()).canonical;
+  assert(
+    repoKey === canonical,
+    `DEVBOX_UAT_REPO_KEY (${repoKey}) must equal the fixture origin canonical key (${canonical})`,
+  );
 }
