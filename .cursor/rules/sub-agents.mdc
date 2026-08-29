@@ -11,3 +11,5 @@ Use sub-agents to delegate work. Focus on coordination, review and integration. 
 - `composer-2.5-fast` — Use for mechanical, high-volume, or latency-sensitive work: targeted fixes, perf/hillclimb loops, tooling, and swarm workers.
 - `cursor-grok-4.6-xhigh` — Use for exploration, explanation, judgment, and prose when you want current Grok at extra-high reasoning.
 - `cursor-grok-4.5-high-fast` — Use as a second, cheaper Grok lane in panels so critics/arena/architects are not all the same model.
+
+Never pass any other Task `model` slug. `claude-*`, `gpt-*`, `gemini-*`, `pstack-fable-max`, and `pstack-opus-xhigh` are forbidden even when listed in the Task schema. See `first-party-models.mdc`.

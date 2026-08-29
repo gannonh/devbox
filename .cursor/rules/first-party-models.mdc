@@ -1,0 +1,19 @@
+---
+description: Cursor Models only. Never bill Other Models from Task.
+alwaysApply: true
+---
+# First-party models only
+
+Allowed Task `model` values:
+
+- omit, `inherit`, `inherit-parent`, `auto` (parent chat model)
+- `composer-2.5`
+- `composer-2.5-fast`
+- `cursor-grok-4.6-xhigh`
+- `cursor-grok-4.5-high-fast`
+
+Never pass `claude-*`, `gpt-*`, `gemini-*`, `glm-*`, `kimi-*`, or any other third-party slug. The Task schema still lists them. The Models picker hide does not remove them. A skill "default" that names Claude, GPT, Gemini, Fable, Opus, Sol, Terra, or Luna is stale: use `pstack-models.mdc` or inherit.
+
+Never launch `pstack-fable-max` or `pstack-opus-xhigh`. Those agents pin Claude.
+
+If a slug is unresolvable, omit `model` (inherit). Do not pick a "closest" third-party family.
