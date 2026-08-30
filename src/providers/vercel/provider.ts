@@ -826,10 +826,6 @@ async function terminalResult(
       failures.push(failure);
       return true;
     },
-    getSize: () => ({
-      cols: request.stdout.columns ?? 80,
-      rows: request.stdout.rows ?? 24,
-    }),
     ...(request.runtimeEnvironment === undefined ? {} : { env: request.runtimeEnvironment }),
     ...(signalSource === undefined ? {} : { signalSource }),
     program: terminalShell.program,

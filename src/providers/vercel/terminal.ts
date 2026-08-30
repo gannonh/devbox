@@ -244,8 +244,8 @@ async function attachTerminal(input: {
   }
 
   const getSize = options.getSize ?? (() => ({
-    cols: streams.stdout.columns ?? DEFAULT_COLUMNS,
-    rows: streams.stdout.rows ?? DEFAULT_ROWS,
+    cols: terminalDimension(streams.stdout.columns, DEFAULT_COLUMNS),
+    rows: terminalDimension(streams.stdout.rows, DEFAULT_ROWS),
   }));
   let startFrame: string;
   try {
@@ -824,6 +824,10 @@ function validateSize(size: VercelTerminalSize): void {
   if (!Number.isInteger(size.cols) || size.cols <= 0 || !Number.isInteger(size.rows) || size.rows <= 0) {
     throw new Error('Terminal dimensions must be positive integers');
   }
+}
+
+function terminalDimension(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 function createTerminalFailure(
