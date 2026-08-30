@@ -239,6 +239,33 @@ describe('Vercel terminal adapter', () => {
     await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
   });
 
+  it('uses safe dimensions when the output TTY reports zero size', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams(true);
+    terminalStreams.output.columns = 0;
+    terminalStreams.output.rows = 0;
+    const resultPromise = terminal.attach({
+      cwd: '/vercel/sandbox/repository',
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+
+    expect(JSON.parse(String(sockets[0].sent[0]))).toMatchObject({ cols: 80, rows: 24 });
+    sockets[0].emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false);
+    await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
+  });
+
   it('does not forward stdin until the start frame send callback succeeds', async () => {
     const sockets: FakeWebSocket[] = [];
     const terminal = createVercelTerminalAdapter({
