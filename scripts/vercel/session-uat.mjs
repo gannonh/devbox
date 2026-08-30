@@ -756,7 +756,7 @@ async function completedWorkflowRun(branchTag) {
   const token = process.env.GITHUB_TOKEN?.trim();
   let completed = false;
   try {
-    const response = await fetch(`https://api.github.com/repos/${repository}/actions/runs/${runId}`, {
+    const response = await fetch(`https://api.github.com/repos/${repository}/actions/runs/${runId}/attempts/${runAttempt}`, {
       headers: {
         Accept: 'application/vnd.github+json',
         ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
