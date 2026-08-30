@@ -170,7 +170,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
         provider: await readProviderSessionFacts(stateHome),
       };
     } catch (error) {
-      const detail = redact(session.output());
+      const detail = redact(session.output().slice(-1200));
       throw new Error(`${error instanceof Error ? error.message : String(error)}${detail ? `: ${detail}` : ''}`);
     }
   }
