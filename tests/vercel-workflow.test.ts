@@ -336,6 +336,8 @@ describe('Vercel image and release workflows', () => {
     const durationStep = workflow.match(/- name: Run dedicated 60-minute Sandbox lease path \(120-minute job\)[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
     expect(durationStep).toContain("DEVBOX_UAT_TIMEOUT_MINUTES: '60'");
     expect(durationStep).not.toContain("DEVBOX_UAT_TIMEOUT_MINUTES: '120'");
+    expect(workflow).not.toContain('DEVBOX_UAT_STATE_HOME: ${{ runner.temp }}');
+    expect(workflow).not.toContain('ARTIFACT_DIR: ${{ runner.temp }}');
     expect(workflow).toContain('Run public CLI forced-close and reconnect path');
     expect(workflow).toContain('Preflight exact branch cleanup');
     expect(workflow).toContain('Reconcile exact branch cleanup');

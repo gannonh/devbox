@@ -594,8 +594,8 @@ jobs:
       SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
       IMAGE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
       DEVBOX_UAT_BRANCH: uat/devbox-session-${{ github.run_id }}-${{ github.run_attempt }}
-      DEVBOX_UAT_STATE_HOME: ${{ runner.temp }}/devbox-session-uat-state
-      ARTIFACT_DIR: ${{ runner.temp }}/devbox-session-uat
+      DEVBOX_UAT_STATE_HOME: ${{ github.workspace }}/.devbox-session-uat-state
+      ARTIFACT_DIR: ${{ github.workspace }}/.devbox-session-uat
     steps:
       - name: Checkout verified source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
