@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 # skill must not abort dependency setup (this script runs from worktree:setup and
 # from the Cloud Agent environment install).
 add_skill() {
-  if ! npx skills add "$@" -y --copy --agent claude-code cursor; then
+  if ! npx --yes skills add "$@" -y --copy --agent claude-code cursor; then
     echo "install-skills: skipped 'skills add $*' (command failed)" >&2
   fi
 }
