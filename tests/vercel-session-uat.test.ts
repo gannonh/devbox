@@ -80,6 +80,7 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('DEVBOX_UAT_REPOSITORY');
     expect(source).toContain('mode,');
     expect(source).toContain('loadCleanupDependencies');
+    expect(source).toContain('redact(session.output())');
     expect(source).not.toContain('fallbackCleanupSandbox');
   });
 

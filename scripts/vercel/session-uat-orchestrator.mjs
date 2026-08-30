@@ -155,19 +155,24 @@ export async function runSessionUat({ environment = process.env, argv = process.
       '4173',
     ];
     const session = createPty(args, stateHome);
-    const first = await session.waitForAny([
-      'Create this Vercel sandbox?',
-      `session duration: ${timeoutMinutes} minutes`,
-      '▲ ',
-    ], cliTimeoutMs);
-    if (first.match === 'Create this Vercel sandbox?') session.write('y\n');
-    await session.waitFor(`session duration: ${timeoutMinutes} minutes`, cliTimeoutMs);
-    await session.waitFor('▲ ', cliTimeoutMs);
-    return {
-      ...session,
-      publicUrl: publicRoute(session.output(), APP_PORT),
-      provider: await readProviderSessionFacts(stateHome),
-    };
+    try {
+      const first = await session.waitForAny([
+        'Create this Vercel sandbox?',
+        `session duration: ${timeoutMinutes} minutes`,
+        '▲ ',
+      ], cliTimeoutMs);
+      if (first.match === 'Create this Vercel sandbox?') session.write('y\n');
+      await session.waitFor(`session duration: ${timeoutMinutes} minutes`, cliTimeoutMs);
+      await session.waitFor('▲ ', cliTimeoutMs);
+      return {
+        ...session,
+        publicUrl: publicRoute(session.output(), APP_PORT),
+        provider: await readProviderSessionFacts(stateHome),
+      };
+    } catch (error) {
+      const detail = redact(session.output());
+      throw new Error(`${error instanceof Error ? error.message : String(error)}${detail ? `: ${detail}` : ''}`);
+    }
   }
 
   async function verifyInitialSession(session) {
