@@ -14,12 +14,25 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain("close('SIGKILL')");
     expect(source).toContain('remoteHttpFixtureCommand');
     expect(source).toContain('waitForFixture');
+    expect(source).toContain('readProviderSessionFacts');
+    expect(source).toContain('configuredTimeoutMs');
+    expect(source).toContain('createdAt');
+    expect(source).toContain('expiresAt');
+    expect(source).toContain('waitForProviderStop');
+    expect(source).toContain('one retained snapshot');
+    expect(source).toContain('duration idle provider session');
+    expect(source).toContain('duration final provider session');
+    expect(source).toContain('parseDetachedProcessStartup');
+    expect(source).toContain('kill -0');
+    expect(source).toContain('DURATION_IDLE_BOUNDARY_MS');
+    expect(source).toContain('DURATION_FINAL_WINDOW_MS');
     expect(source).toContain('same HTTP response');
     expect(source).toContain('forced-close same foreground PID');
     expect(source).toContain('clean Ctrl-] detach');
     expect(source).toContain('snapshot fresh socket');
     expect(source).toContain('snapshot prior process ended');
     expect(source).toContain('prior user processes ended');
+    expect(source).toContain('snapshot display route returned');
   });
 
   it('writes redacted evidence and has an explicit cleanup mode', async () => {

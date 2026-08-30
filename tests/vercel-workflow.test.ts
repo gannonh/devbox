@@ -333,7 +333,9 @@ describe('Vercel image and release workflows', () => {
     expect(smoke).not.toContain('SMOKE_TERMINAL_LONGEVITY_IDLE_MS');
     expect(workflow).toContain('duration:');
     expect(workflow).toContain('timeout-minutes: 120');
-    expect(workflow).toContain('Run dedicated 120-minute public CLI duration path');
+    const durationStep = workflow.match(/- name: Run dedicated 60-minute Sandbox lease path \(120-minute job\)[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    expect(durationStep).toContain("DEVBOX_UAT_TIMEOUT_MINUTES: '60'");
+    expect(durationStep).not.toContain("DEVBOX_UAT_TIMEOUT_MINUTES: '120'");
     expect(workflow).toContain('Run public CLI forced-close and reconnect path');
     expect(workflow).toContain('Preflight exact branch cleanup');
     expect(workflow).toContain('Reconcile exact branch cleanup');

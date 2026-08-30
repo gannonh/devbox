@@ -293,6 +293,10 @@ and socket. User processes from the old VM session end, and runtime setup,
 display services, and public relays restart. The configured timeout applies to
 each new or snapshot-resumed VM session.
 
+Vercel Sandbox is a bounded development VM, not continuously available VPS
+hosting. Use a separately managed VM or Vercel Functions for continuously
+available services.
+
 `--list` reports Vercel records with `running`, `paused`, or `stopped` state.
 A stopped record with a retained snapshot is `paused` and includes its
 snapshot ID and age. A stopped record without a snapshot remains `stopped`.

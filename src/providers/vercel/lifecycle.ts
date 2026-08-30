@@ -43,6 +43,7 @@ import { redactSecrets } from './redaction.js';
 import { assertSandboxVcpus } from './resources.js';
 import { assertSdkPorts, DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts } from './ports.js';
 import { stopAllRelays } from './app-relay.js';
+import { currentVercelSessionId } from './session-lease.js';
 import type { ShellRunner } from '../../lib/shell.js';
 
 export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 60 * 60 * 1000;
@@ -1128,23 +1129,12 @@ function sameTags(actual: Record<string, string> | TagSet, expected: Readonly<Re
     actualKeys.every((key, index) => key === expectedKeys[index] && actualValues[key] === expectedValues[key]);
 }
 
-/**
- * Return the current Sandbox session identity used by session-local state.
- *
- * The SDK does not expose `Sandbox.id`; it exposes the session ID through
- * `currentSession()`. Test doubles and older adapters may still provide `id`,
- * so those values remain supported before falling back to the sandbox name.
- */
 export function sandboxIdentifier(sandbox: VercelSandboxHandle): string {
-  const candidate = sandbox as VercelSandboxHandle & { id?: unknown };
-  try {
-    const sessionId = candidate.currentSession?.()?.sessionId;
-    if (typeof sessionId === 'string' && sessionId.trim()) return sessionId;
-  } catch {
-    // A stopped or test-double handle may not have a current SDK session.
+  const sessionId = currentVercelSessionId(sandbox);
+  if (sessionId === null) {
+    throw new VercelLifecycleError('session_unavailable', 'Vercel current session ID is unavailable');
   }
-  if (typeof candidate.id === 'string' && candidate.id.trim()) return candidate.id;
-  return sandbox.name;
+  return sessionId;
 }
 
 function selectNewestSession(sessions: SandboxSessionRecord[]): SandboxSessionRecord | undefined {

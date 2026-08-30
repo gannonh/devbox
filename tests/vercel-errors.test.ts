@@ -6,6 +6,7 @@ import {
 } from '../src/providers/vercel/lifecycle.js';
 import { VercelSdkError } from '../src/providers/vercel/client.js';
 import { VercelDisplayStartupError } from '../src/providers/vercel/display-startup.js';
+import { VercelObsoleteMetadataError } from '../src/providers/vercel/metadata-schema.js';
 
 describe('Vercel provider errors', () => {
   it('preserves creation-compensation recovery IDs without exposing secrets', () => {
@@ -128,6 +129,32 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).toContain('Pro and Enterprise support up to 24 hours');
     expect(mapped.message).toContain('--timeout 45');
     expect(mapped.message).not.toContain(token);
+  });
+
+  it('keeps a credential failure in the auth category for a long create request', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError('Sandbox.getOrCreate', Object.assign(new Error('request denied'), { status: 401 }), []),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('auth');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
+  });
+
+  it('gives obsolete idle metadata explicit remove and recreate guidance', () => {
+    const mapped = mapVercelError(new VercelObsoleteMetadataError(['idlePauseMinutes']), {
+      action: 'attach',
+      branch: 'feature/ui',
+    });
+
+    expect(mapped.code).toBe('stale');
+    expect(mapped.message).toContain('feature/ui --rm');
+    expect(mapped.message).toContain('create the box again');
+    expect(mapped.message).not.toContain('idlePauseMinutes');
   });
 
   it('classifies every required failure category before generic API handling', () => {

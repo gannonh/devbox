@@ -236,6 +236,7 @@ describe('Vercel devcontainer ports', () => {
     const handle: VercelSandboxHandle = {
       name: identity.name,
       status: 'running',
+      currentSession: () => ({ sessionId: identity.name }),
       image: TEST_IMAGE_REFERENCE,
       persistent: true,
       tags: { ...identity.tags },
