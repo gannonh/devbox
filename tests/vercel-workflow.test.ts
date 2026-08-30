@@ -347,6 +347,7 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain('actions: read');
     expect(workflow).toContain('if: always()');
     expect(workflow).toContain('node scripts/vercel/session-uat.mjs');
+    expect(sessionJob).toContain('include-hidden-files: true');
   });
 
   it('redacts workflow evidence and emits a pin only after both smoke gates', async () => {
