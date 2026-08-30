@@ -26,14 +26,6 @@ add_skill anthropics/claude-plugins-community --skill eli5
 add_skill humanlayer/skills --skill show-me
 add_skill warpdotdev/common-skills --skill skill-doctor
 
-# plugins
-# codex
-# codex plugin marketplace add ericlitman/open-pstack --ref main
-# codex plugin add pstack@open-pstack
+# Project-specific third party
 
-# # claude
-# claude plugin marketplace add ericlitman/open-pstack --scope project
-# claude plugin install pstack@open-pstack --scope project -y
-
-# # cursor (no plugin install CLI; copy official plugin onto disk)
-# scripts/install-cursor-pstack.sh
+add_skill vercel/sandbox --skill sandbox
