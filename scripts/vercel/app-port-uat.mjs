@@ -37,13 +37,18 @@ import { createVercelSandboxClient } from '../../dist/providers/vercel/client.js
 import { createVercelBranchMetadataStore } from '../../dist/providers/vercel/metadata.js';
 import { resolveVercelCredentials } from '../../dist/providers/vercel/auth.js';
 import { applyAppPorts } from '../../dist/providers/vercel/app-port-flow.js';
+import { cleanupVercelSandbox } from '../../dist/providers/vercel/cleanup.js';
+import { listBranchIdentityMatches } from '../../dist/providers/vercel/recovery.js';
 import {
   normalizeGitHubSourceRemote,
   resolveVercelRepositoryCwd,
 } from '../../dist/providers/vercel/source.js';
 import { MAX_VERCEL_SANDBOX_PORTS } from '../../dist/providers/vercel/ports.js';
 import { RealShellRunner } from '../../dist/lib/shell.js';
-import { bootClearingStaleIdentity } from './app-port-uat-identity.mjs';
+import {
+  bootClearingStaleIdentity,
+  removeEachMatchingLeftover,
+} from './app-port-uat-identity.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -108,7 +113,7 @@ async function main() {
   for (const key of ['VERCEL_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID']) required(key);
   const githubToken = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? await ghToken();
   addSecret(process.env.VERCEL_TOKEN, githubToken);
-  await assertRepoKeyMatchesOrigin(REPO_ROOT, REPO_KEY);
+  const origin = await assertRepoKeyMatchesOrigin(REPO_ROOT, REPO_KEY);
 
   const stateHome = await mkdtemp(join(tmpdir(), 'devbox-app-port-uat-state-'));
   const fakeHome = await mkdtemp(join(tmpdir(), 'devbox-app-port-uat-home-'));
@@ -131,14 +136,14 @@ async function main() {
 
   try {
     if (SCENARIOS === 'monorepo') {
-      await monorepoScenario({ env, stateHome, credentials, realClient });
+      await monorepoScenario({ env, stateHome, credentials, realClient, origin });
     } else if (SCENARIOS === 'both' || SCENARIOS === 'vite') {
-      await viteScenario({ env, stateHome, credentials, realClient });
+      await viteScenario({ env, stateHome, credentials, realClient, origin });
     } else {
       record('vite-fixture', { skipped: true, reason: `DEVBOX_UAT_ONLY=${SCENARIOS}` });
     }
     if (SCENARIOS === 'both' || SCENARIOS === 'next') {
-      await nextScenario({ env, stateHome, credentials, realClient });
+      await nextScenario({ env, stateHome, credentials, realClient, origin });
     } else {
       record('next-fixture', { skipped: true, reason: `DEVBOX_UAT_ONLY=${SCENARIOS}` });
     }
@@ -163,7 +168,7 @@ async function main() {
  * Keep this scenario explicit so a green report names the exact consumer and
  * the exact ordinary command under test.
  */
-async function monorepoScenario({ env, stateHome, credentials, realClient }) {
+async function monorepoScenario({ env, stateHome, credentials, realClient, origin }) {
   const branch = MONOREPO_BRANCH;
   const store = createVercelBranchMetadataStore({ stateHome, repoKey: REPO_KEY, branch });
   const updates = [];
@@ -174,6 +179,9 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
     env,
     stateHome,
     registry,
+    realClient,
+    credentials,
+    origin,
     answers: ({ attempt }) => [
       [/Create this Vercel sandbox\?/, 'y\n', attempt === 1],
       [/Expose the detected app port\(s\)\?/, '\n', true],
@@ -181,6 +189,7 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   });
   assert(boot.code === 0, `monorepo boot exited ${boot.code}`);
   if (boot.retried) record('monorepo-stale-identity-retry', { retried: true });
+  if (boot.clearedDuplicates) record('monorepo-duplicate-identity-cleared', { clearedDuplicates: true });
   scopeConfirmed = true;
   const metadata = await rememberCleanup({
     branch,
@@ -499,7 +508,7 @@ async function monorepoScenario({ env, stateHome, credentials, realClient }) {
   cleanupContext = undefined;
 }
 
-async function viteScenario({ env, stateHome, credentials, realClient }) {
+async function viteScenario({ env, stateHome, credentials, realClient, origin }) {
   const branch = VITE_BRANCH;
   const store = createVercelBranchMetadataStore({ stateHome, repoKey: REPO_KEY, branch });
   const updates = [];
@@ -511,6 +520,9 @@ async function viteScenario({ env, stateHome, credentials, realClient }) {
     env,
     stateHome,
     registry,
+    realClient,
+    credentials,
+    origin,
     answers: ({ attempt }) => [
       [/Create this Vercel sandbox\?/, 'y\n', attempt === 1 && !scopeConfirmed],
       [/Expose the detected app port\(s\)\?/, '\n', true],
@@ -518,6 +530,7 @@ async function viteScenario({ env, stateHome, credentials, realClient }) {
   });
   assert(boot.code === 0, `boot exited ${boot.code}`);
   if (boot.retried) record('vite-stale-identity-retry', { retried: true });
+  if (boot.clearedDuplicates) record('vite-duplicate-identity-cleared', { clearedDuplicates: true });
   assert(
     scopeConfirmed || /Create this Vercel sandbox\?/.test(boot.stderr),
     'the first boot of the run did not confirm the Vercel scope',
@@ -747,7 +760,7 @@ async function viteScenario({ env, stateHome, credentials, realClient }) {
   cleanupContext = undefined;
 }
 
-async function nextScenario({ env, stateHome, credentials, realClient }) {
+async function nextScenario({ env, stateHome, credentials, realClient, origin }) {
   const branch = NEXT_BRANCH;
   const store = createVercelBranchMetadataStore({ stateHome, repoKey: REPO_KEY, branch });
   const updates = [];
@@ -758,6 +771,9 @@ async function nextScenario({ env, stateHome, credentials, realClient }) {
     env,
     stateHome,
     registry,
+    realClient,
+    credentials,
+    origin,
     answers: ({ attempt }) => [
       [/Create this Vercel sandbox\?/, 'y\n', attempt === 1 && !scopeConfirmed],
       [/Expose the detected app port\(s\)\?/, '\n', true],
@@ -765,6 +781,7 @@ async function nextScenario({ env, stateHome, credentials, realClient }) {
   });
   assert(boot.code === 0, `next boot exited ${boot.code}`);
   if (boot.retried) record('next-stale-identity-retry', { retried: true });
+  if (boot.clearedDuplicates) record('next-duplicate-identity-cleared', { clearedDuplicates: true });
   assert(
     scopeConfirmed || /Create this Vercel sandbox\?/.test(boot.stderr),
     'the first boot of the run did not confirm the Vercel scope',
@@ -833,11 +850,21 @@ async function nextScenario({ env, stateHome, credentials, realClient }) {
  * was registered) is an identity conflict, not a confirmation hang. The UAT
  * answers the create prompt; this path is what actually unblocks CI.
  *
- * Human `devbox --provider vercel <branch>` still fails closed on conflict.
+ * `--rm` still aborts when more than one live sandbox shares that identity
+ * (Release #35). The UAT then deletes each match by exact name, the same way
+ * private-repo smoke preflight does, and never touches a foreign-scope box.
+ *
+ * Human `devbox --provider vercel <branch>` and `--rm` still fail closed.
  */
-async function bootScenario(branch, { env, stateHome, registry, answers }) {
+async function bootScenario(branch, { env, stateHome, registry, answers, realClient, credentials, origin }) {
   return bootClearingStaleIdentity({
     remove: () => runCli(['--provider', 'vercel', branch, '--rm'], { env, stateHome, registry }),
+    removeMatching: () => removeMatchingFixtureSandboxes({
+      client: realClient,
+      credentials,
+      origin,
+      branch,
+    }),
     boot: ({ attempt }) => runCli(['--provider', 'vercel', branch], {
       env,
       stateHome,
@@ -845,6 +872,51 @@ async function bootScenario(branch, { env, stateHome, registry, answers }) {
       answers: answers({ attempt }),
     }),
   });
+}
+
+/**
+ * Clear every live sandbox whose identity tag matches this fixture branch and
+ * Vercel team/project. Names come from the listing, so leftovers from another
+ * package version (same repo+branch+scope, different name prefix) are included.
+ * Foreign-scope records stay untouched.
+ */
+async function removeMatchingFixtureSandboxes({ client, credentials, origin, branch }) {
+  const summary = await removeEachMatchingLeftover({
+    inspect: () => listBranchIdentityMatches(client, origin, branch, credentials),
+    cleanup: (record) => cleanupVercelSandbox({
+      name: record.name,
+      credentials,
+      expectedTags: record.tags,
+      knownSnapshotIds: typeof record.currentSnapshotId === 'string' && record.currentSnapshotId.trim()
+        ? [record.currentSnapshotId]
+        : [],
+      adapter: cleanupAdapter(client),
+    }),
+  });
+  process.stderr.write(
+    `[uat] cleared ${summary.removed.length} leftover sandbox(es) for the fixture identity`
+    + (summary.foreignScope.length > 0
+      ? ` (${summary.foreignScope.length} foreign-scope left untouched)`
+      : '')
+    + '\n',
+  );
+  record('leftover-identity-duplicates', {
+    removed: summary.removed.length,
+    foreignScopeUntouched: summary.foreignScope.length,
+  });
+  return summary;
+}
+
+function cleanupAdapter(client) {
+  return {
+    get: (request) => client.get(request),
+    listSessions: (sandbox, options) => client.listSessions(sandbox, options),
+    stop: (sandbox, options) => client.stopSandbox(sandbox, options),
+    listSnapshots: (request) => client.listSnapshots(request),
+    getSnapshot: (request) => client.getSnapshot(request),
+    delete: (sandbox, options) => client.deleteSandbox(sandbox, options),
+    deleteByName: (request) => client.deleteSandboxByName(request),
+  };
 }
 
 /**
@@ -1420,9 +1492,10 @@ async function assertRepoKeyMatchesOrigin(repoRoot, repoKey) {
     cwd: repoRoot,
     timeout: 15_000,
   });
-  const canonical = normalizeGitHubSourceRemote(stdout.trim()).canonical;
+  const origin = normalizeGitHubSourceRemote(stdout.trim());
   assert(
-    repoKey === canonical,
-    `DEVBOX_UAT_REPO_KEY (${repoKey}) must equal the fixture origin canonical key (${canonical})`,
+    repoKey === origin.canonical,
+    `DEVBOX_UAT_REPO_KEY (${repoKey}) must equal the fixture origin canonical key (${origin.canonical})`,
   );
+  return origin;
 }

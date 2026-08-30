@@ -22,12 +22,25 @@ export interface BranchSandboxRecovery {
   foreignScope: string[];
 }
 
-export async function recoverMissingBranchSandbox(
+export interface BranchIdentityMatches {
+  matches: SandboxListRecord[];
+  foreignScope: string[];
+}
+
+/**
+ * Live sandboxes for this repository and branch, split by whether their
+ * identity tag matches this Vercel team/project.
+ *
+ * `--rm` still refuses when `matches` has more than one entry: a human must
+ * pick the exact resource. CI fixture cleanup uses this listing to remove
+ * each match by name without touching `foreignScope`.
+ */
+export async function listBranchIdentityMatches(
   client: VercelSandboxClient,
   origin: GitHubSourceRemote,
   branch: string,
   credentials: VercelCredentials,
-): Promise<BranchSandboxRecovery> {
+): Promise<BranchIdentityMatches> {
   const expected = createVercelIdentity({
     remote: origin.canonical,
     branch,
@@ -42,6 +55,21 @@ export async function recoverMissingBranchSandbox(
   const foreignScope = branchRecords
     .filter((record) => record.tags!.identity !== expected.tags.identity)
     .map((record) => record.name);
+  return { matches, foreignScope };
+}
+
+export async function recoverMissingBranchSandbox(
+  client: VercelSandboxClient,
+  origin: GitHubSourceRemote,
+  branch: string,
+  credentials: VercelCredentials,
+): Promise<BranchSandboxRecovery> {
+  const { matches, foreignScope } = await listBranchIdentityMatches(
+    client,
+    origin,
+    branch,
+    credentials,
+  );
   if (matches.length > 1) {
     throw new VercelLifecycleError(
       'identity_conflict',
@@ -50,25 +78,33 @@ export async function recoverMissingBranchSandbox(
   }
   const record = matches[0];
   if (!record) return { foreignScope };
-  const tags = record.tags!;
   return {
     foreignScope,
-    recovered: {
-      ...(typeof record.currentSnapshotId === 'string' && record.currentSnapshotId.trim()
-        ? { snapshotIds: [record.currentSnapshotId] }
-        : {}),
-      identity: {
-        name: record.name,
-        repository: origin.canonical,
-        branch,
-        packageVersion: tags.version,
-        tags: {
-          provider: tags.provider,
-          repository: tags.repository,
-          branch: tags.branch,
-          version: tags.version,
-          identity: tags.identity,
-        },
+    recovered: recoveredSandboxFromRecord(record, origin, branch),
+  };
+}
+
+function recoveredSandboxFromRecord(
+  record: SandboxListRecord,
+  origin: GitHubSourceRemote,
+  branch: string,
+): RecoveredBranchSandbox {
+  const tags = record.tags!;
+  return {
+    ...(typeof record.currentSnapshotId === 'string' && record.currentSnapshotId.trim()
+      ? { snapshotIds: [record.currentSnapshotId] }
+      : {}),
+    identity: {
+      name: record.name,
+      repository: origin.canonical,
+      branch,
+      packageVersion: tags.version,
+      tags: {
+        provider: tags.provider,
+        repository: tags.repository,
+        branch: tags.branch,
+        version: tags.version,
+        identity: tags.identity,
       },
     },
   };
