@@ -343,6 +343,8 @@ describe('Vercel image and release workflows', () => {
     expect(workflow).toContain('Preflight exact branch cleanup');
     expect(workflow).toContain('Reconcile exact branch cleanup');
     expect(workflow).toContain('DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}');
+    expect(workflow).toContain('GITHUB_TOKEN: ${{ github.token }}');
+    expect(workflow).toContain('actions: read');
     expect(workflow).toContain('if: always()');
     expect(workflow).toContain('node scripts/vercel/session-uat.mjs');
   });

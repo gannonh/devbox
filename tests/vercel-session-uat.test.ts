@@ -29,15 +29,18 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('duration idle deadline unchanged');
     expect(source).toContain('duration final deadline unchanged');
     expect(source).toContain('duration natural stop boundary');
+    expect(source).toContain('terminalAt');
     expect(source).toContain('same HTTP response');
+    expect(source).toContain('forced-close same provider session');
+    expect(source).toContain('clean attach same provider session');
     expect(source).toContain('forced-close same foreground PID');
     expect(source).toContain('clean Ctrl-] detach');
     expect(source).toContain('snapshot fresh socket');
     expect(source).toContain('snapshot prior process ended');
     expect(source).toContain('prior user processes ended');
     expect(source).toContain('waitForPublicRoute');
-    expect(source).toContain('snapshot display route reachable');
-    expect(source).toContain('snapshot public route reachable');
+    expect(source).toContain('snapshot display route healthy');
+    expect(source).toContain('snapshot public route healthy');
     expect(source).toContain('snapshot workspace restored');
     expect(source).toContain('snapshot branch restored');
     expect(source).toContain('snapshot runtime state restored');
@@ -47,12 +50,14 @@ describe('public Vercel session UAT driver', () => {
   it('writes redacted evidence and has an explicit cleanup mode', async () => {
     const source = await readFile('scripts/vercel/session-uat.mjs', 'utf8');
 
-    expect(source).toContain('redacted: true');
+    expect(source).toContain('redacted: false');
+    expect(source).toContain("createHash('sha256')");
     expect(source).toContain("process.argv[2] === '--cleanup'");
     expect(source).toContain('XDG_STATE_HOME');
     expect(source).toContain('DEVBOX_UAT_REPORT');
     expect(source).toContain('runCleanup(stateHome)');
     expect(source).toContain('removeRunTaggedLeftovers');
+    expect(source).toContain('targets.set(identity.name');
     expect(source).toContain('DEVBOX_UAT_REPOSITORY');
     expect(source).toContain('mode: MODE');
   });

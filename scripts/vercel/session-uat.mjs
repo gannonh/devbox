@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 import { execFile as execFileCallback, spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readdir, readFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Sandbox, Snapshot } from '@vercel/sandbox';
-import { cleanupVercelSandbox } from '../../dist/providers/vercel/cleanup.js';
-import { createVercelSandboxClient } from '../../dist/providers/vercel/client.js';
-import { createVercelIdentity } from '../../dist/providers/vercel/identity.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -35,11 +32,13 @@ const secrets = [...new Set(Object.entries(process.env)
   .map(([, value]) => value))]
   .sort((left, right) => right.length - left.length);
 
-const cleanupClient = createVercelSandboxClient();
+let cleanupDependenciesPromise;
+let identityFactoryPromise;
+const workflowRunStates = new Map();
 
 const report = {
   schemaVersion: 1,
-  redacted: true,
+  redacted: false,
   mode: MODE,
   branchFingerprint: fingerprint(BRANCH),
   timeoutMinutes: TIMEOUT_MINUTES,
@@ -196,8 +195,10 @@ async function verifyDurationSession(stateHome, session) {
 
   await stopFixture(reconnect.publicUrl, reconnect.fixtureMarker);
   const stopped = await waitForProviderStop(provider.sandboxName, DURATION_STOP_TIMEOUT_MS);
-  const stoppedAtMs = Date.parse(stopped.observedAt);
-  check('duration natural stop boundary', Number.isFinite(stoppedAtMs) && stoppedAtMs >= expiresAtMs - DEADLINE_TOLERANCE_MS, `deadline=${provider.expiresAt}; stoppedAt=${stopped.observedAt}`);
+  const stoppedAtMs = Date.parse(stopped.terminalAt);
+  check('duration natural stop boundary', Number.isFinite(stoppedAtMs)
+    && stoppedAtMs >= expiresAtMs - DEADLINE_TOLERANCE_MS
+    && stoppedAtMs <= expiresAtMs + DEADLINE_TOLERANCE_MS, `deadline=${provider.expiresAt}; stoppedAt=${stopped.terminalAt}`);
   const retainedSnapshots = await waitForRetainedSnapshots(provider.sandboxName, DURATION_STOP_TIMEOUT_MS);
   const resumed = await resumeSnapshot(stateHome, snapshotProcess, {
     socket: report.initial.socket,
@@ -222,7 +223,10 @@ async function verifyDurationSession(stateHome, session) {
     finalProbeAt,
     finalRemainingMs: remainingMs,
     deadlineToleranceMs: DEADLINE_TOLERANCE_MS,
-    stoppedAt: stopped.observedAt,
+    terminalAt: stopped.terminalAt,
+    stoppedAt: stopped.stoppedAt,
+    abortedAt: stopped.abortedAt,
+    stopObservedAt: stopped.observedAt,
     stoppedStatus: stopped.status,
     retainedSnapshots: retainedSnapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status })),
     resumedSessionId: resumed.identity.sessionId,
@@ -247,6 +251,8 @@ async function readProviderSessionFacts(stateHome, sandboxName = undefined) {
     configuredTimeoutMs: current.timeout,
     createdAt: current.createdAt.toISOString(),
     expiresAt: sandbox.expiresAt?.toISOString() ?? null,
+    stoppedAt: current.stoppedAt?.toISOString() ?? null,
+    abortedAt: current.abortedAt?.toISOString() ?? null,
     currentSnapshotId: sandbox.currentSnapshotId ?? null,
   };
 }
@@ -318,7 +324,8 @@ async function waitForProviderStop(sandboxName, timeoutMs) {
       facts = undefined;
     }
     if (facts && ['stopped', 'aborted'].includes(facts.status)) {
-      return { ...facts, observedAt: new Date().toISOString() };
+      const terminalAt = facts.status === 'aborted' ? facts.abortedAt : facts.stoppedAt;
+      if (terminalAt) return { ...facts, terminalAt, observedAt: new Date().toISOString() };
     }
     await delay(Math.min(DURATION_PROVIDER_POLL_MS, Math.max(1, deadline - Date.now())));
   }
@@ -363,8 +370,12 @@ async function verifySameSessionReconnect(stateHome, initial, label) {
   check('initial HTTP payload', initialResponse.response === 'devbox-uat-http', 'fixture returned the expected payload');
   await initial.close('SIGKILL');
 
+  let forcedProvider;
   const forcedAttach = await attachSession(stateHome);
   try {
+    forcedProvider = await readProviderSessionFacts(stateHome, initial.provider.sandboxName);
+    check('forced-close same provider session', forcedProvider.sessionId === initial.provider.sessionId, `initial=${initial.provider.sessionId}; reconnect=${forcedProvider.sessionId}`);
+    check('forced-close same provider deadline', sameDeadline(forcedProvider.expiresAt, initial.provider.expiresAt), `initial=${initial.provider.expiresAt}; reconnect=${forcedProvider.expiresAt}`);
     const forcedResponse = await waitForFixture(initial.publicUrl, fixtureMarker);
     check('forced-close same foreground PID', forcedResponse.pid === startedIdentity.pid, `initial=${startedIdentity.pid}; reconnect=${forcedResponse.pid}`);
     check('forced-close same tmux session', forcedResponse.session === startedIdentity.session, `initial=${startedIdentity.session}; reconnect=${forcedResponse.session}`);
@@ -374,8 +385,12 @@ async function verifySameSessionReconnect(stateHome, initial, label) {
     await forcedAttach.close('SIGTERM');
   }
 
+  let cleanProvider;
   const cleanAttach = await attachSession(stateHome);
   try {
+    cleanProvider = await readProviderSessionFacts(stateHome, initial.provider.sandboxName);
+    check('clean attach same provider session', cleanProvider.sessionId === initial.provider.sessionId, `initial=${initial.provider.sessionId}; attach=${cleanProvider.sessionId}`);
+    check('clean attach same provider deadline', sameDeadline(cleanProvider.expiresAt, initial.provider.expiresAt), `initial=${initial.provider.expiresAt}; attach=${cleanProvider.expiresAt}`);
     const cleanResponse = await waitForFixture(initial.publicUrl, fixtureMarker);
     check('clean attach same foreground PID', cleanResponse.pid === startedIdentity.pid, `initial=${startedIdentity.pid}; attach=${cleanResponse.pid}`);
     check('clean attach same tmux session', cleanResponse.session === startedIdentity.session, `initial=${startedIdentity.session}; attach=${cleanResponse.session}`);
@@ -387,12 +402,19 @@ async function verifySameSessionReconnect(stateHome, initial, label) {
     await cleanAttach.close('SIGTERM');
   }
   check('clean Ctrl-] detach', true, 'explicit --attach returned without stopping the VM session');
+  if (!forcedProvider || !cleanProvider) throw new Error('reconnect provider identity was not recorded');
   report.reconnect = {
     fixtureMarker,
     initialPid: startedIdentity.pid,
     forcedClosePid: startedIdentity.pid,
     cleanAttachPid: startedIdentity.pid,
     tmuxSession: startedIdentity.session,
+    initialSessionId: initial.provider.sessionId,
+    forcedAttachSessionId: forcedProvider.sessionId,
+    cleanAttachSessionId: cleanProvider.sessionId,
+    initialExpiresAt: initial.provider.expiresAt,
+    forcedAttachExpiresAt: forcedProvider.expiresAt,
+    cleanAttachExpiresAt: cleanProvider.expiresAt,
   };
   return {
     fixtureMarker,
@@ -479,14 +501,29 @@ async function readResourceInventory() {
   const credentials = providerCredentials();
   const sandboxPage = await Sandbox.list({
     ...credentials,
-    namePrefix: identity.name,
+    ...(identity.name === undefined ? {} : { namePrefix: identity.name }),
     tags: identity.tags,
     limit: 50,
   });
-  const sandboxes = (await sandboxPage.toArray()).filter((sandbox) => sandbox.name === identity.name);
-  const snapshotPage = await Snapshot.list({ ...credentials, name: identity.name, limit: 50 });
-  const snapshots = (await snapshotPage.toArray()).filter((snapshot) => snapshot.status !== 'deleted');
-  return { sandboxCount: sandboxes.length, snapshotCount: snapshots.length };
+  const listed = await sandboxPage.toArray();
+  const sandboxes = listed.filter((sandbox) => identity.name === undefined
+    ? sandbox.tags?.provider === identity.tags.provider
+      && sandbox.tags?.repository === identity.tags.repository
+      && sandbox.tags?.branch === identity.tags.branch
+    : sandbox.name === identity.name);
+  const snapshotNames = identity.name === undefined
+    ? sandboxes.map((sandbox) => sandbox.name)
+    : [identity.name];
+  let snapshotCount = 0;
+  for (const name of snapshotNames) {
+    try {
+      const snapshotPage = await Snapshot.list({ ...credentials, name, limit: 50 });
+      snapshotCount += (await snapshotPage.toArray()).filter((snapshot) => snapshot.status !== 'deleted').length;
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
+  return { sandboxCount: sandboxes.length, snapshotCount };
 }
 
 async function cleanupIdentity() {
@@ -503,34 +540,238 @@ async function cleanupIdentity() {
   } else if (!remote.includes('://') && !remote.startsWith('git@') && !remote.startsWith('ssh://')) {
     remote = `github.com/${remote.replace(/^\/+|\/+$/g, '')}`;
   }
-  return createVercelIdentity({
+  return createCleanupIdentity({
     remote,
     branch: BRANCH,
     scope: { teamId: credentials.teamId, projectId: credentials.projectId },
   });
 }
 
-function cleanupAdapter() {
+async function createCleanupIdentity(input) {
+  if (!identityFactoryPromise) {
+    identityFactoryPromise = import('../../dist/providers/vercel/identity.js')
+      .then((module) => module.createVercelIdentity)
+      .catch(() => undefined);
+  }
+  const factory = await identityFactoryPromise;
+  return factory ? factory(input) : fallbackCleanupIdentity(input);
+}
+
+function fallbackCleanupIdentity(input) {
+  const repository = fallbackGitHubRemote(input.remote);
+  const branch = input.branch.trim();
+  const canonical = `${repository.host}/${repository.owner}/${repository.repository}`;
   return {
-    get: (request) => cleanupClient.get(request),
-    listSessions: (sandbox, options) => cleanupClient.listSessions(sandbox, options),
-    stop: (sandbox, options) => cleanupClient.stopSandbox(sandbox, options),
-    listSnapshots: (request) => cleanupClient.listSnapshots(request),
-    getSnapshot: (request) => cleanupClient.getSnapshot(request),
-    delete: (sandbox, options) => cleanupClient.deleteSandbox(sandbox, options),
-    deleteByName: (request) => cleanupClient.deleteSandboxByName(request),
+    repository,
+    canonicalRepository: canonical,
+    branch,
+    name: undefined,
+    tags: {
+      provider: 'vercel',
+      repository: appendFallbackHash(`github-com-${repository.owner}-${repository.repository}`, canonical),
+      branch: appendFallbackHash(branch, branch),
+    },
+  };
+}
+
+function fallbackGitHubRemote(remote) {
+  const path = remote.trim()
+    .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/^ssh:\/\/git@github\.com\//i, '')
+    .replace(/^git@github\.com:/i, '')
+    .replace(/^github\.com\//i, '')
+    .replace(/\.git$/i, '');
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length !== 2) throw new Error('Vercel UAT repository must identify one GitHub owner and repository');
+  return {
+    host: 'github.com',
+    owner: segments[0].toLowerCase(),
+    repository: segments[1].toLowerCase(),
+    canonical: `github.com/${segments[0].toLowerCase()}/${segments[1].toLowerCase()}`,
+  };
+}
+
+function appendFallbackHash(value, source) {
+  const suffix = `-${shortHash(source)}`;
+  const available = 63 - suffix.length;
+  return `${sanitizeFallbackName(value).slice(0, available).replace(/-+$/g, '')}${suffix}`;
+}
+
+function sanitizeFallbackName(value) {
+  return value.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'devbox';
+}
+
+function shortHash(value) {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function isNotFound(error) {
+  return error?.status === 404 || error?.response?.status === 404 || error?.notFound === true;
+}
+
+async function cleanupDependencies() {
+  if (!cleanupDependenciesPromise) {
+    cleanupDependenciesPromise = Promise.all([
+      import('../../dist/providers/vercel/client.js'),
+      import('../../dist/providers/vercel/cleanup.js'),
+    ]).then(([clientModule, cleanupModule]) => ({
+      client: clientModule.createVercelSandboxClient(),
+      cleanup: cleanupModule.cleanupVercelSandbox,
+    })).catch(() => ({
+      client: createDirectCleanupClient(),
+      cleanup: undefined,
+    }));
+  }
+  return cleanupDependenciesPromise;
+}
+
+function createDirectCleanupClient() {
+  return {
+    async listSandboxes({ credentials, tags }) {
+      const page = await Sandbox.list({ ...credentials, tags, limit: 50 });
+      const records = await page.toArray();
+      return records.filter((record) => Object.entries(tags ?? {}).every(([key, value]) => record.tags?.[key] === value));
+    },
+    async listSnapshots({ credentials, name }) {
+      const page = await Snapshot.list({ ...credentials, name, limit: 50 });
+      return page.toArray();
+    },
+    get: (request) => Sandbox.get(request),
+    listSessions: (sandbox, options) => sandbox.listSessions(options),
+    stopSandbox: (sandbox, options) => sandbox.stop(options),
+    deleteSandbox: (sandbox, options) => sandbox.delete(options),
+    deleteSandboxByName: async ({ credentials, name, signal }) => {
+      try {
+        const sandbox = await Sandbox.get({ ...credentials, name, resume: false, signal });
+        await sandbox.delete({ signal });
+        return { missing: false };
+      } catch (error) {
+        if (isNotFound(error)) return { missing: true };
+        throw error;
+      }
+    },
+  };
+}
+
+async function fallbackCleanupSandbox(record, expectedTags) {
+  const credentials = providerCredentials();
+  let sandbox;
+  try {
+    sandbox = await Sandbox.get({ ...credentials, name: record.name, resume: false });
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+  if (sandbox && (sandbox.name !== record.name || JSON.stringify(cleanupTags(sandbox.tags)) !== JSON.stringify(expectedTags))) {
+    return { verified: false, errors: ['sandbox identity verification failed'] };
+  }
+  if (sandbox) {
+    try {
+      let sessions = await (await sandbox.listSessions()).toArray();
+      if (sessions.some((session) => !['stopped', 'aborted'].includes(session.status))) {
+        await sandbox.stop();
+        sessions = await (await sandbox.listSessions()).toArray();
+        if (sessions.some((session) => !['stopped', 'aborted'].includes(session.status))) {
+          return { verified: false, errors: ['sandbox sessions remained non-terminal after stop'] };
+        }
+      }
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+    try {
+      await sandbox.delete();
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
+  let snapshots = [];
+  try {
+    snapshots = await (await Snapshot.list({ ...credentials, name: record.name, limit: 50 })).toArray();
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+  for (const snapshot of snapshots.filter((candidate) => candidate.status !== 'deleted')) {
+    try {
+      const handle = await Snapshot.get({ ...credentials, snapshotId: snapshot.id });
+      await handle.delete();
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
+  const remainingSnapshots = await (await Snapshot.list({ ...credentials, name: record.name, limit: 50 })).toArray();
+  if (remainingSnapshots.some((snapshot) => snapshot.status !== 'deleted')) {
+    return { verified: false, errors: ['snapshot remained after direct cleanup'] };
+  }
+  if (!sandbox) return { verified: true, errors: [] };
+  try {
+    await Sandbox.get({ ...credentials, name: record.name, resume: false });
+    return { verified: false, errors: ['sandbox remained after direct cleanup'] };
+  } catch (error) {
+    return isNotFound(error)
+      ? { verified: true, errors: [] }
+      : { verified: false, errors: ['direct cleanup verification failed'] };
+  }
+}
+
+function cleanupAdapter(client) {
+  return {
+    get: (request) => client.get(request),
+    listSessions: (sandbox, options) => client.listSessions(sandbox, options),
+    stop: (sandbox, options) => client.stopSandbox(sandbox, options),
+    listSnapshots: (request) => client.listSnapshots(request),
+    getSnapshot: (request) => client.getSnapshot(request),
+    delete: (sandbox, options) => client.deleteSandbox(sandbox, options),
+    deleteByName: (request) => client.deleteSandboxByName(request),
   };
 }
 
 async function listRunTaggedSandboxes(identity) {
-  const records = await cleanupClient.listSandboxes({
+  const { client } = await cleanupDependencies();
+  const records = await client.listSandboxes({
     credentials: providerCredentials(),
     tags: { provider: 'vercel', repository: identity.tags.repository },
   });
-  return records.filter((record) => record.tags?.provider === 'vercel'
+  const candidates = records.filter((record) => record.tags?.provider === 'vercel'
     && record.tags.repository === identity.tags.repository
     && typeof record.tags.branch === 'string'
     && record.tags.branch.startsWith(RUN_BRANCH_TAG_PREFIX));
+  const eligible = [];
+  for (const record of candidates) {
+    if (record.tags.branch === identity.tags.branch || await completedWorkflowRun(record.tags.branch)) {
+      eligible.push(record);
+    }
+  }
+  return eligible;
+}
+
+async function completedWorkflowRun(branchTag) {
+  const normalizedTag = branchTag.replace(/-[a-f0-9]{16}$/, '');
+  const match = new RegExp(`^${RUN_BRANCH_TAG_PREFIX}(\\d+)-(\\d+)$`).exec(normalizedTag);
+  if (!match) return false;
+  const repository = process.env.GITHUB_REPOSITORY?.trim();
+  if (!repository) return false;
+  const runId = match[1];
+  const runAttempt = Number(match[2]);
+  const cached = workflowRunStates.get(runId);
+  if (cached !== undefined) return cached;
+  const token = process.env.GITHUB_TOKEN?.trim();
+  let completed = false;
+  try {
+    const response = await fetch(`https://api.github.com/repos/${repository}/actions/runs/${runId}`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.ok) {
+      const run = await response.json();
+      completed = run?.status === 'completed' && Number(run?.run_attempt) === runAttempt;
+    }
+  } catch {
+    completed = false;
+  }
+  workflowRunStates.set(runId, completed);
+  return completed;
 }
 
 function cleanupTags(tags) {
@@ -540,13 +781,14 @@ function cleanupTags(tags) {
 }
 
 async function readRunTaggedResourceInventory(identity, knownNames) {
+  const { client } = await cleanupDependencies();
   const records = await listRunTaggedSandboxes(identity);
   const names = new Set([...knownNames, ...records.map((record) => record.name)]);
   let snapshotCount = 0;
   for (const name of names) {
     let snapshots;
     try {
-      snapshots = await cleanupClient.listSnapshots({
+      snapshots = await client.listSnapshots({
         credentials: providerCredentials(),
         name,
       });
@@ -575,27 +817,35 @@ async function waitForRunTaggedEmpty(identity, knownNames, timeoutMs) {
 }
 
 async function removeRunTaggedLeftovers() {
+  const dependencies = await cleanupDependencies();
+  const { client, cleanup } = dependencies;
   const identity = await cleanupIdentity();
   const records = await listRunTaggedSandboxes(identity);
-  const knownNames = new Set(records.map((record) => record.name));
+  const targets = new Map(records.map((record) => [record.name, record]));
+  if (identity.name !== undefined && !targets.has(identity.name)) {
+    targets.set(identity.name, { name: identity.name, tags: identity.tags });
+  }
+  const knownNames = new Set(targets.keys());
   let removedCount = 0;
   let residualCount = 0;
-  for (const record of records) {
+  for (const record of targets.values()) {
     const expectedTags = cleanupTags(record.tags);
     if (!expectedTags) {
       residualCount += 1;
       continue;
     }
     try {
-      const result = await cleanupVercelSandbox({
-        name: record.name,
-        credentials: providerCredentials(),
-        expectedTags,
-        ...(record.currentSnapshotId === undefined ? {} : { knownSnapshotIds: [record.currentSnapshotId] }),
-        adapter: cleanupAdapter(),
-        timeoutMs: DURATION_STOP_TIMEOUT_MS,
-        maxAttempts: 8,
-      });
+      const result = cleanup
+        ? await cleanup({
+          name: record.name,
+          credentials: providerCredentials(),
+          expectedTags,
+          ...(record.currentSnapshotId === undefined ? {} : { knownSnapshotIds: [record.currentSnapshotId] }),
+          adapter: cleanupAdapter(client),
+          timeoutMs: DURATION_STOP_TIMEOUT_MS,
+          maxAttempts: 8,
+        })
+        : await fallbackCleanupSandbox(record, expectedTags);
       if (result.verified && result.errors.length === 0) removedCount += 1;
       else residualCount += 1;
     } catch {
@@ -647,9 +897,8 @@ async function resumeSnapshot(stateHome, priorProcess, priorIdentity) {
     const displayUrl = publicRoute(resumed.output(), 6080);
     const appUrl = publicRoute(resumed.output(), APP_PORT);
     const displayProbe = await waitForPublicRoute(displayUrl);
-    const appProbe = await waitForPublicRoute(appUrl);
-    check('snapshot display route reachable', displayProbe.reachable, `status=${displayProbe.status}`);
-    check('snapshot public route reachable', appProbe.reachable, `status=${appProbe.status}`);
+    const displayHealthy = displayProbe.reachable && displayProbe.status >= 200 && displayProbe.status < 400;
+    check('snapshot display route healthy', displayHealthy, `status=${displayProbe.status}`);
     const freshIdentity = await readIdentity(resumed, 'snapshot-attach');
     const socketChanged = freshIdentity.socket !== priorIdentity.socket;
     check('snapshot fresh socket', socketChanged, 'snapshot resume received a new session-derived socket');
@@ -684,15 +933,28 @@ async function resumeSnapshot(stateHome, priorProcess, priorIdentity) {
     check('snapshot branch restored', workspace.branch === BRANCH, `branch=${workspace.branch}`);
     const runtimeReady = markerFor('snapshot-runtime-ready');
     const runtimeMissing = markerFor('snapshot-runtime-missing');
-    resumed.write(remoteRuntimeStateCommand(runtimeReady, runtimeMissing));
+    const provider = await readProviderSessionFacts(stateHome);
+    resumed.write(remoteRuntimeStateCommand(runtimeReady, runtimeMissing, provider.sessionId));
     const runtimeState = await resumed.waitForAny([runtimeReady, runtimeMissing], MARKER_TIMEOUT_MS);
     const runtimeServicesRefreshed = runtimeState.match === runtimeReady;
     check('snapshot runtime state restored', runtimeServicesRefreshed, `runtime=${runtimeState.match}`);
     const processBoundaryNotice = resumed.output().includes('prior user processes ended');
     check('snapshot process boundary notice', processBoundaryNotice, 'attach reported the process boundary');
+    const snapshotFixtureMarker = markerFor('snapshot-http-fixture');
+    resumed.write(remoteHttpFixtureCommand(snapshotFixtureMarker));
+    const snapshotFixtureIdentity = parseFixtureStartup(
+      await resumed.waitFor(snapshotFixtureMarker, MARKER_TIMEOUT_MS),
+      snapshotFixtureMarker,
+    );
+    check('snapshot new HTTP fixture session', snapshotFixtureIdentity.session === 'devbox', `session=${snapshotFixtureIdentity.session}`);
+    const snapshotResponse = await waitForFixture(appUrl, snapshotFixtureMarker);
+    const appProbe = await waitForPublicRoute(appUrl);
+    const appHealthy = appProbe.reachable && appProbe.status >= 200 && appProbe.status < 400;
+    check('snapshot public route healthy', appHealthy, `status=${appProbe.status}`);
+    check('snapshot public route fixture', snapshotResponse.response === 'devbox-uat-http', 'new fixture returned the expected payload');
+    await stopFixture(appUrl, snapshotFixtureMarker);
     resumed.write(Buffer.from([0x1d]));
     await resumed.waitForExit(CLI_TIMEOUT_MS);
-    const provider = await readProviderSessionFacts(stateHome);
     const providerSessionChanged = provider.sessionId !== priorIdentity.providerSessionId;
     check('snapshot fresh provider session', providerSessionChanged, `prior=${priorIdentity.providerSessionId}; resumed=${provider.sessionId}`);
     check('snapshot resumed timeout', provider.configuredTimeoutMs === TIMEOUT_MINUTES * 60 * 1000, `timeout=${provider.configuredTimeoutMs}ms`);
@@ -707,6 +969,7 @@ async function resumeSnapshot(stateHome, priorProcess, priorIdentity) {
       branch: workspace.branch,
       displayRouteStatus: displayProbe.status,
       appRouteStatus: appProbe.status,
+      fixturePid: snapshotFixtureIdentity.pid,
       sandboxName: provider.sandboxName,
       sessionId: provider.sessionId,
     };
@@ -845,10 +1108,10 @@ function remoteWorkspaceCommand(marker) {
   return `printf '%s PWD=%s BRANCH=%s\\n' "$(printf '%s' '${encoded}' | base64 -d)" "$PWD" "$(git branch --show-current)"\n`;
 }
 
-function remoteRuntimeStateCommand(ready, missing) {
+function remoteRuntimeStateCommand(ready, missing, sessionId) {
   const readyEncoded = Buffer.from(ready).toString('base64');
   const missingEncoded = Buffer.from(missing).toString('base64');
-  return `if [ -s '/vercel/.devbox/runtime/preparation.json' ] && [ -s '/vercel/.devbox/runtime/setup.status' ] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"(running|succeeded)"' '/vercel/.devbox/runtime/setup.status'; then printf '%s\\n' "$(printf '%s' '${readyEncoded}' | base64 -d)"; else printf '%s\\n' "$(printf '%s' '${missingEncoded}' | base64 -d)"; fi\n`;
+  return `if [ -s '/vercel/.devbox/runtime/preparation.json' ] && grep -Fq ${shellQuote(sessionId)} '/vercel/.devbox/runtime/preparation.json' && [ -s '/vercel/.devbox/runtime/setup.status' ] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"(running|succeeded)"' '/vercel/.devbox/runtime/setup.status'; then printf '%s\\n' "$(printf '%s' '${readyEncoded}' | base64 -d)"; else printf '%s\\n' "$(printf '%s' '${missingEncoded}' | base64 -d)"; fi\n`;
 }
 
 function parseIdentity(output, marker) {
@@ -892,7 +1155,7 @@ async function waitForFixture(url, marker) {
         escaped + '\\|pid=([0-9]+)\\|tmux=([^|\\s]+)\\|response=([^|\\s]+)',
       ).exec(body);
       if (!match) throw new Error('HTTP fixture response did not include its identity');
-      return { marker, pid: match[1], session: match[2], response: match[3] };
+      return { marker, pid: match[1], session: match[2], response: match[3], status: response.status };
     } catch (error) {
       lastError = error;
       await delay(250);
@@ -997,7 +1260,7 @@ function sameDeadline(expected, actual) {
 }
 
 function fingerprint(value) {
-  return Buffer.from(value).toString('base64url').slice(0, 16);
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 function required(name) {

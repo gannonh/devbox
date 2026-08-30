@@ -341,7 +341,7 @@ function isLongSessionCreate(
     && context.requestedTimeoutMs !== undefined
     && context.requestedTimeoutMs > 45 * 60_000
     && (status === 400 || status === 422)
-    && /timeout|time.?out|duration|lease|expir|maximum|minute/.test(message);
+    && /^sandbox (?:timeout|duration) (?:rejected|exceeds|exceeded|unsupported)(?:\b|:)/.test(message);
 }
 
 function isScopeLinkError(message: string, code: string | undefined): boolean {
