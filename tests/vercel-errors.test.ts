@@ -111,7 +111,7 @@ describe('Vercel provider errors', () => {
     const mapped = mapVercelError(
       new VercelSdkError(
         'Sandbox.getOrCreate',
-        new Error(`Sandbox timeout rejected: ${token}`),
+        Object.assign(new Error(`Sandbox timeout rejected: ${token}`), { status: 400 }),
         [token],
       ),
       {
@@ -129,6 +129,34 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).toContain('Pro and Enterprise support up to 24 hours');
     expect(mapped.message).toContain('--timeout 45');
     expect(mapped.message).not.toContain(token);
+  });
+
+  it('does not add plan guidance to an unclassified long create failure', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError('Sandbox.getOrCreate', new Error('network connection failed'), []),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
+  });
+
+  it('does not add plan guidance to an unrelated provider validation failure', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError('Sandbox.getOrCreate', Object.assign(new Error('invalid image reference'), { status: 400 }), []),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
   });
 
   it('keeps a credential failure in the auth category for a long create request', () => {

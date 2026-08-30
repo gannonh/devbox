@@ -260,7 +260,7 @@ export function mapVercelError(
   }
 
   const suffix = detail ? `: ${detail}` : '';
-  const durationHint = isLongSessionCreate(context, operation)
+  const durationHint = isLongSessionCreate(context, operation, status, message)
     ? `; requested timeout: ${Math.round(context.requestedTimeoutMs! / 60_000)} minutes. Vercel Hobby supports up to 45 minutes; Pro and Enterprise support up to 24 hours. Try --timeout 45.`
     : '';
   return new VercelProviderError(
@@ -333,11 +333,15 @@ function isMetadataLockContention(error: unknown, message: string): boolean {
 function isLongSessionCreate(
   context: VercelErrorContext,
   operation: string | undefined,
+  status: number | undefined,
+  message: string,
 ): boolean {
   return context.action === 'up'
     && operation === 'Sandbox.getOrCreate'
     && context.requestedTimeoutMs !== undefined
-    && context.requestedTimeoutMs > 45 * 60_000;
+    && context.requestedTimeoutMs > 45 * 60_000
+    && (status === 400 || status === 422)
+    && /timeout|time.?out|duration|lease|expir|maximum|minute/.test(message);
 }
 
 function isScopeLinkError(message: string, code: string | undefined): boolean {

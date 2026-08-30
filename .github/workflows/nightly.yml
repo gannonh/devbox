@@ -637,6 +637,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
           DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/preflight.json
           DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
         run: node scripts/vercel/session-uat.mjs --cleanup
@@ -674,6 +675,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
           DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/reconciliation.json
           DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
         run: node scripts/vercel/session-uat.mjs --cleanup
