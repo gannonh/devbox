@@ -7,7 +7,9 @@ import {
   type SandboxSessionRecord,
   type SandboxSnapshotRecord,
   type SandboxSessionStatus,
+  type VercelSandboxClient,
   type VercelSandboxDeleteByNameResult,
+  type VercelSandboxHandle,
   type VercelStopResult,
 } from './client.js';
 import { redactSecrets } from './redaction.js';
@@ -92,6 +94,18 @@ export interface VercelCleanupOptions {
   backoffMs?: number;
   signal?: AbortSignal;
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export function createVercelCleanupAdapter(client: VercelSandboxClient): VercelCleanupAdapter {
+  return {
+    get: (request) => client.get(request),
+    deleteByName: (request) => client.deleteSandboxByName(request),
+    listSessions: (sandbox, options) => client.listSessions(sandbox as VercelSandboxHandle, options),
+    stop: (sandbox, options) => client.stopSandbox(sandbox as VercelSandboxHandle, options),
+    listSnapshots: (request) => client.listSnapshots(request),
+    getSnapshot: (request) => client.getSnapshot(request),
+    delete: (sandbox, options) => client.deleteSandbox(sandbox as VercelSandboxHandle, options),
+  };
 }
 
 export async function cleanupVercelSandbox(
