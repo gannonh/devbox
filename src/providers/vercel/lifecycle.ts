@@ -2,9 +2,9 @@ import type { CredentialResolutionOptions, VercelCredentials } from './auth.js';
 import { resolveVercelCredentials } from './auth.js';
 import {
   cleanupVercelSandbox,
+  createVercelCleanupAdapter,
   STOPPABLE_SESSION_STATES,
   TERMINAL_SESSION_STATES,
-  type VercelCleanupAdapter,
   type VercelCleanupOptions,
   type VercelCleanupResult,
 } from './cleanup.js';
@@ -470,7 +470,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         const metadata = await metadataStore.read();
         if (metadata) assertScopeAndIdentity(metadata, context);
         const identity = metadata?.identity ?? toMetadataIdentity(requireIdentity(context));
-        const adapter = createCleanupAdapter(context.client);
+        const adapter = createVercelCleanupAdapter(context.client);
         const result = await cleanupVercelSandbox({
           name: identity.name,
           credentials: context.credentials,
@@ -525,7 +525,7 @@ async function removeRecoveredSandbox(
     credentials: context.credentials,
     expectedTags: recovery.identity.tags,
     ...(recovery.snapshotIds === undefined ? {} : { knownSnapshotIds: recovery.snapshotIds }),
-    adapter: createCleanupAdapter(context.client),
+    adapter: createVercelCleanupAdapter(context.client),
     ...(cleanupOptions ?? {}),
   });
   if (result.verified) {
@@ -674,7 +674,7 @@ async function compensateCreatedSandbox(
       credentials: context.credentials,
       expectedTags: identity.tags,
       knownSnapshotIds,
-      adapter: createCleanupAdapter(context.client),
+      adapter: createVercelCleanupAdapter(context.client),
       ...(cleanupOptions ?? {}),
     });
   } catch (error) {
@@ -1046,18 +1046,6 @@ async function commandOutput(result: VercelCommandResult): Promise<string> {
   if (result.stdout) output.push(await result.stdout());
   if (result.stderr) output.push(await result.stderr());
   return output.join('\n').trim();
-}
-
-function createCleanupAdapter(client: VercelSandboxClient): VercelCleanupAdapter {
-  return {
-    get: (request) => client.get(request),
-    deleteByName: (request) => client.deleteSandboxByName(request),
-    listSessions: (sandbox, options) => client.listSessions(sandbox as VercelSandboxHandle, options),
-    stop: (sandbox, options) => client.stopSandbox(sandbox as VercelSandboxHandle, options),
-    listSnapshots: (request) => client.listSnapshots(request),
-    getSnapshot: (request) => client.getSnapshot(request),
-    delete: (sandbox, options) => client.deleteSandbox(sandbox as VercelSandboxHandle, options),
-  };
 }
 
 function toMetadataIdentity(identity: VercelSandboxIdentity): VercelMetadataIdentity {
