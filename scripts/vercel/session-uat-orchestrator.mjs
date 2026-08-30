@@ -36,7 +36,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     deadlineToleranceMs: DEADLINE_TOLERANCE_MS,
     environment,
   });
-  const { report, redact, check, sameDeadline, writeReport } = evidence;
+  const { report, redact, redactTail, check, sameDeadline, writeReport } = evidence;
   const probes = createSessionUatProbes({
     branch,
     repoRoot,
@@ -170,7 +170,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
         provider: await readProviderSessionFacts(stateHome),
       };
     } catch (error) {
-      const detail = redact(session.output().slice(-1200));
+      const detail = redactTail(session.output());
       throw new Error(`${error instanceof Error ? error.message : String(error)}${detail ? `: ${detail}` : ''}`);
     }
   }

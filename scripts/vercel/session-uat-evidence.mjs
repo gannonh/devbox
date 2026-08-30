@@ -15,6 +15,7 @@ export function createEvidence({ mode, branch, timeoutMinutes, reportPath, deadl
     cleanup: { attempted: false, exitCode: null, accepted: false },
   };
   const redact = (value) => redactValue(value, secrets);
+  const redactTail = (value) => redactTailValue(value, secrets);
   const check = (name, ok, detail) => {
     report.checks.push({ name, ok, detail: redact(detail) });
     if (!ok) throw new Error(`${name} failed`);
@@ -22,6 +23,7 @@ export function createEvidence({ mode, branch, timeoutMinutes, reportPath, deadl
   return {
     report,
     redact,
+    redactTail,
     check,
     markerFor,
     sameDeadline: (expected, actual) => sameDeadline(expected, actual, deadlineToleranceMs),
@@ -40,6 +42,14 @@ export function collectSecrets(environment = process.env) {
 }
 
 export function redactValue(value, secrets) {
+  return sanitizeValue(value, secrets).slice(0, 300);
+}
+
+export function redactTailValue(value, secrets) {
+  return sanitizeValue(value, secrets).slice(-1200);
+}
+
+function sanitizeValue(value, secrets) {
   let result = String(value);
   for (const secret of secrets) {
     result = result.split(secret).join('[REDACTED]');
@@ -51,8 +61,7 @@ export function redactValue(value, secrets) {
     .replace(/\b(?:ghp_|github_pat_|vcp_|vercel_)[A-Za-z0-9_~-]+/gi, '[REDACTED]')
     .replace(/([?&]token=)[^&\s"']+/gi, '$1[REDACTED]')
     .replace(/(devbox_novnc=)[^;\s"']+/gi, '$1[REDACTED]')
-    .replace(/(VERCEL_(?:TOKEN|OIDC_TOKEN|PASSWORD)\s*[=:]\s*)[^\s,}]+/gi, '$1[REDACTED]')
-    .slice(0, 300);
+    .replace(/(VERCEL_(?:TOKEN|OIDC_TOKEN|PASSWORD)\s*[=:]\s*)[^\s,}]+/gi, '$1[REDACTED]');
 }
 
 export function sameDeadline(expected, actual, toleranceMs) {
