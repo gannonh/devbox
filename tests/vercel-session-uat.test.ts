@@ -6,7 +6,7 @@ import {
   selectRunTaggedSandboxes,
   waitForEmptyResourceInventory,
 } from '../scripts/vercel/session-uat-cleanup.mjs';
-import { createEvidence } from '../scripts/vercel/session-uat-evidence.mjs';
+import { createEvidence, redactTailValue } from '../scripts/vercel/session-uat-evidence.mjs';
 
 async function driverSource(): Promise<string> {
   const files = [
@@ -80,7 +80,7 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('DEVBOX_UAT_REPOSITORY');
     expect(source).toContain('mode,');
     expect(source).toContain('loadCleanupDependencies');
-    expect(source).toContain('redact(session.output().slice(-1200))');
+    expect(source).toContain('redactTail(session.output())');
     expect(source).not.toContain('fallbackCleanupSandbox');
   });
 
@@ -151,5 +151,13 @@ describe('public Vercel session UAT driver', () => {
     });
     evidence.check('redaction boundary', true, 'secret-token');
     expect(evidence.report.checks[0]?.detail).toBe('[REDACTED]');
+  });
+
+  it('retains the redacted tail of a long diagnostic output', () => {
+    const detail = redactTailValue(`${'prefix '.repeat(300)} private-token provider startup failed`, ['private-token']);
+
+    expect(detail).toContain('provider startup failed');
+    expect(detail).not.toContain('private-token');
+    expect(detail.length).toBeLessThanOrEqual(1200);
   });
 });
