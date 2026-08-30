@@ -25,6 +25,7 @@ function sandbox(): VercelSandboxHandle {
     name: 'runtime-sync',
     status: 'running',
     cwd: '/vercel/sandbox',
+    currentSession: () => ({ sessionId: 'runtime-sync' }),
   } as unknown as VercelSandboxHandle;
 }
 

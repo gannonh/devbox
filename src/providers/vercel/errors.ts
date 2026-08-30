@@ -71,13 +71,6 @@ export function mapVercelError(
   const command = recoveryCommand(context);
   const message = detail.toLowerCase();
 
-  if (isObsoleteSessionMetadata(message)) {
-    return new VercelProviderError(
-      'stale',
-      `Stored Vercel metadata contains removed session policy state; run ${removeRecoveryCommand(context)}, then create the box again.`,
-      2,
-    );
-  }
   if (isUnsupportedLongSessionCreate(context, operation)) {
     return new VercelProviderError(
       'api',
@@ -331,10 +324,6 @@ function isConfirmationError(message: string): boolean {
 function isMetadataLockContention(error: unknown, message: string): boolean {
   return codeOf(error) === 'ELOCKED'
     || /^timed out waiting for vercel metadata lock: .+$/.test(message);
-}
-
-function isObsoleteSessionMetadata(message: string): boolean {
-  return message.includes('idlepauseminutes') || message.includes('idlepausedat');
 }
 
 function isUnsupportedLongSessionCreate(

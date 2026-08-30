@@ -36,4 +36,8 @@
 ## 2026-08-26
 
 * **Relay-backed public app routes**: Accepted publishing a fixed-target HTTP/WebSocket relay per confirmed app port instead of the app's own listener, 6080-only Sandbox creation, kernel-allocated and collision-checked listener ports, the Host/forwarding header contract with `Origin` preserved, and the listeners-ready → route-update → commit → stop-obsolete transaction for issue [#17](https://github.com/gannonh/devbox/issues/17). This retires ADR 0005's instruction to add `--host` and `server.allowedHosts`.
-* **Vercel snapshot resume and idle pause**: Accepted persistent stop with one retained snapshot, source-session evidence, host-owned snapshot metadata, runtime-only fast resume, and mode-`0600` input heartbeat control for issue [#19](https://github.com/gannonh/devbox/issues/19).
+* **Vercel snapshot resume**: Accepted persistent stop with one retained snapshot, source-session evidence, host-owned snapshot metadata, and runtime-only fast resume for issue [#19](https://github.com/gannonh/devbox/issues/19).
+
+## 2026-08-30
+
+* **Vercel session lifetime and terminal reconnect**: Accepted a fixed timeout for each new or snapshot-resumed VM session and one devbox-owned, session-derived tmux socket per VM session. Same-session reconnects reuse the foreground process. Snapshot resume creates a fresh session and ends prior user processes. This supersedes the idle policy in ADR 0008 while retaining its snapshot decisions for issues [#65](https://github.com/gannonh/devbox/issues/65) and [#66](https://github.com/gannonh/devbox/issues/66).

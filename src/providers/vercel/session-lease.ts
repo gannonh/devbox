@@ -29,7 +29,11 @@ export function parseVercelSessionId(value: unknown): VercelSessionId | null {
 export function currentVercelSessionId(
   sandbox: { currentSession?: () => { readonly sessionId?: unknown } },
 ): VercelSessionId | null {
-  return parseVercelSessionId(sandbox.currentSession?.()?.sessionId);
+  try {
+    return parseVercelSessionId(sandbox.currentSession?.()?.sessionId);
+  } catch {
+    return null;
+  }
 }
 
 export function createVercelSessionLease(

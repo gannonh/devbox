@@ -309,7 +309,7 @@ describe('Vercel image and release workflows', () => {
     expect(zstdAssertion).toContain('application/vnd.oci.image.layer.v1.tar+zstd');
   });
 
-  it('runs the six-minute production terminal adapter smoke for reused and rebuilt images', async () => {
+  it('keeps the image smoke bounded and gates the public CLI session UAT separately', async () => {
     const workflow = await workflowText();
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
     const consumerStep = workflow.match(/- name: Independent cross-project consumer Sandbox smoke gate[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
@@ -326,13 +326,19 @@ describe('Vercel image and release workflows', () => {
     expect(resolveStep.match(/run: \|([\s\S]*)/)?.[1]).not.toContain('${{');
     expect(consumerStep).not.toContain("steps.drift.outputs.skip != 'true'");
     expect(consumerStep).toContain('steps.resolved.outputs.digest');
-    expect(consumerStep).toContain("SMOKE_TERMINAL_LONGEVITY_IDLE_MS: '360000'");
     expect(consumerStep).toContain("SMOKE_TIMEOUT_MS: '1200000'");
+    expect(consumerStep).not.toContain('SMOKE_TERMINAL_LONGEVITY_IDLE_MS');
     expect(workflow).toContain('timeout-minutes: 75');
-    expect(smoke).toContain("../../dist/providers/vercel/terminal.js");
-    expect(smoke).toContain('runTerminalLongevity');
-    expect(smoke).toContain("timed('terminal-longevity'");
-    expect(smoke).toContain('Sandbox.get({ ...credentials, name: sandbox.name');
+    expect(smoke).not.toContain('runTerminalLongevity');
+    expect(smoke).not.toContain('SMOKE_TERMINAL_LONGEVITY_IDLE_MS');
+    expect(workflow).toContain('duration:');
+    expect(workflow).toContain('timeout-minutes: 120');
+    expect(workflow).toContain('Run dedicated 120-minute public CLI duration path');
+    expect(workflow).toContain('Run public CLI forced-close and reconnect path');
+    expect(workflow).toContain('Preflight exact branch cleanup');
+    expect(workflow).toContain('Reconcile exact branch cleanup');
+    expect(workflow).toContain('if: always()');
+    expect(workflow).toContain('node scripts/vercel/session-uat.mjs');
   });
 
   it('redacts workflow evidence and emits a pin only after both smoke gates', async () => {

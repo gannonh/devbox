@@ -130,22 +130,6 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).not.toContain(token);
   });
 
-  it('redacts obsolete session metadata with remove-and-recreate guidance', () => {
-    for (const detail of [
-      'Unknown Vercel branch metadata field(s): idlePauseMinutes',
-      'Unknown Vercel paused snapshot field(s): idlePausedAt',
-    ]) {
-      const mapped = mapVercelError(new Error(detail), {
-        action: 'attach',
-        branch: 'feature/ui',
-      });
-      expect(mapped.code).toBe('stale');
-      expect(mapped.message).toContain('--rm');
-      expect(mapped.message).toContain('create the box again');
-      expect(mapped.message).not.toContain(detail);
-    }
-  });
-
   it('classifies every required failure category before generic API handling', () => {
     const token = 'category-secret-token';
     const encoded = encodeURIComponent(token);

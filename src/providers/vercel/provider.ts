@@ -64,6 +64,7 @@ import {
   type VercelTerminalStreams,
 } from './terminal.js';
 import { prepareSandboxRuntime, RUNTIME_PREPARATION_TIMEOUT_MS } from './runtime.js';
+import { prepareVercelTerminalShell } from './terminal-shell.js';
 import { assertSafeEnvironmentKeys } from '../local/env.js';
 import { addSecrets, redactSecrets } from './redaction.js';
 import { DEVBOX_NOVNC_PROXY_PORT, appPortsOf, buildDesiredPortSet, samePortSet } from './ports.js';
@@ -244,6 +245,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         terminal,
         options.signalSource,
         sandbox,
+        client,
         'up',
         prepared.source.remote.repository,
         secrets,
@@ -317,6 +319,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         terminal,
         options.signalSource,
         sandbox,
+        client,
         'attach',
         repository,
         secrets,
@@ -802,11 +805,13 @@ async function terminalResult(
   terminal: VercelTerminalAdapter,
   signalSource: EventEmitter | undefined,
   sandbox: VercelSandboxHandle,
+  client: VercelSandboxClient,
   action: 'up' | 'attach',
   repository: string,
   secrets: readonly string[],
 ): Promise<ProviderActionResult> {
   const cwd = resolveVercelRepositoryCwd(sandbox.cwd, repository);
+  const terminalShell = await prepareVercelTerminalShell({ sandbox, client, cwd });
   const streams: VercelTerminalStreams = {
     stdin: request.stdin,
     stdout: request.stdout,
@@ -827,6 +832,7 @@ async function terminalResult(
     }),
     ...(request.runtimeEnvironment === undefined ? {} : { env: request.runtimeEnvironment }),
     ...(signalSource === undefined ? {} : { signalSource }),
+    program: terminalShell.program,
   };
   const result = await terminal.attach(sandbox, terminalOptions);
   if (result.status === 'detached' && result.reason === 'error') {

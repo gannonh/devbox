@@ -845,8 +845,8 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(stdout).not.toContain('=working');
       expect(stdout).not.toContain('image checks passed');
       const status = await readFile('images/vercel/status-devbox.sh', 'utf8');
-      expect(status).toContain('write_display_heartbeat');
-      expect(status).toContain('chmod 600');
+      expect(status).not.toContain('write_display_heartbeat');
+      expect(status).not.toContain('/vercel/.devbox/runtime/heartbeat');
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

@@ -109,11 +109,11 @@ On first use, devbox prints the Vercel team and project, then asks for confirmat
 
 The display URL contains a one-use access code. Opening the complete URL exchanges the code for a session cookie. If the URL is stale or incomplete, run `--password` and enter the printed code in the pairing form.
 
-In the remote terminal, `Ctrl-C` reaches the foreground process. `Ctrl-]` disconnects without stopping the Sandbox.
+In the remote terminal, `Ctrl-C` reaches the foreground process. `Ctrl-]` disconnects without stopping the Sandbox. Each VM session owns one devbox-managed tmux session, so a reconnect reaches the same foreground process while that VM session remains alive. A forced local CLI close has the same reconnect behavior.
 
 `--pause` stops the Vercel Sandbox session and retains its latest snapshot. The next boot or attach restores that snapshot, refreshes GitHub credentials, dotenv values, Pi configuration, display services, and public relays, then opens the terminal without recloning or reinstalling dependencies. The snapshot ID and source session are stored in mode-`0600` host metadata. `--stop` reports the same Vercel snapshot as paused. `--rm` deletes the Sandbox and retained snapshots after verification.
 
-Re-entry records terminal input and successful display health polls at `/vercel/.devbox/runtime/heartbeat` with mode `0600`. A resumed Vercel box pauses automatically after 15 idle minutes by default. Set `DEVBOX_IDLE_PAUSE_MINUTES=0` to disable it, or use another integer from 1 through 1440. A fresh heartbeat prevents pausing; a missing or unreadable heartbeat becomes idle only after the full window. The next attach reports when an idle pause occurred.
+The terminal shell derives a devbox-owned tmux socket from `sandbox.currentSession().sessionId`. A same-session attach reuses that socket and launches `tmux new-session -A -s devbox`, so user processes survive WebSocket reconnects. A snapshot resume creates a new VM session and a new socket. Processes from the prior VM session end, while runtime setup, display services, and public relays restart. The configured Vercel timeout applies to each new or snapshot-resumed VM session.
 
 After checkout, devbox reads `package.json` files without executing them and suggests common application ports such as Vite's `5173`. It also scans npm workspace members. Approved ports become public without recreating the Sandbox. To skip the prompt, pass the ports explicitly:
 

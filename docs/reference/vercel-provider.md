@@ -279,22 +279,19 @@ and relists until every matching snapshot is absent or `deleted`. A failed
 cleanup retains non-secret scope/residual IDs in mode-`0600` metadata for
 retry; metadata is removed only after verification.
 
-### Idle pause
+### Terminal session lifetime
 
-The TTY adapter writes `/vercel/.devbox/runtime/heartbeat` with mode `0600` when
-the user sends input, and a successful display health poll refreshes it while
-the display is healthy.
-WebSocket pings and the existence of an attach process are not activity. The
-new session created by a snapshot resume gets one bootstrap heartbeat before
-the idle timer starts. The default window is 15 minutes. Set
-`DEVBOX_IDLE_PAUSE_MINUTES=0` to disable automatic pause, or choose an integer
-from 1 through 1440. The value is stored per branch and can be changed on a
-later attach. A fresh heartbeat suppresses the pause. A missing or unreadable
-heartbeat is treated as idle only after the full window, and setup is never
-paused while `setup.status` is `running`. When the idle controller pauses a
-box, the next successful attach reports the UTC timestamp of that idle pause.
-`Ctrl-]` (or stdin EOF) detaches the remote TTY without stopping the Sandbox;
-the local CLI keeps the idle monitor running until that pause fires, then exits.
+Each VM session owns one devbox-managed tmux session named `devbox`. The
+terminal shell derives a socket directory from
+`sandbox.currentSession().sessionId`, removes obsolete directories that match
+the devbox-owned naming convention, and starts `tmux new-session -A -s devbox`.
+
+`Ctrl-]`, stdin EOF, and a forced WebSocket close release the local terminal
+without stopping the VM session. A later attach in the same VM session uses the
+same socket and foreground process. A snapshot resume creates a new VM session
+and socket. User processes from the old VM session end, and runtime setup,
+display services, and public relays restart. The configured timeout applies to
+each new or snapshot-resumed VM session.
 
 `--list` reports Vercel records with `running`, `paused`, or `stopped` state.
 A stopped record with a retained snapshot is `paused` and includes its
