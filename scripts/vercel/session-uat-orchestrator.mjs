@@ -123,7 +123,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     }
     return report.checks.every((entry) => entry.ok) && report.cleanup.accepted ? 0 : 1;
   } catch (error) {
-    report.error = redact(error instanceof Error ? error.message : String(error));
+    report.error = redactTail(error instanceof Error ? error.message : String(error));
     return 1;
   } finally {
     report.finishedAt = new Date().toISOString();
