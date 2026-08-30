@@ -177,8 +177,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
 
   async function verifyInitialSession(session) {
     const marker = markerFor('identity');
-    session.write(remoteIdentityCommand(marker));
-    const identity = parseIdentity(await session.waitFor(marker, markerTimeoutMs), marker);
+    const identity = parseIdentity(await writeAndWait(session, remoteIdentityCommand(marker), marker), marker);
     check('initial named tmux session', identity.session === 'devbox', `session=${identity.session}`);
     check('initial session socket', identity.socket.startsWith('/tmp/devbox-tmux/session-'), 'socket uses the devbox-owned session directory');
     report.initial = { pid: identity.pid, tmuxSession: identity.session, socket: identity.socket };
@@ -273,8 +272,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
 
   async function verifySameSessionReconnect(stateHome, initial, label) {
     const fixtureMarker = markerFor(label);
-    initial.write(remoteHttpFixtureCommand(fixtureMarker));
-    const startedIdentity = parseFixtureStartup(await initial.waitFor(fixtureMarker, markerTimeoutMs), fixtureMarker);
+    const startedIdentity = parseFixtureStartup(await writeAndWait(initial, remoteHttpFixtureCommand(fixtureMarker), fixtureMarker), fixtureMarker);
     check('foreground HTTP fixture', startedIdentity.session === 'devbox', `session=${startedIdentity.session}`);
     const initialResponse = await waitForFixture(initial.publicUrl, fixtureMarker);
     check('initial HTTP response', initialResponse.pid === startedIdentity.pid, `pid=${initialResponse.pid}`);
@@ -356,8 +354,10 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const startedMarker = markerFor('snapshot-process-started');
     const processMarker = markerFor('snapshot-process');
     const sentinelPath = `/vercel/sandbox/.devbox-uat-sentinel-${randomBytes(8).toString('hex')}`;
-    session.write(remoteDetachedProcessCommand(startedMarker, processMarker, sentinelPath));
-    const priorProcess = parseDetachedProcessStartup(await session.waitFor(startedMarker, markerTimeoutMs), startedMarker);
+    const priorProcess = parseDetachedProcessStartup(
+      await writeAndWait(session, remoteDetachedProcessCommand(startedMarker, processMarker, sentinelPath), startedMarker),
+      startedMarker,
+    );
     check('snapshot process marker recorded', priorProcess.marker === processMarker, 'the detached process carried a unique marker');
     session.write(Buffer.from([0x1d]));
     await session.waitForExit(cliTimeoutMs);
@@ -388,28 +388,35 @@ export async function runSessionUat({ environment = process.env, argv = process.
       const sentinelMissing = markerFor('snapshot-sentinel-missing');
       const processPresent = markerFor('snapshot-process-present');
       const processAbsent = markerFor('snapshot-process-absent');
-      resumed.write(remoteSnapshotStateCommand(sentinelPresent, sentinelMissing, processPresent, processAbsent, priorProcess.sentinelPath, priorProcess.marker, priorProcess.pid));
-      const sentinelState = await resumed.waitForAny([sentinelPresent, sentinelMissing], markerTimeoutMs);
+      const sentinelState = await writeAndWaitAny(
+        resumed,
+        remoteSnapshotStateCommand(sentinelPresent, sentinelMissing, processPresent, processAbsent, priorProcess.sentinelPath, priorProcess.marker, priorProcess.pid),
+        [sentinelPresent, sentinelMissing],
+      );
       const sentinelRestored = sentinelState.match === sentinelPresent;
       check('snapshot sentinel restored', sentinelRestored, `sentinel=${sentinelState.match}`);
       const processState = await resumed.waitForAny([processPresent, processAbsent], markerTimeoutMs);
       check('snapshot prior process ended', processState.match === processAbsent, `priorPid=${priorProcess.pid}`);
       const workspaceMarker = markerFor('snapshot-workspace');
-      resumed.write(remoteWorkspaceCommand(workspaceMarker));
-      const workspace = parseWorkspace(await resumed.waitFor(workspaceMarker, markerTimeoutMs), workspaceMarker);
+      const workspace = parseWorkspace(await writeAndWait(resumed, remoteWorkspaceCommand(workspaceMarker), workspaceMarker), workspaceMarker);
       check('snapshot workspace restored', workspace.path.startsWith('/vercel/sandbox/'), `path=${workspace.path}`);
       check('snapshot branch restored', workspace.branch === branch, `branch=${workspace.branch}`);
       const runtimeReady = markerFor('snapshot-runtime-ready');
       const runtimeMissing = markerFor('snapshot-runtime-missing');
       const provider = await readProviderSessionFacts(stateHome);
-      resumed.write(remoteRuntimeStateCommand(runtimeReady, runtimeMissing, provider.sessionId));
-      const runtimeState = await resumed.waitForAny([runtimeReady, runtimeMissing], markerTimeoutMs);
+      const runtimeState = await writeAndWaitAny(
+        resumed,
+        remoteRuntimeStateCommand(runtimeReady, runtimeMissing, provider.sessionId),
+        [runtimeReady, runtimeMissing],
+      );
       check('snapshot runtime state restored', runtimeState.match === runtimeReady, `runtime=${runtimeState.match}`);
       const processBoundaryNotice = resumed.output().includes('prior user processes ended');
       check('snapshot process boundary notice', processBoundaryNotice, 'attach reported the process boundary');
       const snapshotFixtureMarker = markerFor('snapshot-http-fixture');
-      resumed.write(remoteHttpFixtureCommand(snapshotFixtureMarker));
-      const snapshotFixtureIdentity = parseFixtureStartup(await resumed.waitFor(snapshotFixtureMarker, markerTimeoutMs), snapshotFixtureMarker);
+      const snapshotFixtureIdentity = parseFixtureStartup(
+        await writeAndWait(resumed, remoteHttpFixtureCommand(snapshotFixtureMarker), snapshotFixtureMarker),
+        snapshotFixtureMarker,
+      );
       check('snapshot new HTTP fixture session', snapshotFixtureIdentity.session === 'devbox', `session=${snapshotFixtureIdentity.session}`);
       const snapshotResponse = await waitForFixture(appUrl, snapshotFixtureMarker);
       const appProbe = await waitForPublicRoute(appUrl);
@@ -439,5 +446,17 @@ export async function runSessionUat({ environment = process.env, argv = process.
     } finally {
       await resumed.close('SIGTERM');
     }
+  }
+
+  async function writeAndWait(session, command, marker) {
+    const wait = session.waitFor(marker, markerTimeoutMs);
+    session.write(command);
+    return wait;
+  }
+
+  async function writeAndWaitAny(session, command, patterns) {
+    const wait = session.waitForAny(patterns, markerTimeoutMs);
+    session.write(command);
+    return wait;
   }
 }
