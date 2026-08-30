@@ -26,13 +26,22 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('kill -0');
     expect(source).toContain('DURATION_IDLE_BOUNDARY_MS');
     expect(source).toContain('DURATION_FINAL_WINDOW_MS');
+    expect(source).toContain('duration idle deadline unchanged');
+    expect(source).toContain('duration final deadline unchanged');
+    expect(source).toContain('duration natural stop boundary');
     expect(source).toContain('same HTTP response');
     expect(source).toContain('forced-close same foreground PID');
     expect(source).toContain('clean Ctrl-] detach');
     expect(source).toContain('snapshot fresh socket');
     expect(source).toContain('snapshot prior process ended');
     expect(source).toContain('prior user processes ended');
-    expect(source).toContain('snapshot display route returned');
+    expect(source).toContain('waitForPublicRoute');
+    expect(source).toContain('snapshot display route reachable');
+    expect(source).toContain('snapshot public route reachable');
+    expect(source).toContain('snapshot workspace restored');
+    expect(source).toContain('snapshot branch restored');
+    expect(source).toContain('snapshot runtime state restored');
+    expect(source).toContain('snapshot fresh provider session');
   });
 
   it('writes redacted evidence and has an explicit cleanup mode', async () => {
@@ -43,6 +52,8 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('XDG_STATE_HOME');
     expect(source).toContain('DEVBOX_UAT_REPORT');
     expect(source).toContain('runCleanup(stateHome)');
+    expect(source).toContain('removeRunTaggedLeftovers');
+    expect(source).toContain('DEVBOX_UAT_REPOSITORY');
     expect(source).toContain('mode: MODE');
   });
 });
