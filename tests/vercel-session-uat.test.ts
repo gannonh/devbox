@@ -58,6 +58,7 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('runCleanup(stateHome)');
     expect(source).toContain('removeRunTaggedLeftovers');
     expect(source).toContain('targets.set(identity.name');
+    expect(source).toContain('/actions/runs/${runId}/attempts/${runAttempt}');
     expect(source).toContain('DEVBOX_UAT_REPOSITORY');
     expect(source).toContain('mode: MODE');
   });
