@@ -89,9 +89,16 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 Vercel re-entry resumes the retained snapshot without recloning, dependency
 installation, or the post-create hook. It refreshes runtime secrets, Pi
 configuration, display services, and recorded public routes first. Each VM
-session uses the configured `--timeout` (default 60 minutes). Terminal input
-and WebSocket pings do not extend that lease. `Ctrl-]` detaches the remote TTY
-without stopping the Sandbox.
+session owns one devbox-managed tmux session. The shell derives its socket from
+`sandbox.currentSession().sessionId`, removes only obsolete devbox-owned socket
+directories, and runs `tmux new-session -A -s devbox`.
+
+`Ctrl-]`, stdin EOF, and a forced local CLI close release the WebSocket while
+leaving the tmux session and its foreground process running. A same-session
+attach reaches that process. A snapshot resume creates a new VM session and
+socket, so prior user processes end while runtime setup, display services, and
+public relays restart. The configured Vercel timeout applies to each new or
+snapshot-resumed VM session.
 
 ## Inside the box
 

@@ -40,4 +40,4 @@
 
 ## 2026-08-30
 
-* **Vercel session lifetime**: Accepted a fixed timeout for each new or snapshot-resumed VM session, removal of idle auto-pause and automatic timeout extension, and a captured long-timeout rejection hint for issue [#65](https://github.com/gannonh/devbox/issues/65). This supersedes the idle policy in ADR 0008 while retaining its snapshot decisions.
+* **Vercel session lifetime and terminal reconnect**: Accepted a fixed timeout for each new or snapshot-resumed VM session and one devbox-owned, session-derived tmux socket per VM session. Same-session reconnects reuse the foreground process. Snapshot resume creates a fresh session and ends prior user processes. This supersedes the idle policy in ADR 0008 while retaining its snapshot decisions for issues [#65](https://github.com/gannonh/devbox/issues/65) and [#66](https://github.com/gannonh/devbox/issues/66).

@@ -132,20 +132,8 @@ else
   failed=1
 fi
 
-write_display_heartbeat() {
-  local runtime_dir='/vercel/.devbox/runtime'
-  mkdir -p "${runtime_dir}" 2>/dev/null || return 0
-  if (umask 077; date +%s > "${runtime_dir}/heartbeat") 2>/dev/null; then
-    chmod 600 "${runtime_dir}/heartbeat" 2>/dev/null || true
-  fi
-}
-
 if [[ "${display_only}" == true ]]; then
   if [[ "${failed}" -eq 0 ]]; then
-    # A healthy display poll is user-visible activity. Keep this best effort
-    # so a read-only runtime directory never turns a healthy display into a
-    # failed status check.
-    write_display_heartbeat
     printf '[devbox-status] display=running\n'
   else
     joined="$(IFS=,; printf '%s' "${missing[*]}")"

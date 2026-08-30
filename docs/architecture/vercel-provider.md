@@ -51,10 +51,11 @@ provider.
    display services, and relay routes without clone, dependency install, or
    post-create work. Metadata is removed only after cloud cleanup converges;
    residual IDs remain in a mode-`0600` retry record after partial cleanup.
-7. Re-entry keeps the existing VM session and its configured timeout. Terminal
-   transport pings stay on the WebSocket only. They do not extend the lease or
-   pause the Sandbox. Snapshot resume starts a new VM session with the stored
-   timeout.
+7. Re-entry asks the terminal shell to reconcile devbox-owned tmux socket
+   directories for `sandbox.currentSession().sessionId`, then launches or
+   attaches to the named `devbox` session. Same-session reconnects reuse the
+   socket. Snapshot resume gets a new session and socket, so user processes end
+   while runtime setup, display services, and relays restart.
 
 ```mermaid
 flowchart LR
@@ -66,9 +67,9 @@ flowchart LR
   Vercel --> SDK[@vercel/sandbox v3]
   SDK --> Image[Public digest-pinned VCR image]
   SDK --> Runtime[Runtime secrets/display/setup]
+  Runtime --> Shell[Session-derived tmux shell]
   SDK --> TTY[Interactive terminal]
-  Vercel --> Lease[Fixed VM session lease]
-  Lease --> Deadline[Provider expiresAt]
+  Shell --> Tmux[Named devbox tmux session]
   Vercel --> Detect[Bounded Vite/Next detector]
   Detect --> Confirm[Public-route confirmation]
   Confirm --> Relays[One relay per logical app port]

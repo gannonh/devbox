@@ -40,9 +40,6 @@ export interface VercelErrorContext {
   secrets?: readonly string[];
 }
 
-/** Captured from a live Sandbox create probe with a timeout above one day. */
-export const VERCEL_LONG_SESSION_REJECTION_SIGNATURE = 'status code 400 is not ok: `timeout` should be <= 1d';
-
 /** A stable, redacted error exposed by the provider boundary. */
 export class VercelProviderError extends ProviderOperationError {
   readonly code: VercelProviderErrorCode;
@@ -74,14 +71,7 @@ export function mapVercelError(
   const command = recoveryCommand(context);
   const message = detail.toLowerCase();
 
-  if (isObsoleteSessionMetadata(message)) {
-    return new VercelProviderError(
-      'stale',
-      `Stored Vercel metadata contains the removed idle policy; run ${removeRecoveryCommand(context)}, then create the box again with ${createRecoveryCommand(context)}.`,
-      2,
-    );
-  }
-  if (isLongSessionCreate(context, operation, status, message)) {
+  if (isUnsupportedLongSessionCreate(context, operation)) {
     return new VercelProviderError(
       'api',
       `${detail || 'Vercel rejected the requested session duration'}; requested timeout: ${Math.round(context.requestedTimeoutMs! / 60_000)} minutes. Vercel Hobby supports up to 45 minutes; Pro and Enterprise support up to 24 hours. Try --timeout 45.`,
@@ -336,22 +326,14 @@ function isMetadataLockContention(error: unknown, message: string): boolean {
     || /^timed out waiting for vercel metadata lock: .+$/.test(message);
 }
 
-function isObsoleteSessionMetadata(message: string): boolean {
-  return message.includes('idlepauseminutes') || message.includes('idlepausedat');
-}
-
-function isLongSessionCreate(
+function isUnsupportedLongSessionCreate(
   context: VercelErrorContext,
   operation: string | undefined,
-  status: number | undefined,
-  message: string,
 ): boolean {
   return context.action === 'up'
     && operation === 'Sandbox.getOrCreate'
     && context.requestedTimeoutMs !== undefined
-    && context.requestedTimeoutMs > 45 * 60_000
-    && status === 400
-    && message === VERCEL_LONG_SESSION_REJECTION_SIGNATURE;
+    && context.requestedTimeoutMs > 45 * 60_000;
 }
 
 function isScopeLinkError(message: string, code: string | undefined): boolean {

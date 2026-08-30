@@ -521,7 +521,6 @@ async function runInteractiveTerminal(adapter, sandbox, cwd, marker, signal, tim
     tty: false,
     signal,
     signalSource: new EventEmitter(),
-    timeoutExtension: false,
     getSize: () => ({ cols: 100, rows: 30 }),
     onError: () => true,
   });

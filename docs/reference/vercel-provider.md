@@ -279,18 +279,19 @@ and relists until every matching snapshot is absent or `deleted`. A failed
 cleanup retains non-secret scope/residual IDs in mode-`0600` metadata for
 retry; metadata is removed only after verification.
 
-### Session lifetime
+### Terminal session lifetime
 
-Each new or snapshot-resumed VM session receives one configured timeout
-(default 60 minutes). Same-session attach keeps that deadline. Snapshot resume
-starts a fresh session with the stored timeout. Terminal input, display
-checks, and WebSocket pings do not extend the lease.
+Each VM session owns one devbox-managed tmux session named `devbox`. The
+terminal shell derives a socket directory from
+`sandbox.currentSession().sessionId`, removes obsolete directories that match
+the devbox-owned naming convention, and starts `tmux new-session -A -s devbox`.
 
-`Ctrl-]` (or stdin EOF) detaches the remote TTY without stopping the Sandbox.
-Explicit `--pause`, `--stop`, and `--rm` remain the operator-owned early-stop
-paths. When Vercel rejects a create request above 45 minutes, the CLI keeps
-the redacted provider cause and appends the Hobby 45-minute and Pro or
-Enterprise 24-hour limits plus a `--timeout 45` example.
+`Ctrl-]`, stdin EOF, and a forced WebSocket close release the local terminal
+without stopping the VM session. A later attach in the same VM session uses the
+same socket and foreground process. A snapshot resume creates a new VM session
+and socket. User processes from the old VM session end, and runtime setup,
+display services, and public relays restart. The configured timeout applies to
+each new or snapshot-resumed VM session.
 
 `--list` reports Vercel records with `running`, `paused`, or `stopped` state.
 A stopped record with a retained snapshot is `paused` and includes its

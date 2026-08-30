@@ -143,17 +143,6 @@ describe('Vercel metadata', () => {
     });
   });
 
-  it('rejects removed session policy metadata', async () => {
-    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-removed-policy-'));
-    const store = createVercelBranchMetadataStore({
-      stateHome,
-      repoKey: 'github.com/acme/repo',
-      branch: 'feature/new',
-    });
-
-    await expect(store.write({ idlePauseMinutes: 15 } as never)).rejects.toThrow(/idlePauseMinutes/);
-  });
-
   it.each([
     ['zero', 0],
     ['negative', -4],

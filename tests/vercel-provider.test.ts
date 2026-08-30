@@ -740,7 +740,13 @@ describe('Vercel provider', () => {
     expect(currentLifecycle.attach).toHaveBeenCalledOnce();
     expect(terminal.attach).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: '/vercel/sandbox' }),
-      expect.objectContaining({ cwd: '/vercel/sandbox/repo' }),
+      expect.objectContaining({
+        cwd: '/vercel/sandbox/repo',
+        program: expect.objectContaining({
+          command: 'tmux',
+          args: expect.arrayContaining(['new-session', '-A', '-s', 'devbox', '-c', '/vercel/sandbox/repo']),
+        }),
+      }),
     );
     expect(confirmation).not.toHaveBeenCalled();
     expect(execQuiet).not.toHaveBeenCalled();
@@ -884,7 +890,8 @@ describe('Vercel provider', () => {
       || command.cmd === 'cat'
       || command.cmd === 'stat'
       || isRelayControl(command)
-      || (command.args?.[1] ?? '').includes('cat /vercel/.devbox/runtime/preparation.json')))
+      || (command.args?.[1] ?? '').includes('cat /vercel/.devbox/runtime/preparation.json')
+      || (command.args?.[1] ?? '').includes('tmux')))
       .toBe(true);
     expect(commands.filter(isRelayControl).map((command) => command.args?.[1])).toEqual(['status']);
     expect(terminal.attach).toHaveBeenCalledOnce();
