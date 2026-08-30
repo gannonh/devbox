@@ -300,6 +300,41 @@ describe('Vercel terminal adapter', () => {
     await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
   });
 
+  it('forwards real TTY input while the start frame send callback is pending', async () => {
+    const sockets: FakeWebSocket[] = [];
+    const terminal = createVercelTerminalAdapter({
+      createWebSocket: (url) => {
+        const socket = new FakeWebSocket(url);
+        socket.blockSends = true;
+        sockets.push(socket);
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const terminalStreams = streams(true);
+    const resultPromise = terminal.attach({
+      cwd: '/vercel/sandbox/repository',
+      openInteractive: async () => ({ url: 'wss://interactive.example/session', token: 'secret' }),
+    }, {
+      streams: terminalStreams,
+      signalSource: new EventEmitter(),
+      getSize: () => ({ cols: 80, rows: 24 }),
+    });
+    await vi.waitFor(() => expect(sockets[0]?.sent).toHaveLength(1));
+
+    terminalStreams.input.write('printf ready\n');
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    try {
+      expect(sockets[0].sent).toHaveLength(2);
+      expect(sockets[0].sent[1]).toEqual(Buffer.from('printf ready\n'));
+    } finally {
+      sockets[0].releaseSend();
+      sockets[0].releaseSend();
+      sockets[0].emitMessage(JSON.stringify({ type: 'exit', code: 0 }), false);
+      await expect(resultPromise).resolves.toEqual({ status: 'exited', code: 0 });
+    }
+  });
+
   it('sends periodic protocol pings and stops before pending output drains', async () => {
     const sockets: FakeWebSocket[] = [];
     const { scheduler, timers } = manualHeartbeatScheduler();
