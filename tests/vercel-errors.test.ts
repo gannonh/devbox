@@ -4,6 +4,7 @@ import {
   VercelCreationCompensationError,
   VercelRecoveryCleanupError,
 } from '../src/providers/vercel/lifecycle.js';
+import { VercelSdkError } from '../src/providers/vercel/client.js';
 import { VercelDisplayStartupError } from '../src/providers/vercel/display-startup.js';
 
 describe('Vercel provider errors', () => {
@@ -102,6 +103,47 @@ describe('Vercel provider errors', () => {
     expect(mapped.code).toBe('quota');
     expect(mapped.message).toContain('retry after 12');
     expect(mapped.message).not.toContain(token);
+  });
+
+  it('preserves a redacted create cause and adds a generic long-session hint', () => {
+    const token = 'long-session-secret';
+    const mapped = mapVercelError(
+      new VercelSdkError(
+        'Sandbox.getOrCreate',
+        new Error(`Sandbox timeout rejected: ${token}`),
+        [token],
+      ),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+        secrets: [token],
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).toContain('Sandbox timeout rejected');
+    expect(mapped.message).toContain('requested timeout: 60 minutes');
+    expect(mapped.message).toContain('Hobby supports up to 45 minutes');
+    expect(mapped.message).toContain('Pro and Enterprise support up to 24 hours');
+    expect(mapped.message).toContain('--timeout 45');
+    expect(mapped.message).not.toContain(token);
+  });
+
+  it('redacts obsolete session metadata with remove-and-recreate guidance', () => {
+    for (const detail of [
+      'Unknown Vercel branch metadata field(s): idlePauseMinutes',
+      'Unknown Vercel paused snapshot field(s): idlePausedAt',
+    ]) {
+      const mapped = mapVercelError(new Error(detail), {
+        action: 'attach',
+        branch: 'feature/ui',
+      });
+      expect(mapped.code).toBe('stale');
+      expect(mapped.message).toContain('--rm');
+      expect(mapped.message).toContain('create the box again');
+      expect(mapped.message).not.toContain(detail);
+    }
   });
 
   it('classifies every required failure category before generic API handling', () => {

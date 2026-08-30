@@ -28,6 +28,7 @@ function sandbox(): VercelSandboxHandle {
     name: 'runtime-sync',
     status: 'running',
     cwd: '/vercel/sandbox',
+    currentSession: () => ({ sessionId: 'runtime-sync' }),
   } as unknown as VercelSandboxHandle;
 }
 
@@ -126,29 +127,31 @@ function markerOf(harness: ReattachHarness): Record<string, unknown> | undefined
 
 describe('preparation evidence', () => {
   const actual = {
-    sandboxId: 'sbx-1',
-    revision: HEAD,
-    githubTokenHash: 'tok-hash',
-    environmentHash: 'env-hash',
+    sandboxName: 'runtime-sync',
+    sessionId: 'runtime-session' as never,
+    sourceRevision: HEAD,
+    imageDigest: 'image-digest',
+    githubTokenSha256: 'tok-hash',
+    envSha256: 'env-hash',
   };
 
-  it('accepts only an exact four-field match', () => {
+  it('accepts only an exact session and preparation match', () => {
     expect(evaluatePreparation({ ...actual }, actual)).toBe(true);
   });
 
   it('rejects each stale field', () => {
-    expect(evaluatePreparation({ ...actual, sandboxId: 'sbx-2' }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, revision: 'c'.repeat(40) }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, githubTokenHash: 'rotated' }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, environmentHash: 'changed' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, sessionId: 'other-session' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, sourceRevision: 'c'.repeat(40) }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, githubTokenSha256: 'rotated' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, envSha256: 'changed' }, actual)).toBe(false);
   });
 
   it('rejects malformed evidence', () => {
     expect(evaluatePreparation(null, actual)).toBe(false);
     expect(evaluatePreparation('marker', actual)).toBe(false);
     expect(evaluatePreparation([], actual)).toBe(false);
-    expect(evaluatePreparation({ sandboxId: 'sbx-1' }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, revision: 7 }, actual)).toBe(false);
+    expect(evaluatePreparation({ sandboxName: 'runtime-sync' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, sourceRevision: 7 }, actual)).toBe(false);
   });
 });
 
@@ -160,9 +163,8 @@ describe('Vercel cheap re-attach', () => {
     expect(boot.reused).toBe(false);
     const marker = markerOf(harness);
     expect(marker).toEqual({
-      kind: 'running-session',
       sandboxName: 'runtime-sync',
-      sessionInstanceId: 'runtime-sync',
+      sessionId: 'runtime-sync',
       sourceRevision: HEAD,
       imageDigest: '',
       githubTokenSha256: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
@@ -232,7 +234,6 @@ describe('Vercel cheap re-attach', () => {
       client: harness.client,
       sandbox: resumed,
       mode: 'attach',
-      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
     }));
 
     expect(result).toMatchObject({
@@ -247,8 +248,7 @@ describe('Vercel cheap re-attach', () => {
     expect(harness.uploads.slice(uploadCount).flat().map((file) => file.path))
       .toContain(VERCEL_RUNTIME_PREPARATION_PATH);
     expect(markerOf(harness)).toMatchObject({
-      kind: 'running-session',
-      sessionInstanceId: 'resumed-session',
+      sessionId: 'resumed-session',
     });
 
     harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
@@ -258,7 +258,6 @@ describe('Vercel cheap re-attach', () => {
       client: harness.client,
       sandbox: resumed,
       mode: 'attach',
-      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
     }));
     expect(later).toMatchObject({
       reused: true,
@@ -292,7 +291,6 @@ describe('Vercel cheap re-attach', () => {
       client: harness.client,
       sandbox: resumed,
       mode: 'attach',
-      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
     }));
 
     expect(result).toMatchObject({

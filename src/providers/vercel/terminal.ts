@@ -2,11 +2,6 @@ import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
 import { redactSecrets } from './redaction.js';
 import {
-  startTimeoutExtension,
-  type VercelTerminalTimeoutOptions,
-  type VercelTerminalTimeoutScheduler,
-} from './terminal-timeout.js';
-import {
   BoundedBufferQueue,
   DEFAULT_BACKPRESSURE_TIMEOUT_MS,
   DEFAULT_MAX_PENDING_INPUT_BYTES,
@@ -20,8 +15,12 @@ import {
   validateTimeoutLimit,
 } from './terminal-flow.js';
 
-export type { VercelTerminalTimeoutOptions, VercelTerminalTimeoutScheduler } from './terminal-timeout.js';
-export type VercelTerminalHeartbeatScheduler = VercelTerminalTimeoutScheduler;
+export interface VercelTerminalScheduler {
+  setTimeout(callback: () => void, delay: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+export type VercelTerminalHeartbeatScheduler = VercelTerminalScheduler;
 
 const OPEN = 1;
 const DEFAULT_COLUMNS = 80;
@@ -75,7 +74,6 @@ export interface VercelInteractiveSandbox {
     url: string;
     token: string;
   }>;
-  extendTimeout?: (durationMs: number, options?: { signal?: AbortSignal }) => Promise<void>;
 }
 
 export interface VercelTerminalFailure {
@@ -93,27 +91,29 @@ export type VercelTerminalResult =
 
 export interface VercelTerminalOptions {
   cwd?: string;
-  args?: readonly string[];
   env?: Readonly<Record<string, string>>;
   streams?: VercelTerminalStreams;
   /** Provider-neutral TTY fact; avoids consulting a global process stream. */
   tty?: boolean;
   signal?: AbortSignal;
-  /** Records real terminal input as remote user activity. */
-  onInputActivity?: () => void;
+  program?: VercelTerminalProgram;
   signalSource?: EventEmitter;
   detachSignals?: readonly ('SIGTERM' | 'SIGHUP')[];
   getSize?: () => VercelTerminalSize;
   connectionTimeoutMs?: number;
-  connectionTimeoutScheduler?: VercelTerminalTimeoutScheduler;
+  connectionTimeoutScheduler?: VercelTerminalScheduler;
   heartbeatIntervalMs?: number;
   heartbeatScheduler?: VercelTerminalHeartbeatScheduler;
-  timeoutExtension?: VercelTerminalTimeoutOptions | false;
   /** Return true to suppress the adapter's direct stderr rendering. */
   onError?: (failure: VercelTerminalFailure) => boolean;
   maxPendingInputBytes?: number;
   maxPendingOutputBytes?: number;
   backpressureTimeoutMs?: number;
+}
+
+export interface VercelTerminalProgram {
+  command: string;
+  args?: readonly string[];
 }
 
 export interface VercelTerminalAdapterDependencies {
@@ -191,7 +191,7 @@ async function attachTerminal(input: {
   const connectionTimeoutScheduler = options.connectionTimeoutScheduler ?? {
     setTimeout: (callback: () => void, delay: number) => setTimeout(callback, delay),
     clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
-  } satisfies VercelTerminalTimeoutScheduler;
+  } satisfies VercelTerminalScheduler;
 
   let socket: VercelTerminalWebSocket | undefined;
   let removeEarlyMessageListener = () => {};
@@ -252,10 +252,12 @@ async function attachTerminal(input: {
     const size = getSize();
     validateSize(size);
     const env = { TERM, PS1, ...(options.env ?? {}) };
+    const program = options.program ?? { command: 'sh', args: [] };
+    if (!program.command.trim()) throw new Error('Terminal program command must not be empty');
     startFrame = JSON.stringify({
       type: 'start',
-      command: 'sh',
-      args: [...(options.args ?? [])],
+      command: program.command,
+      args: [...(program.args ?? [])],
       env: Object.entries(env).map(([key, value]) => `${key}=${value}`),
       cwd: options.cwd ?? sandbox.cwd ?? '/vercel/sandbox',
       cols: size.cols,
@@ -310,12 +312,10 @@ async function attachTerminal(input: {
     let settled = false;
     let cleaned = false;
     let stopHeartbeat = () => {};
-    let stopTimeoutExtension = () => {};
     let outputDrainTimer: ReturnType<typeof setTimeout> | undefined;
     let inputSendTimer: ReturnType<typeof setTimeout> | undefined;
     let socketFlowPaused = false;
     let inputFlowPaused = false;
-    const sessionController = new AbortController();
     let lastFailure: VercelTerminalFailure | undefined;
     const reportError = (error: unknown): VercelTerminalFailure => {
       lastFailure = reportFailure(error, [interactive.token]);
@@ -356,8 +356,6 @@ async function attachTerminal(input: {
         socketFlowPaused = false;
       }
       inputFlowPaused = false;
-      stopTimeoutExtension();
-      sessionController.abort();
       if (stdinIsTTY && streams.stdin.setRawMode && wasRaw !== undefined) {
         try {
           streams.stdin.setRawMode(wasRaw);
@@ -616,13 +614,6 @@ async function attachTerminal(input: {
         requestTerminal({ status: 'detached', reason: 'error' });
         return;
       }
-      if (input.length > 0) {
-        try {
-          options.onInputActivity?.();
-        } catch {
-          // Activity recording must not break terminal input.
-        }
-      }
       const escapeAt = input.indexOf(0x1d);
       if (escapeAt >= 0) {
         stopHeartbeat();
@@ -740,23 +731,6 @@ async function attachTerminal(input: {
         finish({ status: 'detached', reason: 'error' });
       },
     });
-    if (settled) return;
-    if (options.timeoutExtension !== false) {
-      try {
-        stopTimeoutExtension = startTimeoutExtension(
-          sandbox,
-          options.timeoutExtension ?? {},
-          sessionController.signal,
-          (error) => {
-            reportError(error);
-            finish({ status: 'detached', reason: 'error' });
-          },
-        );
-      } catch (error) {
-        reportError(error);
-        finish({ status: 'detached', reason: 'error' });
-      }
-    }
     if (settled) return;
     if (earlyMessageOverflow) {
       reportError(new Error('Terminal early message buffer limit exceeded'));
@@ -890,7 +864,7 @@ async function waitForOpen(
   options: {
     errorGuard: () => void;
     timeoutMs: number;
-    scheduler: VercelTerminalTimeoutScheduler;
+    scheduler: VercelTerminalScheduler;
   },
 ): Promise<() => void> {
   if (socket.readyState === OPEN) return options.errorGuard;

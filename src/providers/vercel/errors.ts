@@ -36,6 +36,7 @@ export interface VercelErrorContext {
   action?: string;
   operation?: 'source' | 'terminal' | 'api';
   branch?: string;
+  requestedTimeoutMs?: number;
   secrets?: readonly string[];
 }
 
@@ -69,6 +70,20 @@ export function mapVercelError(
   const detail = safeDetail(error, context.secrets ?? []);
   const command = recoveryCommand(context);
   const message = detail.toLowerCase();
+
+  if (isObsoleteSessionMetadata(message)) {
+    return new VercelProviderError(
+      'stale',
+      `Stored Vercel metadata contains removed session policy state; run ${removeRecoveryCommand(context)}, then create the box again.`,
+      2,
+    );
+  }
+  if (isUnsupportedLongSessionCreate(context, operation)) {
+    return new VercelProviderError(
+      'api',
+      `${detail || 'Vercel rejected the requested session duration'}; requested timeout: ${Math.round(context.requestedTimeoutMs! / 60_000)} minutes. Vercel Hobby supports up to 45 minutes; Pro and Enterprise support up to 24 hours. Try --timeout 45.`,
+    );
+  }
 
   if (isMetadataLockContention(error, message)) {
     return new VercelProviderError(
@@ -316,6 +331,20 @@ function isConfirmationError(message: string): boolean {
 function isMetadataLockContention(error: unknown, message: string): boolean {
   return codeOf(error) === 'ELOCKED'
     || /^timed out waiting for vercel metadata lock: .+$/.test(message);
+}
+
+function isObsoleteSessionMetadata(message: string): boolean {
+  return message.includes('idlepauseminutes') || message.includes('idlepausedat');
+}
+
+function isUnsupportedLongSessionCreate(
+  context: VercelErrorContext,
+  operation: string | undefined,
+): boolean {
+  return context.action === 'up'
+    && operation === 'Sandbox.getOrCreate'
+    && context.requestedTimeoutMs !== undefined
+    && context.requestedTimeoutMs > 45 * 60_000;
 }
 
 function isScopeLinkError(message: string, code: string | undefined): boolean {

@@ -139,17 +139,6 @@ export type {
   VercelStopReport,
 } from './vercel/lifecycle.js';
 export {
-  DEFAULT_IDLE_PAUSE_MINUTES,
-  decideIdlePause,
-  parseIdlePauseMinutes,
-  resolveIdlePauseMinutes,
-  startIdlePauseMonitor,
-} from './vercel/idle-pause.js';
-export type {
-  IdlePauseObservation,
-  IdlePauseScheduler,
-} from './vercel/idle-pause.js';
-export {
   REDACTED_SECRET,
   redactSecrets,
   redactedError,
@@ -179,6 +168,18 @@ export type {
 export {
   createVercelTerminalAdapter,
 } from './vercel/terminal.js';
+export {
+  createVercelSessionLease,
+  currentVercelSessionId,
+  formatVercelSessionLease,
+  parseVercelSessionId,
+} from './vercel/session-lease.js';
+export type {
+  VercelSessionDeadline,
+  VercelSessionId,
+  VercelSessionLease,
+  VercelSessionLeaseOptions,
+} from './vercel/session-lease.js';
 export type {
   VercelInteractiveSandbox,
   VercelTerminalAdapter,
@@ -191,8 +192,8 @@ export type {
   VercelTerminalResult,
   VercelTerminalSize,
   VercelTerminalStreams,
-  VercelTerminalTimeoutOptions,
-  VercelTerminalTimeoutScheduler,
+  VercelTerminalProgram,
+  VercelTerminalScheduler,
   VercelTerminalWebSocket,
 } from './vercel/terminal.js';
 export type {

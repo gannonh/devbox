@@ -100,7 +100,6 @@ export interface VercelSandboxHandle {
   readonly totalIngressBytes?: number;
   readonly totalEgressBytes?: number;
   openInteractive(options?: { signal?: AbortSignal }): Promise<{ url: string; token: string }>;
-  extendTimeout(durationMs: number, options?: { signal?: AbortSignal }): Promise<void>;
   listSessions(params?: { signal?: AbortSignal }): Promise<unknown>;
   stop(params?: { signal?: AbortSignal }): Promise<VercelStopResult>;
   delete(params?: { signal?: AbortSignal }): Promise<void>;
@@ -484,13 +483,6 @@ function wrapSandboxHandle(
           'Sandbox.openInteractive',
           secrets,
           () => target.openInteractive(options),
-        );
-      }
-      if (property === 'extendTimeout') {
-        return (durationMs: number, options?: { signal?: AbortSignal }) => callWithSecrets(
-          'Sandbox.extendTimeout',
-          secrets,
-          () => target.extendTimeout(durationMs, options),
         );
       }
       if (property === 'listSessions') {

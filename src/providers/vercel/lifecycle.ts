@@ -173,8 +173,6 @@ export interface VercelLifecycleOptions {
   client?: VercelSandboxClient;
   timeoutMs?: number;
   vcpus?: number;
-  /** Mutable branch policy. Zero disables automatic idle pause. */
-  idlePauseMinutes?: number;
   onNotice?: (notice: string) => void | Promise<void>;
   cleanup?: Pick<VercelCleanupOptions, 'timeoutMs' | 'maxAttempts' | 'backoffMs' | 'sleep'>;
 }
@@ -288,7 +286,6 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             ...(existing?.residual === undefined ? {} : { residual: existing.residual }),
             ...preserveDisplayCredentials(existing),
             configuration: existing?.configuration ?? configuration,
-            ...(options.idlePauseMinutes === undefined ? {} : { idlePauseMinutes: options.idlePauseMinutes }),
           }));
         } catch (error) {
           if (createdSandbox === undefined) throw error;
@@ -328,11 +325,6 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         }
         const sandbox = await getExistingSandbox(context, context.credentials, identity.name, true);
         validateSandboxIdentity(sandbox, context, identity);
-        if (options.idlePauseMinutes !== undefined && metadata?.idlePauseMinutes !== options.idlePauseMinutes) {
-          await writeBranchMetadata(context, patchBranchMetadata(metadata, {
-            idlePauseMinutes: options.idlePauseMinutes,
-          }));
-        }
         return sandbox;
       });
     },
@@ -419,7 +411,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
               : { createdAt: metadata.pausedSnapshot.createdAt }),
           });
         const pausedSnapshot: VercelPausedSnapshot | undefined = snapshot === undefined
-          ? withoutIdlePauseMarker(metadata?.pausedSnapshot)
+          ? metadata?.pausedSnapshot
           : {
             id: snapshot.id,
             sourceSessionId: snapshot.sourceSessionId ?? sandboxIdentifier(sandbox),
@@ -603,17 +595,6 @@ function preserveDisplayCredentials(
   return metadata?.displayCredentials === undefined
     ? {}
     : { displayCredentials: metadata.displayCredentials };
-}
-
-function withoutIdlePauseMarker(
-  snapshot: VercelPausedSnapshot | undefined,
-): VercelPausedSnapshot | undefined {
-  if (snapshot === undefined) return undefined;
-  return {
-    id: snapshot.id,
-    sourceSessionId: snapshot.sourceSessionId,
-    ...(snapshot.createdAt === undefined ? {} : { createdAt: snapshot.createdAt }),
-  };
 }
 
 async function writeBranchMetadata(

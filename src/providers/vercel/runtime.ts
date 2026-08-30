@@ -10,8 +10,11 @@ import {
   VercelDisplayStartupError,
 } from './display-startup.js';
 import { launchBackgroundSetup, type VercelSetupStatus } from './setup.js';
-import { sandboxIdentifier } from './lifecycle.js';
-import type { VercelBranchMetadataStore, VercelPausedSnapshot } from './metadata.js';
+import {
+  currentVercelSessionId,
+  type VercelSessionId,
+} from './session-lease.js';
+import type { VercelBranchMetadataStore } from './metadata.js';
 import { parseVercelImageReference } from './image.js';
 import type { ShellRunner } from '../../lib/shell.js';
 import {
@@ -43,34 +46,21 @@ export interface RuntimePreparationBase {
   envSha256: string;
 }
 
-export type RuntimePreparationMarker = RuntimePreparationBase & (
-  | {
-    kind: 'running-session';
-    sessionInstanceId: string;
-  }
-  | {
-    kind: 'snapshot';
-    snapshotId: string;
-  }
-);
+export type RuntimePreparationMarker = RuntimePreparationBase & {
+  sessionId: VercelSessionId;
+};
 
 export interface RuntimePreparationActualEvidence extends RuntimePreparationBase {
-  sessionInstanceId: string;
+  sessionId: VercelSessionId;
   sourceSnapshotId?: string;
 }
 
-/** Legacy marker shape accepted for one-way compatibility with older boxes. */
-export interface LegacyRuntimePreparationMarker {
-  sandboxId: string;
-  revision: string;
-  githubTokenHash: string;
-  environmentHash: string;
-}
+export type RuntimePreparationActual = RuntimePreparationActualEvidence;
 
-export type RuntimePreparationActual =
-  | RuntimePreparationMarker
-  | RuntimePreparationActualEvidence
-  | LegacyRuntimePreparationMarker;
+export type RuntimeVmSession =
+  | { kind: 'new'; sessionId: VercelSessionId }
+  | { kind: 'same-session'; sessionId: VercelSessionId }
+  | { kind: 'snapshot-resumed'; sessionId: VercelSessionId; sourceSnapshotId: string };
 
 export type RuntimePreparationEvidenceKind =
   | 'full'
@@ -112,7 +102,6 @@ export interface PrepareSandboxRuntimeOptions {
   signal?: AbortSignal;
   displayCredentialsStore?: VercelBranchMetadataStore;
   secrets?: string[];
-  pausedSnapshot?: VercelPausedSnapshot;
   /** `attach` attempts an evidence-backed skip before full preparation. */
   mode?: 'boot' | 'attach';
 }
@@ -128,101 +117,66 @@ export function evaluatePreparation(
   marker: unknown,
   actual: RuntimePreparationActual,
 ): boolean {
-  if (typeof marker !== 'object' || marker === null || Array.isArray(marker)) return false;
-  const candidate = marker as Record<string, unknown>;
-  if (isLegacyPreparation(actual)) {
-    return (
-      candidate.sandboxId === actual.sandboxId &&
-      candidate.revision === actual.revision &&
-      candidate.githubTokenHash === actual.githubTokenHash &&
-      candidate.environmentHash === actual.environmentHash
-    );
+  if (!hasPreparationMarker(marker)) return false;
+  return classifyRuntimeVmSession(marker, actual).kind === 'same-session'
+    && marker.sourceRevision === actual.sourceRevision
+    && marker.imageDigest === actual.imageDigest
+    && marker.githubTokenSha256 === actual.githubTokenSha256
+    && marker.envSha256 === actual.envSha256;
+}
+
+/**
+ * Classify the VM before considering hashes or snapshot metadata.
+ *
+ * A matching preparation session is the only same-session proof. A different
+ * marker session plus a provider source snapshot is a snapshot resume, even
+ * when runtime files need refreshing afterward.
+ */
+export function classifyRuntimeVmSession(
+  marker: unknown,
+  actual: RuntimePreparationActualEvidence,
+): RuntimeVmSession {
+  if (!hasPreparationMarker(marker)) return { kind: 'new', sessionId: actual.sessionId };
+  if (marker.sessionId === actual.sessionId) {
+    return { kind: 'same-session', sessionId: actual.sessionId };
   }
-  if (candidate.kind === 'running-session') {
-    const actualSessionInstanceId = 'sessionInstanceId' in actual ? actual.sessionInstanceId : undefined;
-    return (
-      candidate.sandboxName === actual.sandboxName &&
-      candidate.sessionInstanceId === actualSessionInstanceId &&
-      candidate.sourceRevision === actual.sourceRevision &&
-      candidate.imageDigest === actual.imageDigest &&
-      candidate.githubTokenSha256 === actual.githubTokenSha256 &&
-      candidate.envSha256 === actual.envSha256
-    );
+  if (actual.sourceSnapshotId !== undefined) {
+    return {
+      kind: 'snapshot-resumed',
+      sessionId: actual.sessionId,
+      sourceSnapshotId: actual.sourceSnapshotId,
+    };
   }
-  if (candidate.kind === 'snapshot') {
-    const actualSnapshotId = 'sourceSnapshotId' in actual
-      ? actual.sourceSnapshotId
-      : 'kind' in actual && actual.kind === 'snapshot' ? actual.snapshotId : undefined;
-    return (
-      candidate.sandboxName === actual.sandboxName &&
-      candidate.snapshotId === actualSnapshotId &&
-      candidate.sourceRevision === actual.sourceRevision &&
-      candidate.imageDigest === actual.imageDigest &&
-      candidate.githubTokenSha256 === actual.githubTokenSha256 &&
-      candidate.envSha256 === actual.envSha256
-    );
-  }
-  return false;
+  return { kind: 'new', sessionId: actual.sessionId };
 }
 
 /** Classify the evidence before deciding which preparation work is safe. */
 export function classifyPreparation(
   marker: unknown,
   actual: RuntimePreparationActualEvidence,
-  pausedSnapshot?: VercelPausedSnapshot,
 ): RuntimePreparationEvidenceKind {
-  if (typeof marker !== 'object' || marker === null || Array.isArray(marker)) return 'full';
-  const candidate = marker as Record<string, unknown>;
-  if ('sandboxId' in candidate || 'revision' in candidate) {
-    if (candidate.revision !== actual.sourceRevision) return 'full';
-    const hashesMatch = candidate.githubTokenHash === actual.githubTokenSha256
-      && candidate.environmentHash === actual.envSha256;
-    if (actual.sourceSnapshotId !== undefined) {
-      return pausedSnapshot?.id === actual.sourceSnapshotId
-        && pausedSnapshot.sourceSessionId === candidate.sandboxId
-        ? hashesMatch ? 'snapshot' : 'snapshot-sync'
-        : 'full';
-    }
-    if (candidate.sandboxId !== actual.sessionInstanceId) return 'full';
-    return hashesMatch ? 'running-session' : 'running-sync';
-  }
-  const stable = candidate.sandboxName === actual.sandboxName
-    && candidate.sourceRevision === actual.sourceRevision
-    && candidate.imageDigest === actual.imageDigest;
-  if (!stable) return 'full';
-  const hashesMatch = candidate.githubTokenSha256 === actual.githubTokenSha256
-    && candidate.envSha256 === actual.envSha256;
-  if (candidate.kind === 'running-session' && typeof candidate.sessionInstanceId === 'string') {
-    // Once a resumed session has rewritten the marker, its exact current
-    // session ID is sufficient proof on later attaches. The SDK may continue
-    // to expose the session's sourceSnapshotId for its whole lifetime.
-    if (candidate.sessionInstanceId === actual.sessionInstanceId) {
-      return hashesMatch ? 'running-session' : 'running-sync';
-    }
-    if (
-      actual.sourceSnapshotId !== undefined
-      && pausedSnapshot?.id === actual.sourceSnapshotId
-      && pausedSnapshot.sourceSessionId === candidate.sessionInstanceId
-    ) {
-      return hashesMatch ? 'snapshot' : 'snapshot-sync';
-    }
-    return 'full';
-  }
-  if (candidate.kind === 'snapshot' && typeof candidate.snapshotId === 'string') {
-    if (candidate.snapshotId !== actual.sourceSnapshotId) return 'full';
-    return hashesMatch ? 'snapshot' : 'snapshot-sync';
-  }
-  return 'full';
+  const vmSession = classifyRuntimeVmSession(marker, actual);
+  if (vmSession.kind === 'new') return 'full';
+  if (!hasPreparationMarker(marker)) return 'full';
+  const stable = marker.sandboxName === actual.sandboxName
+    && marker.sourceRevision === actual.sourceRevision
+    && marker.imageDigest === actual.imageDigest;
+  if (!stable) return vmSession.kind === 'snapshot-resumed' ? 'snapshot' : 'full';
+  const hashesMatch = marker.githubTokenSha256 === actual.githubTokenSha256
+    && marker.envSha256 === actual.envSha256;
+  if (vmSession.kind === 'snapshot-resumed') return hashesMatch ? 'snapshot' : 'snapshot-sync';
+  return hashesMatch ? 'running-session' : 'running-sync';
 }
 
-function isLegacyPreparation(actual: RuntimePreparationActual): actual is LegacyRuntimePreparationMarker {
-  return 'sandboxId' in actual;
-}
-
-function isLegacyMarker(marker: unknown): marker is LegacyRuntimePreparationMarker {
-  return isRecord(marker)
-    && typeof marker.sandboxId === 'string'
-    && typeof marker.revision === 'string';
+function hasPreparationMarker(value: unknown): value is RuntimePreparationMarker {
+  if (!isRecord(value)) return false;
+  return typeof value.sandboxName === 'string'
+    && typeof value.sourceRevision === 'string'
+    && typeof value.imageDigest === 'string'
+    && typeof value.githubTokenSha256 === 'string'
+    && typeof value.envSha256 === 'string'
+    && typeof value.sessionId === 'string'
+    && value.sessionId.trim() !== '';
 }
 
 function environmentStateHash(environment: Record<string, string>): string {
@@ -324,20 +278,22 @@ export async function prepareSandboxRuntime(
   if (options.mode === 'attach' || options.mode === 'boot') {
     const evidence = await readPreparationEvidence(options);
     if (evidence !== null) {
-      const actual: RuntimePreparationActualEvidence = {
-        sandboxName: options.sandbox.name,
-        sessionInstanceId: sandboxIdentifier(options.sandbox),
-        sourceRevision: evidence.revision,
-        imageDigest: sandboxImageDigest(options.sandbox),
-        githubTokenSha256: githubTokenHash,
-        envSha256: environmentHash,
-        ...(options.sandbox.sourceSnapshotId === undefined
-          ? {}
-          : { sourceSnapshotId: options.sandbox.sourceSnapshotId }),
-      };
-      const evidenceKind = classifyPreparation(evidence.marker, actual, options.pausedSnapshot);
-      if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
-      if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
+      const sessionId = currentVercelSessionId(options.sandbox);
+      if (sessionId) {
+        const actual: RuntimePreparationActualEvidence = {
+          sandboxName: options.sandbox.name,
+          sessionId,
+          sourceRevision: evidence.revision,
+          imageDigest: sandboxImageDigest(options.sandbox),
+          githubTokenSha256: githubTokenHash,
+          envSha256: environmentHash,
+          ...(options.sandbox.sourceSnapshotId === undefined
+            ? {}
+            : { sourceSnapshotId: options.sandbox.sourceSnapshotId }),
+        };
+        const evidenceKind = classifyPreparation(evidence.marker, actual);
+        if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
+        if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
         await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
         // Same relaunch semantics as reusePreparedRuntime: a snapshot can retain
         // setup.status=running after --pause killed the setup PID. Verify/restart.
@@ -349,9 +305,8 @@ export async function prepareSandboxRuntime(
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         }));
         await writePreparationMarker(options, secrets, {
-          kind: 'running-session',
           sandboxName: options.sandbox.name,
-          sessionInstanceId: actual.sessionInstanceId,
+          sessionId: actual.sessionId,
           sourceRevision: actual.sourceRevision,
           imageDigest: actual.imageDigest,
           githubTokenSha256: githubTokenHash,
@@ -359,10 +314,11 @@ export async function prepareSandboxRuntime(
         });
         return {
           setupStatus,
-          reused: !(evidenceKind === 'running-sync' && isLegacyMarker(evidence.marker)),
+          reused: true,
           evidence: evidenceKind,
           snapshotResumed: evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync',
         };
+        }
       }
     }
   }
@@ -375,12 +331,12 @@ export async function prepareSandboxRuntime(
     ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   }));
-  if (revision !== undefined) {
+  const sessionId = currentVercelSessionId(options.sandbox);
+  if (revision !== undefined && sessionId !== null) {
     // Written last: moving it earlier would let a crash mid-preparation fake evidence.
     await writePreparationMarker(options, secrets, {
-      kind: 'running-session',
       sandboxName: options.sandbox.name,
-      sessionInstanceId: sandboxIdentifier(options.sandbox),
+      sessionId,
       sourceRevision: revision,
       imageDigest: sandboxImageDigest(options.sandbox),
       githubTokenSha256: githubTokenHash,

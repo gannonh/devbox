@@ -16,6 +16,7 @@ import { DEFAULT_APP_PORT_LABEL, type VercelRelayMapping } from './app-relay.js'
 import type { SandboxRoute, VercelSandboxHandle } from './client.js';
 import type { ProviderBranchRequest } from '../types.js';
 import { renderSetupNotice, type VercelSetupStatus } from './setup.js';
+import { formatVercelSessionLease, type VercelSessionLease } from './session-lease.js';
 
 export interface RenderedVercelRoute {
   route: SandboxRoute;
@@ -87,6 +88,7 @@ export async function renderVercelBlock(
   token: string,
   headline: string,
   appPorts?: AppPortFlowResult,
+  lease?: VercelSessionLease,
 ): Promise<void> {
   const routes = await renderedRoutesForSandbox(
     sandbox,
@@ -97,6 +99,9 @@ export async function renderVercelBlock(
   );
   request.stderr.write(`${headline}\n`);
   for (const rendered of routes) request.stderr.write(`  ${rendered.line}\n`);
+  if (lease) {
+    for (const line of formatVercelSessionLease(lease)) request.stderr.write(`${line}\n`);
+  }
   if (routes.some(({ route }) => route.port === DEVBOX_NOVNC_PROXY_PORT)) {
     request.stderr.write(`  access code: ${token}\n`);
   }
@@ -112,8 +117,9 @@ export async function renderVercelReadyBlock(
   setupStatus: VercelSetupStatus | null,
   token: string,
   appPorts?: AppPortFlowResult,
+  lease?: VercelSessionLease,
 ): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox ready', appPorts);
+  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox ready', appPorts, lease);
 }
 
 export async function renderVercelAttachNotice(
@@ -122,8 +128,9 @@ export async function renderVercelAttachNotice(
   setupStatus: VercelSetupStatus | null,
   token: string,
   appPorts?: AppPortFlowResult,
+  lease?: VercelSessionLease,
 ): Promise<void> {
-  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed', appPorts);
+  await renderVercelBlock(request, sandbox, setupStatus, token, 'Vercel devbox resumed', appPorts, lease);
 }
 
 /**

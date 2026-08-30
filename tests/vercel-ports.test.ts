@@ -240,7 +240,6 @@ describe('Vercel devcontainer ports', () => {
       persistent: true,
       tags: { ...identity.tags },
       openInteractive: async () => ({ url: 'wss://example.test', token: 'token' }),
-      extendTimeout: async () => {},
       listSessions: async () => [],
       stop: async () => ({ id: 'session', status: 'stopped' }),
       delete: async () => {},

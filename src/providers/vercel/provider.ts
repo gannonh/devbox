@@ -25,6 +25,7 @@ import {
 import {
   VercelLifecycleError,
   createVercelLifecycle,
+  DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
   sandboxIdentifier,
   type VercelLifecycle,
   type VercelLifecycleOptions,
@@ -76,20 +77,12 @@ import {
 } from './app-port-flow.js';
 import { verifyRelayMappings, type VercelRelayMapping } from './app-relay.js';
 import {
-  createHeartbeatWriter,
-  readRemoteHeartbeat,
-  resolveIdlePauseMinutes,
-  startIdlePauseMonitor,
-  type HeartbeatWriter,
-  type IdlePauseMonitorHandle,
-  type IdlePauseScheduler,
-} from './idle-pause.js';
-import {
   renderVercelAttachNotice,
   renderVercelReadyBlock,
   renderVercelRoutes,
   resolveRouteLabels,
 } from './provider-routes.js';
+import { createVercelSessionLease } from './session-lease.js';
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -101,13 +94,6 @@ export interface VercelConfirmationBoundary {
   confirm: (message: string, scope: VercelScope) => boolean | Promise<boolean>;
 }
 export type VercelOpener = (url: string) => void | Promise<void>;
-
-export interface VercelIdlePauseTestHooks {
-  scheduler?: IdlePauseScheduler;
-  now?: () => number;
-  pollIntervalMs?: number;
-  readyAtMs?: number;
-}
 
 export interface VercelProviderOptions {
   runner?: ShellRunner;
@@ -124,8 +110,6 @@ export interface VercelProviderOptions {
   signalSource?: EventEmitter;
   /** Injection seam for the public app-port confirmation prompt. */
   appPortPrompt?: AppPortPrompt;
-  /** Test-only idle-monitor clock and scheduler controls. */
-  idlePause?: VercelIdlePauseTestHooks;
 }
 
 interface PreparedOperation {
@@ -227,9 +211,6 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
         mode: 'boot' as const,
-        ...(prepared.metadata?.pausedSnapshot === undefined
-          ? {}
-          : { pausedSnapshot: prepared.metadata.pausedSnapshot }),
       };
       const runtime = await prepareSandboxRuntime(runtimeOptions);
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
@@ -247,24 +228,16 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       if (appPorts !== undefined && runtime.evidence !== 'full') {
         await clearPausedSnapshot(prepared.branchStore, prepared.metadata);
       }
-      renderIdlePauseNotice(request, prepared.metadata);
-      const idle = await startIdleControl(
-        request,
-        prepared.metadata,
-        lifecycle,
-        prepared.branchStore,
-        client,
-        sandbox,
-        secrets,
-        runtime.snapshotResumed,
-        options.idlePause,
-      );
       await renderVercelReadyBlock(
         request,
         sandbox,
         runtime.setupStatus,
         await displayToken(prepared.branchStore, secrets),
         appPorts,
+        createVercelSessionLease({
+          configuredTimeoutMs: configuredSessionTimeout(request, sandbox, prepared.metadata),
+          expiresAt: sandbox.expiresAt,
+        }),
       );
       return terminalResult(
         request,
@@ -274,7 +247,6 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         'up',
         prepared.source.remote.repository,
         secrets,
-        idle,
       );
     }),
     attach: (request) => providerErrors(request, 'attach', async (secrets) => {
@@ -302,9 +274,6 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
         mode: 'attach' as const,
-        ...(prepared.metadata?.pausedSnapshot === undefined
-          ? {}
-          : { pausedSnapshot: prepared.metadata.pausedSnapshot }),
       };
       const runtime = await prepareSandboxRuntime(runtimeOptions);
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
@@ -327,29 +296,21 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       if (appPorts !== undefined && runtime.evidence !== 'full') {
         await clearPausedSnapshot(prepared.branchStore!, prepared.metadata);
       }
-      renderIdlePauseNotice(request, prepared.metadata);
       if (runtime.reused) {
         request.stderr.write(runtime.snapshotResumed
-          ? 'Resumed from the retained snapshot (runtime services refreshed)\n'
+          ? 'Resumed from the retained snapshot; prior user processes ended (runtime services refreshed)\n'
           : 'Re-entering the prepared sandbox (no re-provisioning)\n');
       }
-      const idle = await startIdleControl(
-        request,
-        prepared.metadata,
-        prepared.lifecycle,
-        prepared.branchStore!,
-        client,
-        sandbox,
-        secrets,
-        runtime.snapshotResumed,
-        options.idlePause,
-      );
       await renderVercelAttachNotice(
         request,
         sandbox,
         runtime.setupStatus,
         await displayToken(prepared.branchStore, secrets),
         appPorts,
+        createVercelSessionLease({
+          configuredTimeoutMs: configuredSessionTimeout(request, sandbox, prepared.metadata, false),
+          expiresAt: sandbox.expiresAt,
+        }),
       );
       return terminalResult(
         request,
@@ -359,7 +320,6 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         'attach',
         repository,
         secrets,
-        idle,
       );
     }),
     stop: (request) => providerErrors(request, 'stop', async (secrets) => {
@@ -591,6 +551,7 @@ async function prepareStored(
     false,
     origin.canonical,
     recovery,
+    action !== 'attach',
   );
   return {
     lifecycle,
@@ -637,6 +598,18 @@ function renderScope(
     : renderVercelScope(scope);
 }
 
+function configuredSessionTimeout(
+  request: ProviderBranchRequest,
+  sandbox: VercelSandboxHandle,
+  metadata: VercelBranchMetadata | null,
+  requestTakesPrecedence = true,
+): number {
+  return (requestTakesPrecedence ? request.timeoutMs : undefined)
+    ?? metadata?.configuration?.timeoutMs
+    ?? sandbox.timeout
+    ?? DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS;
+}
+
 function createLifecycle(
   request: ProviderBranchRequest | ProviderListRequest,
   options: VercelProviderOptions,
@@ -650,17 +623,17 @@ function createLifecycle(
   listOnly = false,
   repository?: string,
   recovery?: VercelRecoveryInput,
+  requestTimeoutTakesPrecedence = true,
 ): VercelLifecycle {
   const repoKey = source?.remote.canonical ?? repository;
   if (!repoKey) throw new Error('Vercel lifecycle repository is required');
   const stored = metadata?.configuration;
-  const requestedTimeoutMs = 'branch' in request ? request.timeoutMs : undefined;
+  const requestedTimeoutMs = requestTimeoutTakesPrecedence && 'branch' in request
+    ? request.timeoutMs
+    : undefined;
   const requestedVcpus = 'branch' in request ? request.vcpus : undefined;
   const timeoutMs = requestedTimeoutMs ?? stored?.timeoutMs;
   const vcpus = requestedVcpus ?? stored?.vcpus;
-  const idlePauseMinutes = 'branch' in request
-    ? resolveIdlePauseMinutes(request.env.DEVBOX_IDLE_PAUSE_MINUTES, metadata?.idlePauseMinutes)
-    : undefined;
   return injectedLifecycle ?? makeLifecycle({
     repoRoot: request.repoRoot,
     ...(source?.requestedBranch === undefined ? {} : { branch: source.requestedBranch }),
@@ -677,7 +650,6 @@ function createLifecycle(
     ...(recovery === undefined ? {} : { recovery }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(vcpus === undefined ? {} : { vcpus }),
-    ...(idlePauseMinutes === undefined ? {} : { idlePauseMinutes }),
     ...(options.credentialOptions === undefined ? {} : { credentialOptions: options.credentialOptions }),
   });
 }
@@ -833,7 +805,6 @@ async function terminalResult(
   action: 'up' | 'attach',
   repository: string,
   secrets: readonly string[],
-  idle?: IdleControl,
 ): Promise<ProviderActionResult> {
   const cwd = resolveVercelRepositoryCwd(sandbox.cwd, repository);
   const streams: VercelTerminalStreams = {
@@ -856,126 +827,17 @@ async function terminalResult(
     }),
     ...(request.runtimeEnvironment === undefined ? {} : { env: request.runtimeEnvironment }),
     ...(signalSource === undefined ? {} : { signalSource }),
-    ...(idle === undefined ? {} : { onInputActivity: idle.heartbeat.onInputActivity }),
   };
-  let retainIdleAfterDetach = false;
-  try {
-    const result = await terminal.attach(sandbox, terminalOptions);
-    if (result.status === 'detached' && result.reason === 'error') {
-      const failure = result.error ?? failures.at(-1);
-      throw mapVercelError(failure?.cause ?? new Error('Vercel terminal transport failed'), {
-        action,
-        branch: request.branch,
-        secrets,
-      });
-    }
-    // Clean detach ends the TTY session but leaves the Sandbox running. Keep the
-    // idle monitor alive so the default cost guard still fires without holding the
-    // attach transport open. Heartbeat writes from local input stop; remote display
-    // or agent heartbeats still count.
-    retainIdleAfterDetach = idle !== undefined
-      && result.status === 'detached'
-      && result.reason !== 'error';
-    if (retainIdleAfterDetach && idle !== undefined) {
-      idle.heartbeat.stop();
-      retainIdleGuard(idle);
-    }
-    return mapTerminalResult(result);
-  } finally {
-    if (!retainIdleAfterDetach) idle?.stop();
+  const result = await terminal.attach(sandbox, terminalOptions);
+  if (result.status === 'detached' && result.reason === 'error') {
+    const failure = result.error ?? failures.at(-1);
+    throw mapVercelError(failure?.cause ?? new Error('Vercel terminal transport failed'), {
+      action,
+      branch: request.branch,
+      secrets,
+    });
   }
-}
-
-interface IdleControl {
-  heartbeat: HeartbeatWriter;
-  stop(): void;
-  readonly done: Promise<void>;
-}
-
-const pendingIdleGuards = new Set<IdleControl>();
-
-function retainIdleGuard(idle: IdleControl): void {
-  pendingIdleGuards.add(idle);
-  void idle.done.finally(() => {
-    pendingIdleGuards.delete(idle);
-  });
-}
-
-/** Wait for idle monitors retained after a clean terminal detach. */
-export async function awaitPendingIdleGuards(): Promise<void> {
-  await Promise.all([...pendingIdleGuards].map((idle) => idle.done));
-}
-
-async function startIdleControl(
-  request: ProviderBranchRequest,
-  metadata: VercelBranchMetadata | null,
-  lifecycle: VercelLifecycle,
-  branchStore: VercelBranchMetadataStore,
-  client: VercelSandboxClient,
-  sandbox: VercelSandboxHandle,
-  secrets: readonly string[],
-  initialHeartbeat: boolean,
-  idlePause?: VercelIdlePauseTestHooks,
-): Promise<IdleControl | undefined> {
-  const idlePauseMinutes = resolveIdlePauseMinutes(
-    request.env.DEVBOX_IDLE_PAUSE_MINUTES,
-    metadata?.idlePauseMinutes,
-  );
-  if (idlePauseMinutes === 0) return undefined;
-  let heartbeat: HeartbeatWriter;
-  try {
-    heartbeat = await createHeartbeatWriter({ sandbox, client, initialTouch: initialHeartbeat });
-  } catch (error) {
-    request.stderr.write(`Vercel idle pause disabled for this session: ${redactSecrets(error, secrets)}\n`);
-    return undefined;
-  }
-  const monitor: IdlePauseMonitorHandle = startIdlePauseMonitor({
-    sandbox,
-    client,
-    idlePauseMinutes,
-    stderr: request.stderr,
-    pause: async () => {
-      const report = lifecycle.pause === undefined ? await lifecycle.stop() : await lifecycle.pause();
-      if (report.snapshot !== undefined) {
-        try {
-          await markIdlePause(branchStore, report.snapshot.id, Date.now());
-        } catch (error) {
-          request.stderr.write(`Vercel idle pause metadata update failed: ${redactSecrets(error, secrets)}\n`);
-        }
-      }
-      return report;
-    },
-    readHeartbeat: () => readRemoteHeartbeat({ sandbox, client }),
-    ...(idlePause?.scheduler === undefined ? {} : { scheduler: idlePause.scheduler }),
-    ...(idlePause?.now === undefined ? {} : { now: idlePause.now }),
-    ...(idlePause?.pollIntervalMs === undefined ? {} : { pollIntervalMs: idlePause.pollIntervalMs }),
-    ...(idlePause?.readyAtMs === undefined ? {} : { readyAtMs: idlePause.readyAtMs }),
-  });
-  return {
-    heartbeat,
-    done: monitor.done,
-    stop: () => {
-      heartbeat.stop();
-      monitor.stop();
-    },
-  };
-}
-
-async function markIdlePause(
-  branchStore: VercelBranchMetadataStore,
-  snapshotId: string,
-  idlePausedAt: number,
-): Promise<void> {
-  await branchStore.withLock(async () => {
-    const current = await branchStore.read();
-    if (current?.pausedSnapshot?.id !== snapshotId) return;
-    await branchStore.write(patchBranchMetadata(current, {
-      pausedSnapshot: {
-        ...current.pausedSnapshot,
-        idlePausedAt,
-      },
-    }));
-  });
+  return mapTerminalResult(result);
 }
 
 async function clearPausedSnapshot(
@@ -1012,17 +874,6 @@ function renderStopReport(
   if (report.networkTransfer) {
     request.stderr.write(`network: ingress=${report.networkTransfer.ingress} egress=${report.networkTransfer.egress}\n`);
   }
-}
-
-function renderIdlePauseNotice(
-  request: ProviderBranchRequest,
-  metadata: VercelBranchMetadata | null,
-): void {
-  const idlePausedAt = metadata?.pausedSnapshot?.idlePausedAt;
-  if (idlePausedAt === undefined) return;
-  const timestamp = new Date(idlePausedAt);
-  const rendered = Number.isNaN(timestamp.getTime()) ? String(idlePausedAt) : timestamp.toISOString();
-  request.stderr.write(`Vercel sandbox was idle-paused at ${rendered}\n`);
 }
 
 function renderList(
@@ -1248,6 +1099,9 @@ async function withProviderErrors(
     throw mapVercelError(error, {
       action,
       branch: typeof branch === 'string' ? branch : undefined,
+      requestedTimeoutMs: 'timeoutMs' in request && typeof request.timeoutMs === 'number'
+        ? request.timeoutMs
+        : undefined,
       secrets,
     });
   }

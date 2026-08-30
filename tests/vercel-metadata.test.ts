@@ -118,7 +118,7 @@ describe('Vercel metadata', () => {
     expect('vcpus' in stored).toBe(false);
   });
 
-  it('round-trips paused snapshot and idle policy metadata', async () => {
+  it('round-trips retained snapshot metadata without policy fields', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-pause-'));
     const store = createVercelBranchMetadataStore({
       stateHome,
@@ -131,9 +131,7 @@ describe('Vercel metadata', () => {
         id: 'snapshot-1',
         sourceSessionId: 'session-1',
         createdAt: 1_700_000_000_000,
-        idlePausedAt: 1_700_000_001_000,
       },
-      idlePauseMinutes: 15,
     });
 
     await expect(store.read()).resolves.toMatchObject({
@@ -141,10 +139,19 @@ describe('Vercel metadata', () => {
         id: 'snapshot-1',
         sourceSessionId: 'session-1',
         createdAt: 1_700_000_000_000,
-        idlePausedAt: 1_700_000_001_000,
       },
-      idlePauseMinutes: 15,
     });
+  });
+
+  it('rejects removed session policy metadata', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-removed-policy-'));
+    const store = createVercelBranchMetadataStore({
+      stateHome,
+      repoKey: 'github.com/acme/repo',
+      branch: 'feature/new',
+    });
+
+    await expect(store.write({ idlePauseMinutes: 15 } as never)).rejects.toThrow(/idlePauseMinutes/);
   });
 
   it.each([

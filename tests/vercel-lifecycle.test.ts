@@ -60,7 +60,6 @@ function sandbox(branch = source.requestedBranch): VercelSandboxHandle {
     image: TEST_IMAGE_REFERENCE,
     tags: { ...identity.tags },
     openInteractive: async () => ({ url: 'wss://sandbox.example/session', token: 'token' }),
-    extendTimeout: async () => {},
     listSessions: async () => [],
     stop: async () => ({ id: 'session', status: 'stopped' }),
     delete: async () => {},
