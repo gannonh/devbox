@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { mapVercelError } from '../src/providers/vercel/errors.js';
 import {
@@ -106,29 +107,33 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).not.toContain(token);
   });
 
-  it('preserves a redacted create cause and adds a generic long-session hint', () => {
-    const token = 'long-session-secret';
+  it('uses the captured redacted provider signature for the long-session hint', async () => {
+    const probe = JSON.parse(await readFile('tests/fixtures/vercel-timeout-rejection.json', 'utf8')) as {
+      message: string;
+      requestedTimeoutMs: number;
+      status: number;
+      redacted: boolean;
+    };
+    expect(probe.redacted).toBe(true);
     const mapped = mapVercelError(
       new VercelSdkError(
         'Sandbox.getOrCreate',
-        Object.assign(new Error(`Sandbox timeout rejected: ${token}`), { status: 400 }),
-        [token],
+        Object.assign(new Error(probe.message), { status: probe.status }),
+        [],
       ),
       {
         action: 'up',
         branch: 'feature/ui',
-        requestedTimeoutMs: 60 * 60 * 1000,
-        secrets: [token],
+        requestedTimeoutMs: probe.requestedTimeoutMs,
       },
     );
 
     expect(mapped.code).toBe('api');
-    expect(mapped.message).toContain('Sandbox timeout rejected');
-    expect(mapped.message).toContain('requested timeout: 60 minutes');
+    expect(mapped.message).toContain(probe.message);
+    expect(mapped.message).toContain('requested timeout: 1441 minutes');
     expect(mapped.message).toContain('Hobby supports up to 45 minutes');
     expect(mapped.message).toContain('Pro and Enterprise support up to 24 hours');
     expect(mapped.message).toContain('--timeout 45');
-    expect(mapped.message).not.toContain(token);
   });
 
   it('does not add plan guidance to an unclassified long create failure', () => {

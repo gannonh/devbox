@@ -41,6 +41,9 @@ export interface VercelErrorContext {
   secrets?: readonly string[];
 }
 
+/** Captured from a live Sandbox create probe with a timeout above one day. */
+export const VERCEL_LONG_SESSION_REJECTION_SIGNATURE = 'status code 400 is not ok: `timeout` should be <= 1d';
+
 /** A stable, redacted error exposed by the provider boundary. */
 export class VercelProviderError extends ProviderOperationError {
   readonly code: VercelProviderErrorCode;
@@ -341,7 +344,7 @@ function isLongSessionCreate(
     && context.requestedTimeoutMs !== undefined
     && context.requestedTimeoutMs > 45 * 60_000
     && (status === 400 || status === 422)
-    && /^sandbox (?:timeout|duration) (?:rejected|exceeds|exceeded|unsupported)(?:\b|:)/.test(message);
+    && message === VERCEL_LONG_SESSION_REJECTION_SIGNATURE;
 }
 
 function isScopeLinkError(message: string, code: string | undefined): boolean {

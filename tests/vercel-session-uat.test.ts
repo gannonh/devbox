@@ -70,13 +70,13 @@ describe('public Vercel session UAT driver', () => {
 
     expect(source).toContain('redacted: false');
     expect(source).toContain("createHash('sha256')");
-    expect(source).toContain("process.argv[2] === '--cleanup'");
+    expect(source).toContain("argv[2] === '--cleanup'");
     expect(source).toContain('XDG_STATE_HOME');
     expect(source).toContain('DEVBOX_UAT_REPORT');
     expect(source).toContain('runCleanup(stateHome)');
     expect(source).toContain('removeRunTaggedLeftovers');
     expect(source).toContain('targets.set(identity.name');
-    expect(source).toContain('/actions/runs/${runId}/attempts/${runAttempt}');
+    expect(source).toContain('/actions/runs/${parsed.runId}/attempts/${parsed.runAttempt}');
     expect(source).toContain('DEVBOX_UAT_REPOSITORY');
     expect(source).toContain('mode,');
     expect(source).toContain('loadCleanupDependencies');
