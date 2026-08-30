@@ -43,6 +43,7 @@ function sandbox(): VercelSandboxHandle {
     name: 'devbox-vercel-url-test',
     status: 'running',
     cwd: '/vercel/sandbox',
+    currentSession: () => ({ sessionId: 'url-output-session' }),
   } as unknown as VercelSandboxHandle;
 }
 

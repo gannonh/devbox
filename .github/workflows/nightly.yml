@@ -31,7 +31,7 @@ on:
         default: '15'
         type: string
       duration:
-        description: 'Run the public CLI Vercel session UAT, including the 120-minute path'
+        description: 'Run the public CLI Vercel session UAT, including the 60-minute lease path'
         required: false
         default: false
         type: boolean
@@ -641,7 +641,7 @@ jobs:
           DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
         run: node scripts/vercel/session-uat.mjs --cleanup
 
-      - name: Run dedicated 120-minute public CLI duration path
+      - name: Run dedicated 60-minute Sandbox lease path (120-minute job)
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
@@ -649,7 +649,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
           DEVBOX_VERCEL_IMAGE: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ needs.candidate.outputs.candidate_digest }}
           DEVBOX_UAT_MODE: duration
-          DEVBOX_UAT_TIMEOUT_MINUTES: '120'
+          DEVBOX_UAT_TIMEOUT_MINUTES: '60'
           DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/duration.json
           DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
         run: node scripts/vercel/session-uat.mjs

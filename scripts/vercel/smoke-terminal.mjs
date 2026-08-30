@@ -68,7 +68,6 @@ export function waitForOutput(
   });
 }
 
-/** Run the production terminal adapter through the smoke's ready/interrupt path. */
 export async function runInteractiveTerminal({
   sandbox,
   pathReport,

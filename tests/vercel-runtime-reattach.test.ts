@@ -13,10 +13,12 @@ import type {
 } from '../src/providers/vercel/client.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 import {
+  classifyRuntimeVmSession,
   evaluatePreparation,
   prepareSandboxRuntime,
   VERCEL_RUNTIME_PREPARATION_PATH,
 } from '../src/providers/vercel/runtime.js';
+import { parseVercelSessionId } from '../src/providers/vercel/session-lease.js';
 import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
 import { SETUP_PID_PATH, SETUP_STATUS_PATH } from '../src/providers/vercel/setup.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
@@ -128,7 +130,7 @@ function markerOf(harness: ReattachHarness): Record<string, unknown> | undefined
 describe('preparation evidence', () => {
   const actual = {
     sandboxName: 'runtime-sync',
-    sessionId: 'runtime-session' as never,
+    sessionId: parseVercelSessionId('runtime-session')!,
     sourceRevision: HEAD,
     imageDigest: 'image-digest',
     githubTokenSha256: 'tok-hash',
@@ -152,6 +154,17 @@ describe('preparation evidence', () => {
     expect(evaluatePreparation([], actual)).toBe(false);
     expect(evaluatePreparation({ sandboxName: 'runtime-sync' }, actual)).toBe(false);
     expect(evaluatePreparation({ ...actual, sourceRevision: 7 }, actual)).toBe(false);
+  });
+
+  it('recognizes a snapshot boundary from provider evidence without a preparation marker', () => {
+    expect(classifyRuntimeVmSession(null, {
+      ...actual,
+      sourceSnapshotId: 'snapshot-1',
+    })).toMatchObject({
+      kind: 'snapshot-resumed',
+      sourceSnapshotId: 'snapshot-1',
+      sessionId: 'runtime-session',
+    });
   });
 });
 
@@ -360,6 +373,30 @@ describe('Vercel cheap re-attach', () => {
       expect(harness.commands.some((command) =>
         (command.args?.[1] ?? '').includes('gh auth login'))).toBe(true);
     }
+  });
+
+  it('takes the full path when a retained snapshot has stale preparation evidence', async () => {
+    const harness = reattachClient();
+    await prepareSandboxRuntime(prepareOptions({ client: harness.client }));
+    const marker = JSON.parse(harness.files.get(VERCEL_RUNTIME_PREPARATION_PATH)!.toString('utf8'));
+    harness.files.set(
+      VERCEL_RUNTIME_PREPARATION_PATH,
+      Buffer.from(JSON.stringify({ ...marker, sourceRevision: 'c'.repeat(40) })),
+    );
+
+    const result = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      mode: 'attach',
+      sandbox: {
+        ...sandbox(),
+        sourceSnapshotId: 'snapshot-1',
+        currentSession: () => ({ sessionId: 'resumed-session' }),
+      } as VercelSandboxHandle,
+    }));
+
+    expect(result).toMatchObject({ reused: false, snapshotResumed: true });
+    expect(harness.commands.some((command) =>
+      (command.args?.[1] ?? '').includes('gh auth login'))).toBe(true);
   });
 
   it('takes the full path when the host token or dotenv rotated', async () => {

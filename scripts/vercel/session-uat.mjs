@@ -1,18 +1,20 @@
 #!/usr/bin/env node
-/**
- * Public CLI PTY UAT for Vercel VM-session lifetime and terminal reconnects.
- *
- * The driver runs `node dist/cli.js` through util-linux `script`, which gives
- * the CLI a real PTY without adding a native dependency to the package.
- * The reconnect command is `node dist/cli.js "$BRANCH" --provider vercel
- * --expose-ports 4173`.
- */
-import { spawn } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readdir, readFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { promisify } from 'node:util';
+import { Sandbox, Snapshot } from '@vercel/sandbox';
+import { createVercelIdentity } from '../../dist/providers/vercel/identity.js';
+
+const execFile = promisify(execFileCallback);
 
 const APP_PORT = 4173;
+const DURATION_TIMEOUT_MINUTES = 60;
+const DURATION_IDLE_BOUNDARY_MS = positiveInteger('DEVBOX_UAT_IDLE_BOUNDARY_MS', 15 * 60 * 1000);
+const DURATION_FINAL_WINDOW_MS = positiveInteger('DEVBOX_UAT_FINAL_WINDOW_MS', 60 * 1000);
+const DURATION_STOP_TIMEOUT_MS = positiveInteger('DEVBOX_UAT_STOP_TIMEOUT_MS', 180 * 1000);
+const DURATION_PROVIDER_POLL_MS = positiveInteger('DEVBOX_UAT_PROVIDER_POLL_MS', 2 * 1000);
 const MODE = process.argv[2] === '--cleanup'
   ? 'cleanup'
   : process.env.DEVBOX_UAT_MODE ?? 'reconnect';
@@ -21,7 +23,7 @@ const BRANCH = required('DEVBOX_UAT_BRANCH');
 const CLI_PATH = resolve(process.env.DEVBOX_CLI ?? 'dist/cli.js');
 const REPORT_PATH = process.env.DEVBOX_UAT_REPORT ?? resolve('uat-evidence/session-uat.json');
 const STATE_HOME = process.env.DEVBOX_UAT_STATE_HOME;
-const TIMEOUT_MINUTES = positiveInteger('DEVBOX_UAT_TIMEOUT_MINUTES', MODE === 'duration' ? 120 : 60);
+const TIMEOUT_MINUTES = positiveInteger('DEVBOX_UAT_TIMEOUT_MINUTES', 60);
 const CLI_TIMEOUT_MS = positiveInteger('DEVBOX_UAT_CLI_TIMEOUT_MS', 120_000);
 const MARKER_TIMEOUT_MS = positiveInteger('DEVBOX_UAT_MARKER_TIMEOUT_MS', 45_000);
 const secrets = Object.entries(process.env)
@@ -65,6 +67,9 @@ async function main() {
     report.cleanup = result;
     return result.accepted ? 0 : 1;
   }
+  if (MODE === 'duration' && TIMEOUT_MINUTES !== DURATION_TIMEOUT_MINUTES) {
+    throw new Error(`duration UAT requires a ${DURATION_TIMEOUT_MINUTES}-minute Sandbox lease`);
+  }
 
   const preflight = await runCleanup(stateHome);
   report.preflight = { attempted: true, ...preflight };
@@ -75,7 +80,7 @@ async function main() {
     active = await startSession(stateHome);
     await verifyInitialSession(active);
     if (MODE === 'duration') {
-      await verifyDurationSession(active);
+      await verifyDurationSession(stateHome, active);
     } else {
       await verifyReconnectSession(stateHome, active);
     }
@@ -106,9 +111,9 @@ async function startSession(stateHome) {
     BRANCH,
     '--provider',
     'vercel',
+    ...(MODE === 'duration' ? ['--timeout', String(TIMEOUT_MINUTES)] : []),
     '--expose-ports',
     '4173',
-    ...(MODE === 'duration' ? ['--timeout', String(TIMEOUT_MINUTES)] : []),
   ];
   const session = createPty(args, stateHome);
   const first = await session.waitForAny([
@@ -119,7 +124,11 @@ async function startSession(stateHome) {
   if (first.match === 'Create this Vercel sandbox?') session.write('y\n');
   await session.waitFor(`session duration: ${TIMEOUT_MINUTES} minutes`, CLI_TIMEOUT_MS);
   await session.waitFor('▲ ', CLI_TIMEOUT_MS);
-  return { ...session, publicUrl: publicRoute(session.output(), APP_PORT) };
+  return {
+    ...session,
+    publicUrl: publicRoute(session.output(), APP_PORT),
+    provider: await readProviderSessionFacts(stateHome),
+  };
 }
 
 async function verifyInitialSession(session) {
@@ -133,19 +142,183 @@ async function verifyInitialSession(session) {
   return identity;
 }
 
-async function verifyDurationSession(session) {
-  check('dedicated session duration', report.timeoutMinutes === 120, `timeout=${report.timeoutMinutes} minutes`);
-  const marker = markerFor('duration-output');
-  session.write(remoteMarkerCommand(marker));
-  await session.waitFor(marker, MARKER_TIMEOUT_MS);
-  check('duration path process output', true, 'marker reached the foreground process through the public CLI PTY');
-  session.write(Buffer.from([0x1d]));
-  await session.waitForExit(CLI_TIMEOUT_MS);
-  check('duration path clean detach', true, 'Ctrl-] released the public CLI terminal');
+async function verifyDurationSession(stateHome, session) {
+  const provider = session.provider;
+  check('dedicated session duration', report.timeoutMinutes === DURATION_TIMEOUT_MINUTES, `timeout=${report.timeoutMinutes} minutes`);
+  check('provider configured timeout', provider.configuredTimeoutMs === DURATION_TIMEOUT_MINUTES * 60 * 1000, `timeout=${provider.configuredTimeoutMs}ms`);
+  check('provider session identity recorded', Boolean(provider.sandboxName && provider.sessionId), 'provider Sandbox name and session ID are present');
+  check('provider creation time recorded', Number.isFinite(Date.parse(provider.createdAt)), `createdAt=${provider.createdAt}`);
+  const expiresAtMs = Date.parse(provider.expiresAt ?? '');
+  check('provider deadline recorded', Number.isFinite(expiresAtMs), `expiresAt=${provider.expiresAt}`);
+
+  const reconnect = await verifySameSessionReconnect(stateHome, session, 'duration-http-fixture');
+  const snapshotProcess = await startSnapshotProcess(stateHome);
+  const quietStartedAt = Date.now();
+  const idleBoundaryAt = await waitForDeadline(quietStartedAt + DURATION_IDLE_BOUNDARY_MS);
+  const idleProvider = await readProviderSessionFacts(undefined, provider.sandboxName);
+  check('duration idle provider session', idleProvider.status === 'running' && idleProvider.sessionId === provider.sessionId, `status=${idleProvider.status}; sessionId=${idleProvider.sessionId}`);
+  const idleResponse = await waitForFixture(reconnect.publicUrl, reconnect.fixtureMarker);
+  check('duration survives idle boundary', idleResponse.pid === reconnect.startedIdentity.pid, `initial=${reconnect.startedIdentity.pid}; idle=${idleResponse.pid}`);
+  check('duration idle tmux session', idleResponse.session === reconnect.startedIdentity.session, `initial=${reconnect.startedIdentity.session}; idle=${idleResponse.session}`);
+  check('duration idle HTTP marker', idleResponse.marker === reconnect.fixtureMarker, 'fixture remained reachable without terminal input');
+  check('duration idle HTTP payload', idleResponse.response === 'devbox-uat-http', 'fixture returned the expected payload after the idle boundary');
+
+  const finalProbeTarget = expiresAtMs - DURATION_FINAL_WINDOW_MS;
+  check('duration final window is reachable', finalProbeTarget > Date.now(), 'final probe target is after the idle boundary');
+  await waitForDeadline(finalProbeTarget);
+  const finalProbeAt = new Date().toISOString();
+  const finalProvider = await readProviderSessionFacts(undefined, provider.sandboxName);
+  check('duration final provider session', finalProvider.status === 'running' && finalProvider.sessionId === provider.sessionId, `status=${finalProvider.status}; sessionId=${finalProvider.sessionId}`);
+  const finalResponse = await waitForFixture(reconnect.publicUrl, reconnect.fixtureMarker);
+  const remainingMs = expiresAtMs - Date.now();
+  check('duration final HTTP response', finalResponse.pid === reconnect.startedIdentity.pid, `initial=${reconnect.startedIdentity.pid}; final=${finalResponse.pid}`);
+  check('duration final HTTP marker', finalResponse.marker === reconnect.fixtureMarker, 'fixture remained reachable in the final lease window');
+  check('duration final HTTP payload', finalResponse.response === 'devbox-uat-http', 'fixture returned the expected payload in the final lease window');
+  check('duration final lease window', remainingMs >= 0 && remainingMs <= DURATION_FINAL_WINDOW_MS, `remaining=${remainingMs}ms`);
+
+  await stopFixture(reconnect.publicUrl, reconnect.fixtureMarker);
+  const stopped = await waitForProviderStop(provider.sandboxName, DURATION_STOP_TIMEOUT_MS);
+  const retainedSnapshots = await waitForRetainedSnapshots(provider.sandboxName, DURATION_STOP_TIMEOUT_MS);
+  const resumed = await resumeSnapshot(stateHome, snapshotProcess, {
+    socket: report.initial.socket,
+    providerSessionId: provider.sessionId,
+  });
+  check('duration provider stop observed', ['stopped', 'aborted'].includes(stopped.status), `status=${stopped.status}`);
+  check('duration one retained snapshot', retainedSnapshots.length === 1, `createdSnapshots=${retainedSnapshots.length}`);
+  report.duration = {
+    configuredTimeoutMs: provider.configuredTimeoutMs,
+    sessionId: provider.sessionId,
+    sandboxName: provider.sandboxName,
+    createdAt: provider.createdAt,
+    expiresAt: provider.expiresAt,
+    idleStatus: idleProvider.status,
+    idleSessionId: idleProvider.sessionId,
+    finalStatus: finalProvider.status,
+    finalSessionId: finalProvider.sessionId,
+    idleBoundaryAt: new Date(idleBoundaryAt).toISOString(),
+    quietStartedAt: new Date(quietStartedAt).toISOString(),
+    finalProbeAt,
+    finalRemainingMs: remainingMs,
+    stoppedAt: stopped.observedAt,
+    stoppedStatus: stopped.status,
+    retainedSnapshots: retainedSnapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status })),
+    resumedSessionId: resumed.identity.sessionId,
+    resumedSandboxName: resumed.identity.sandboxName,
+  };
+}
+
+async function readProviderSessionFacts(stateHome, sandboxName = undefined) {
+  const name = sandboxName ?? await readStoredSandboxName(stateHome);
+  const sandbox = await Sandbox.get({ ...providerCredentials(), name, resume: false });
+  const current = sandbox.currentSession();
+  if (!current?.sessionId) throw new Error('Vercel provider session facts did not include a session ID');
+  return {
+    sandboxName: sandbox.name,
+    sessionId: current.sessionId,
+    status: current.status,
+    configuredTimeoutMs: current.timeout,
+    createdAt: current.createdAt.toISOString(),
+    expiresAt: sandbox.expiresAt?.toISOString() ?? null,
+    currentSnapshotId: sandbox.currentSnapshotId ?? null,
+  };
+}
+
+async function readStoredSandboxName(stateHome) {
+  const directory = resolve(stateHome, 'devbox', 'providers', 'vercel');
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    throw new Error(`Vercel UAT metadata directory is unreadable: ${redact(error instanceof Error ? error.message : String(error))}`);
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const path = resolve(directory, entry.name);
+    let metadataText;
+    try {
+      metadataText = await readFile(path, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw new Error(`Vercel UAT metadata file is unreadable: ${redact(error instanceof Error ? error.message : String(error))}`);
+    }
+    let metadata;
+    try {
+      metadata = JSON.parse(metadataText);
+    } catch (error) {
+      throw new Error(`Vercel UAT metadata file is malformed: ${redact(error instanceof Error ? error.message : String(error))}`);
+    }
+    const identity = metadata?.identity;
+    if (identity?.branch === BRANCH && typeof identity.name === 'string' && identity.name) return identity.name;
+  }
+  throw new Error('Vercel UAT metadata did not contain the branch Sandbox name');
+}
+
+async function listProviderSnapshots(sandboxName) {
+  const page = await Snapshot.list({ ...providerCredentials(), name: sandboxName, limit: 50 });
+  return page.toArray();
+}
+
+async function waitForRetainedSnapshots(sandboxName, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let snapshots = [];
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      snapshots = await listProviderSnapshots(sandboxName);
+      const retained = snapshots.filter((snapshot) => snapshot.status === 'created');
+      if (retained.length === 1) return retained;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(Math.min(DURATION_PROVIDER_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+  if (lastError) throw lastError;
+  throw new Error(`Vercel provider did not retain exactly one created snapshot; found ${snapshots.filter((snapshot) => snapshot.status === 'created').length}`);
+}
+
+async function waitForProviderStop(sandboxName, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const facts = await readProviderSessionFacts(undefined, sandboxName);
+      if (['stopped', 'aborted'].includes(facts.status)) return { ...facts, observedAt: new Date().toISOString() };
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(Math.min(DURATION_PROVIDER_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+  throw lastError ?? new Error('Vercel provider Sandbox did not stop before the UAT deadline');
+}
+
+async function waitForDeadline(deadline) {
+  while (Date.now() < deadline) {
+    await delay(Math.min(30_000, Math.max(1, deadline - Date.now())));
+  }
+  return Date.now();
+}
+
+function providerCredentials() {
+  const token = process.env.VERCEL_TOKEN?.trim();
+  const teamId = process.env.VERCEL_TEAM_ID?.trim();
+  const projectId = process.env.VERCEL_PROJECT_ID?.trim();
+  if (!token || !teamId || !projectId) {
+    throw new Error('VERCEL_TOKEN, VERCEL_TEAM_ID, and VERCEL_PROJECT_ID are required for provider probes');
+  }
+  return { token, teamId, projectId };
 }
 
 async function verifyReconnectSession(stateHome, initial) {
-  const fixtureMarker = markerFor('http-fixture');
+  const reconnect = await verifySameSessionReconnect(stateHome, initial, 'http-fixture');
+  await stopFixture(reconnect.publicUrl, reconnect.fixtureMarker);
+  await verifySnapshotBoundary(stateHome, {
+    socket: report.initial.socket,
+    providerSessionId: initial.provider.sessionId,
+  });
+}
+
+async function verifySameSessionReconnect(stateHome, initial, label) {
+  const fixtureMarker = markerFor(label);
   initial.write(remoteHttpFixtureCommand(fixtureMarker));
   const startedOutput = await initial.waitFor(fixtureMarker, MARKER_TIMEOUT_MS);
   const startedIdentity = parseFixtureStartup(startedOutput, fixtureMarker);
@@ -180,8 +353,18 @@ async function verifyReconnectSession(stateHome, initial) {
     await cleanAttach.close('SIGTERM');
   }
   check('clean Ctrl-] detach', true, 'explicit --attach returned without stopping the VM session');
-  await stopFixture(initial.publicUrl, fixtureMarker);
-  await verifySnapshotBoundary(stateHome, { ...startedIdentity, socket: report.initial.socket });
+  report.reconnect = {
+    fixtureMarker,
+    initialPid: startedIdentity.pid,
+    forcedClosePid: startedIdentity.pid,
+    cleanAttachPid: startedIdentity.pid,
+    tmuxSession: startedIdentity.session,
+  };
+  return {
+    fixtureMarker,
+    publicUrl: initial.publicUrl,
+    startedIdentity,
+  };
 }
 
 async function attachSession(stateHome) {
@@ -200,8 +383,69 @@ async function runCleanup(stateHome) {
   const session = createPty([CLI_PATH, BRANCH, '--provider', 'vercel', '--rm'], stateHome);
   const exitCode = await session.waitForExit(CLI_TIMEOUT_MS);
   const output = session.output();
-  const accepted = exitCode === 0 || /No Vercel sandbox|No matching Vercel sandbox|nothing to remove/i.test(output);
-  return { attempted: true, exitCode, accepted };
+  const commandAccepted = exitCode === 0 || /No Vercel sandbox|No matching Vercel sandbox|nothing to remove/i.test(output);
+  let inventory;
+  let inventoryError;
+  try {
+    inventory = await waitForEmptyResourceInventory(DURATION_STOP_TIMEOUT_MS);
+  } catch (error) {
+    inventoryError = redact(error instanceof Error ? error.message : String(error));
+  }
+  const accepted = commandAccepted && inventory?.sandboxCount === 0 && inventory.snapshotCount === 0;
+  return {
+    attempted: true,
+    exitCode,
+    accepted,
+    commandAccepted,
+    ...(inventory === undefined ? {} : { inventory }),
+    ...(inventoryError === undefined ? {} : { inventoryError }),
+  };
+}
+
+async function waitForEmptyResourceInventory(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastInventory = { sandboxCount: -1, snapshotCount: -1 };
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      lastInventory = await readResourceInventory();
+      if (lastInventory.sandboxCount === 0 && lastInventory.snapshotCount === 0) return lastInventory;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(Math.min(DURATION_PROVIDER_POLL_MS, Math.max(1, deadline - Date.now())));
+  }
+  if (lastError) throw lastError;
+  throw new Error(`Vercel cleanup inventory did not converge: sandboxes=${lastInventory.sandboxCount}; snapshots=${lastInventory.snapshotCount}`);
+}
+
+async function readResourceInventory() {
+  const identity = await cleanupIdentity();
+  const credentials = providerCredentials();
+  const sandboxPage = await Sandbox.list({
+    ...credentials,
+    namePrefix: identity.name,
+    tags: identity.tags,
+    limit: 50,
+  });
+  const sandboxes = (await sandboxPage.toArray()).filter((sandbox) => sandbox.name === identity.name);
+  const snapshotPage = await Snapshot.list({ ...credentials, name: identity.name, limit: 50 });
+  const snapshots = (await snapshotPage.toArray()).filter((snapshot) => snapshot.status !== 'deleted');
+  return { sandboxCount: sandboxes.length, snapshotCount: snapshots.length };
+}
+
+async function cleanupIdentity() {
+  const { stdout } = await execFile('git', ['remote', 'get-url', 'origin'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: CLI_TIMEOUT_MS,
+  });
+  const credentials = providerCredentials();
+  return createVercelIdentity({
+    remote: stdout.trim(),
+    branch: BRANCH,
+    scope: { teamId: credentials.teamId, projectId: credentials.projectId },
+  });
 }
 
 async function runAction(stateHome, args) {
@@ -210,53 +454,74 @@ async function runAction(stateHome, args) {
   return { exitCode, output: session.output() };
 }
 
-async function verifySnapshotBoundary(stateHome, priorIdentity) {
-  const priorFile = `/tmp/devbox-uat-prior-${randomBytes(8).toString('hex')}`;
+async function startSnapshotProcess(stateHome) {
+  const session = await attachSession(stateHome);
   const startedMarker = markerFor('snapshot-process-started');
-  const endedMarker = markerFor('snapshot-process-ended');
-  const absentMarker = markerFor('snapshot-process-absent');
-  let previous;
-  let resumed;
+  const processMarker = markerFor('snapshot-process');
+  const sentinelPath = `/vercel/sandbox/.devbox-uat-sentinel-${randomBytes(8).toString('hex')}`;
+  session.write(remoteDetachedProcessCommand(startedMarker, processMarker, sentinelPath));
+  const output = await session.waitFor(startedMarker, MARKER_TIMEOUT_MS);
+  const priorProcess = parseDetachedProcessStartup(output, startedMarker);
+  check('snapshot process marker recorded', priorProcess.marker === processMarker, 'the detached process carried a unique marker');
+  session.write(Buffer.from([0x1d]));
+  await session.waitForExit(CLI_TIMEOUT_MS);
+  return { ...priorProcess, sentinelPath };
+}
+
+async function verifySnapshotBoundary(stateHome, priorIdentity) {
+  const priorProcess = await startSnapshotProcess(stateHome);
+  const paused = await runAction(stateHome, [BRANCH, '--provider', 'vercel', '--pause']);
+  check('snapshot pause', paused.exitCode === 0, 'the public CLI retained a snapshot');
+  await resumeSnapshot(stateHome, priorProcess, priorIdentity);
+}
+
+async function resumeSnapshot(stateHome, priorProcess, priorIdentity) {
+  const resumed = await attachSession(stateHome);
   try {
-    previous = await attachSession(stateHome);
-    previous.write(remoteDetachedProcessCommand(startedMarker, endedMarker, priorFile));
-    await previous.waitFor(startedMarker, MARKER_TIMEOUT_MS);
-    previous.write(Buffer.from([0x1d]));
-    await previous.waitForExit(CLI_TIMEOUT_MS);
-
-    const paused = await runAction(stateHome, [BRANCH, '--provider', 'vercel', '--pause']);
-    check('snapshot pause', paused.exitCode === 0, 'the public CLI retained a snapshot');
-
-    resumed = createPty([
-      CLI_PATH,
-      BRANCH,
-      '--provider',
-      'vercel',
-      '--expose-ports',
-      '4173',
-    ], stateHome);
     await resumed.waitFor('prior user processes ended', CLI_TIMEOUT_MS);
     await resumed.waitFor(`session duration: ${TIMEOUT_MINUTES} minutes`, CLI_TIMEOUT_MS);
     await resumed.waitFor('▲ ', CLI_TIMEOUT_MS);
     publicRoute(resumed.output(), APP_PORT);
-    check('snapshot public route returned', true, 'the new VM session published the requested app route');
+    check('snapshot display route returned', hasPublicRoute(resumed.output(), 6080), 'the new VM session published the display route');
+    check('snapshot public route returned', hasPublicRoute(resumed.output(), APP_PORT), 'the new VM session published the requested app route');
     const freshIdentity = await readIdentity(resumed, 'snapshot-attach');
     check('snapshot fresh socket', freshIdentity.socket !== priorIdentity.socket, 'snapshot resume received a new session-derived socket');
     check('snapshot fresh tmux session', freshIdentity.session === 'devbox', `session=${freshIdentity.session}`);
-    resumed.write(remoteFileAbsentCommand(absentMarker, priorFile));
-    await resumed.waitFor(absentMarker, MARKER_TIMEOUT_MS);
-    check('snapshot prior process ended', true, 'the new VM session did not retain the prior user process');
+    const sentinelPresent = markerFor('snapshot-sentinel-present');
+    const sentinelMissing = markerFor('snapshot-sentinel-missing');
+    const processPresent = markerFor('snapshot-process-present');
+    const processAbsent = markerFor('snapshot-process-absent');
+    resumed.write(remoteSnapshotStateCommand(
+      sentinelPresent,
+      sentinelMissing,
+      processPresent,
+      processAbsent,
+      priorProcess.sentinelPath,
+      priorProcess.marker,
+      priorProcess.pid,
+    ));
+    const sentinelState = await resumed.waitForAny([sentinelPresent, sentinelMissing], MARKER_TIMEOUT_MS);
+    check('snapshot sentinel restored', sentinelState.match === sentinelPresent, `sentinel=${sentinelState.match}`);
+    const processState = await resumed.waitForAny([processPresent, processAbsent], MARKER_TIMEOUT_MS);
+    check('snapshot prior process ended', processState.match === processAbsent, `priorPid=${priorProcess.pid}`);
     resumed.write(Buffer.from([0x1d]));
     await resumed.waitForExit(CLI_TIMEOUT_MS);
+    const provider = await readProviderSessionFacts(stateHome);
+    check('snapshot fresh provider session', provider.sessionId !== priorIdentity.providerSessionId, `prior=${priorIdentity.providerSessionId}; resumed=${provider.sessionId}`);
+    check('snapshot resumed timeout', provider.configuredTimeoutMs === TIMEOUT_MINUTES * 60 * 1000, `timeout=${provider.configuredTimeoutMs}ms`);
     report.snapshot = {
       notice: true,
       socketChanged: true,
+      priorProcessPid: priorProcess.pid,
       priorProcessEnded: true,
+      sentinelRestored: true,
       runtimeServicesRefreshed: true,
+      sandboxName: provider.sandboxName,
+      sessionId: provider.sessionId,
     };
+    return { identity: provider };
   } finally {
-    if (previous) await previous.close('SIGTERM');
-    if (resumed) await resumed.close('SIGTERM');
+    await resumed.close('SIGTERM');
   }
 }
 
@@ -336,11 +601,6 @@ function waitForExit(child, timeoutMs) {
   });
 }
 
-function remoteMarkerCommand(marker) {
-  const encoded = Buffer.from(marker).toString('base64');
-  return `printf '%s\\n' "$(printf '%s' '${encoded}' | base64 -d)"\n`;
-}
-
 function remoteIdentityCommand(marker) {
   const encoded = Buffer.from(marker).toString('base64');
   return `printf '%s PID=%s TMUX=%s SOCKET=%s\\n' "$(printf '%s' '${encoded}' | base64 -d)" "$$" "$(tmux display-message -p '#S')" "$(find /tmp/devbox-tmux -mindepth 2 -maxdepth 2 -type s -name socket -print | head -n 1)"\n`;
@@ -378,12 +638,15 @@ function remoteHttpFixtureCommand(marker) {
 function remoteDetachedProcessCommand(started, completion, path) {
   const startedEncoded = Buffer.from(started).toString('base64');
   const completionEncoded = Buffer.from(completion).toString('base64');
-  return `rm -f -- '${path}'; (sleep 60; printf '%s' "$(printf '%s' '${completionEncoded}' | base64 -d)" > '${path}') >/dev/null 2>&1 & printf '%s\\n' "$(printf '%s' '${startedEncoded}' | base64 -d)"\n`;
+  return `rm -f -- ${shellQuote(path)}; printf '%s\\n' "$(printf '%s' '${completionEncoded}' | base64 -d)" > ${shellQuote(path)}; (sh -c 'while :; do sleep 30; done' ${shellQuote(completion)}) >/dev/null 2>&1 & printf '%s PID=%s MARKER=%s\\n' "$(printf '%s' '${startedEncoded}' | base64 -d)" "$!" "$(printf '%s' '${completionEncoded}' | base64 -d)"\n`;
 }
 
-function remoteFileAbsentCommand(marker, path) {
-  const encoded = Buffer.from(marker).toString('base64');
-  return `if [ ! -e '${path}' ]; then printf '%s\\n' "$(printf '%s' '${encoded}' | base64 -d)"; else printf 'DEVBOX_UAT_PRIOR_PROCESS_PRESENT\\n'; fi\n`;
+function remoteSnapshotStateCommand(sentinelPresent, sentinelMissing, processPresent, processAbsent, path, marker, pid) {
+  const sentinelPresentEncoded = Buffer.from(sentinelPresent).toString('base64');
+  const sentinelMissingEncoded = Buffer.from(sentinelMissing).toString('base64');
+  const processPresentEncoded = Buffer.from(processPresent).toString('base64');
+  const processAbsentEncoded = Buffer.from(processAbsent).toString('base64');
+  return `if [ -f ${shellQuote(path)} ] && grep -Fqx ${shellQuote(marker)} ${shellQuote(path)}; then printf '%s\\n' "$(printf '%s' '${sentinelPresentEncoded}' | base64 -d)"; else printf '%s\\n' "$(printf '%s' '${sentinelMissingEncoded}' | base64 -d)"; fi; if kill -0 '${pid}' 2>/dev/null && [ -r '/proc/${pid}/cmdline' ] && tr '\\0' ' ' < '/proc/${pid}/cmdline' | grep -Fq ${shellQuote(marker)}; then printf '%s\\n' "$(printf '%s' '${processPresentEncoded}' | base64 -d)"; else printf '%s\\n' "$(printf '%s' '${processAbsentEncoded}' | base64 -d)"; fi\n`;
 }
 
 function parseIdentity(output, marker) {
@@ -398,6 +661,13 @@ function parseFixtureStartup(output, marker) {
   const match = new RegExp(escaped + ' PID=([0-9]+) TMUX=([^\\s\\r\\n]+)').exec(output);
   if (!match) throw new Error('fixture marker did not include a PID and tmux session');
   return { marker, pid: match[1], session: match[2] };
+}
+
+function parseDetachedProcessStartup(output, marker) {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(escaped + ' PID=([0-9]+) MARKER=([^\\s\\r\\n]+)').exec(output);
+  if (!match) throw new Error('detached process marker did not include a PID and process marker');
+  return { marker: match[2], pid: match[1] };
 }
 
 async function waitForFixture(url, marker) {
@@ -441,9 +711,17 @@ async function stopFixture(url, marker) {
 }
 
 function publicRoute(output, port) {
-  const match = new RegExp('^\\s*' + port + ':\\s+(https://[^\\s]+)\\s+\\(', 'm').exec(output);
+  const match = routeMatch(output, port);
   if (!match) throw new Error('CLI output did not include the public route for port ' + port);
   return match[1];
+}
+
+function hasPublicRoute(output, port) {
+  return Boolean(routeMatch(output, port));
+}
+
+function routeMatch(output, port) {
+  return new RegExp('^\\s*' + port + ':\\s+(https://[^\\s]+)\\s+\\(', 'm').exec(output);
 }
 
 function delay(milliseconds) {

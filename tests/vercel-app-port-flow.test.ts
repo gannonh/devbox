@@ -65,6 +65,7 @@ function fakeSandbox(ports: number[]) {
     name: 'devbox-vercel-test',
     status: 'running',
     cwd: '/vercel/sandbox',
+    currentSession: () => ({ sessionId: SANDBOX_ID }),
     get routes(): readonly SandboxRoute[] {
       return routesFor(state.ports);
     },

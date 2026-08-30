@@ -10,6 +10,7 @@ import { createVercelIdentity } from '../src/providers/vercel/identity.js';
 import {
   createVercelLifecycle,
   DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS,
+  sandboxIdentifier,
   VercelLifecycleError,
 } from '../src/providers/vercel/lifecycle.js';
 import { parseVercelImageReference } from '../src/providers/vercel/image.js';
@@ -59,6 +60,7 @@ function sandbox(branch = source.requestedBranch): VercelSandboxHandle {
     persistent: true,
     image: TEST_IMAGE_REFERENCE,
     tags: { ...identity.tags },
+    currentSession: () => ({ sessionId: identity.name }),
     openInteractive: async () => ({ url: 'wss://sandbox.example/session', token: 'token' }),
     listSessions: async () => [],
     stop: async () => ({ id: 'session', status: 'stopped' }),
@@ -69,6 +71,18 @@ function sandbox(branch = source.requestedBranch): VercelSandboxHandle {
 }
 
 describe('Vercel lifecycle', () => {
+  it('requires the provider session ID for session-local identity', () => {
+    let caught: unknown;
+    try {
+      sandboxIdentifier({ name: 'durable-sandbox' });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: 'session_unavailable',
+    });
+  });
+
   it('keeps stop, remove, and list working when devcontainer ports are malformed', async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-lifecycle-malformed-'));
     await mkdir(join(repoRoot, '.devcontainer'));

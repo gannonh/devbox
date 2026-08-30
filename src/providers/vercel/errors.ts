@@ -10,6 +10,7 @@ import {
   VercelRouteNotFoundError,
   VercelScopeConflictError,
 } from './lifecycle.js';
+import { VercelObsoleteMetadataError } from './metadata-schema.js';
 import { redactSecrets } from './redaction.js';
 
 export type VercelProviderErrorCode =
@@ -71,10 +72,10 @@ export function mapVercelError(
   const command = recoveryCommand(context);
   const message = detail.toLowerCase();
 
-  if (isUnsupportedLongSessionCreate(context, operation)) {
+  if (error instanceof VercelObsoleteMetadataError || lifecycleCode === 'obsolete_metadata') {
     return new VercelProviderError(
-      'api',
-      `${detail || 'Vercel rejected the requested session duration'}; requested timeout: ${Math.round(context.requestedTimeoutMs! / 60_000)} minutes. Vercel Hobby supports up to 45 minutes; Pro and Enterprise support up to 24 hours. Try --timeout 45.`,
+      'stale',
+      `Stored Vercel metadata contains the removed idle policy; run ${removeRecoveryCommand(context)}, then create the box again with ${createRecoveryCommand(context)}.`,
     );
   }
 
@@ -259,9 +260,12 @@ export function mapVercelError(
   }
 
   const suffix = detail ? `: ${detail}` : '';
+  const durationHint = isLongSessionCreate(context, operation)
+    ? `; requested timeout: ${Math.round(context.requestedTimeoutMs! / 60_000)} minutes. Vercel Hobby supports up to 45 minutes; Pro and Enterprise support up to 24 hours. Try --timeout 45.`
+    : '';
   return new VercelProviderError(
     'api',
-    `Vercel API request failed${suffix}; check credentials and network access, then retry ${command}.`,
+    `Vercel API request failed${suffix}${durationHint}; check credentials and network access, then retry ${command}.`,
   );
 }
 
@@ -326,7 +330,7 @@ function isMetadataLockContention(error: unknown, message: string): boolean {
     || /^timed out waiting for vercel metadata lock: .+$/.test(message);
 }
 
-function isUnsupportedLongSessionCreate(
+function isLongSessionCreate(
   context: VercelErrorContext,
   operation: string | undefined,
 ): boolean {

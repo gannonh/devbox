@@ -115,6 +115,8 @@ In the remote terminal, `Ctrl-C` reaches the foreground process. `Ctrl-]` discon
 
 The terminal shell derives a devbox-owned tmux socket from `sandbox.currentSession().sessionId`. A same-session attach reuses that socket and launches `tmux new-session -A -s devbox`, so user processes survive WebSocket reconnects. A snapshot resume creates a new VM session and a new socket. Processes from the prior VM session end, while runtime setup, display services, and public relays restart. The configured Vercel timeout applies to each new or snapshot-resumed VM session.
 
+Vercel Sandbox is a bounded development VM, not continuously available VPS hosting. Use a separately managed VM or Vercel Functions for continuously available services.
+
 After checkout, devbox reads `package.json` files without executing them and suggests common application ports such as Vite's `5173`. It also scans npm workspace members. Approved ports become public without recreating the Sandbox. To skip the prompt, pass the ports explicitly:
 
 ```bash

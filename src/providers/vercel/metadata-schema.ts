@@ -35,6 +35,17 @@ export interface VercelPausedSnapshot {
   createdAt?: number;
 }
 
+export class VercelObsoleteMetadataError extends Error {
+  readonly code = 'obsolete_metadata';
+  readonly fields: readonly string[];
+
+  constructor(fields: readonly string[]) {
+    super(`Vercel metadata contains removed idle-policy field(s): ${fields.join(', ')}`);
+    this.name = 'VercelObsoleteMetadataError';
+    this.fields = [...fields];
+  }
+}
+
 export interface VercelCreateConfiguration {
   imageReference: string;
   sourceUrl: string;
@@ -752,6 +763,10 @@ function assertExactKeys(
   label: string,
 ): void {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  const obsolete = unknown.filter((key) => key === 'idlePauseMinutes' || key === 'idlePausedAt');
+  if (obsolete.length > 0) {
+    throw new VercelObsoleteMetadataError(obsolete);
+  }
   if (unknown.length > 0) {
     throw new Error(`Unknown ${label} field(s): ${unknown.join(', ')}`);
   }

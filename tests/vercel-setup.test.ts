@@ -37,7 +37,12 @@ import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 const execFileAsync = promisify(execFile);
 
 function sandbox(): VercelSandboxHandle {
-  return { name: 'setup-test', status: 'running', cwd: '/vercel/sandbox' } as VercelSandboxHandle;
+  return {
+    name: 'setup-test',
+    status: 'running',
+    cwd: '/vercel/sandbox',
+    currentSession: () => ({ sessionId: 'setup-test-session' }),
+  } as VercelSandboxHandle;
 }
 
 describe('Vercel background setup', () => {

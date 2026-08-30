@@ -36,6 +36,7 @@ function sandbox(): VercelSandboxHandle {
     name: 'display-startup',
     status: 'running',
     cwd: '/vercel/sandbox',
+    currentSession: () => ({ sessionId: 'display-startup-session' }),
   } as unknown as VercelSandboxHandle;
 }
 
@@ -467,7 +468,12 @@ describe('Vercel display startup', () => {
     });
     const events: string[] = [];
     const commands: VercelRunCommandRequest[] = [];
-    const handle = { name: identity.name, cwd: '/vercel/sandbox', status: 'running' } as unknown as VercelSandboxHandle;
+    const handle = {
+      name: identity.name,
+      cwd: '/vercel/sandbox',
+      status: 'running',
+      currentSession: () => ({ sessionId: 'display-startup-session' }),
+    } as unknown as VercelSandboxHandle;
     const lifecycle = {
       up: vi.fn(async () => { events.push('lifecycle-up'); return handle; }),
       attach: vi.fn(async () => { events.push('lifecycle-attach'); return handle; }),

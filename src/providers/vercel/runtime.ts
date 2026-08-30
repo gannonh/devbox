@@ -136,8 +136,7 @@ export function classifyRuntimeVmSession(
   marker: unknown,
   actual: RuntimePreparationActualEvidence,
 ): RuntimeVmSession {
-  if (!hasPreparationMarker(marker)) return { kind: 'new', sessionId: actual.sessionId };
-  if (marker.sessionId === actual.sessionId) {
+  if (hasPreparationMarker(marker) && marker.sessionId === actual.sessionId) {
     return { kind: 'same-session', sessionId: actual.sessionId };
   }
   if (actual.sourceSnapshotId !== undefined) {
@@ -150,7 +149,6 @@ export function classifyRuntimeVmSession(
   return { kind: 'new', sessionId: actual.sessionId };
 }
 
-/** Classify the evidence before deciding which preparation work is safe. */
 export function classifyPreparation(
   marker: unknown,
   actual: RuntimePreparationActualEvidence,
@@ -161,7 +159,7 @@ export function classifyPreparation(
   const stable = marker.sandboxName === actual.sandboxName
     && marker.sourceRevision === actual.sourceRevision
     && marker.imageDigest === actual.imageDigest;
-  if (!stable) return vmSession.kind === 'snapshot-resumed' ? 'snapshot' : 'full';
+  if (!stable) return 'full';
   const hashesMatch = marker.githubTokenSha256 === actual.githubTokenSha256
     && marker.envSha256 === actual.envSha256;
   if (vmSession.kind === 'snapshot-resumed') return hashesMatch ? 'snapshot' : 'snapshot-sync';
@@ -294,30 +292,30 @@ export async function prepareSandboxRuntime(
         const evidenceKind = classifyPreparation(evidence.marker, actual);
         if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
         if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
-        await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
-        // Same relaunch semantics as reusePreparedRuntime: a snapshot can retain
-        // setup.status=running after --pause killed the setup PID. Verify/restart.
-        const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
-          sandbox: options.sandbox,
-          client: options.client,
-          workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
-          ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-        }));
-        await writePreparationMarker(options, secrets, {
-          sandboxName: options.sandbox.name,
-          sessionId: actual.sessionId,
-          sourceRevision: actual.sourceRevision,
-          imageDigest: actual.imageDigest,
-          githubTokenSha256: githubTokenHash,
-          envSha256: environmentHash,
-        });
-        return {
-          setupStatus,
-          reused: true,
-          evidence: evidenceKind,
-          snapshotResumed: evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync',
-        };
+          await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
+          // Same relaunch semantics as reusePreparedRuntime: a snapshot can retain
+          // setup.status=running after --pause killed the setup PID. Verify/restart.
+          const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
+            sandbox: options.sandbox,
+            client: options.client,
+            workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+            ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+          }));
+          await writePreparationMarker(options, secrets, {
+            sandboxName: options.sandbox.name,
+            sessionId: actual.sessionId,
+            sourceRevision: actual.sourceRevision,
+            imageDigest: actual.imageDigest,
+            githubTokenSha256: githubTokenHash,
+            envSha256: environmentHash,
+          });
+          return {
+            setupStatus,
+            reused: true,
+            evidence: evidenceKind,
+            snapshotResumed: options.sandbox.sourceSnapshotId !== undefined,
+          };
         }
       }
     }
@@ -343,7 +341,12 @@ export async function prepareSandboxRuntime(
       envSha256: environmentHash,
     });
   }
-  return { setupStatus, reused: false, evidence: 'full', snapshotResumed: false };
+  return {
+    setupStatus,
+    reused: false,
+    evidence: 'full',
+    snapshotResumed: options.sandbox.sourceSnapshotId !== undefined,
+  };
 }
 
 async function synchronizeRuntimeState(

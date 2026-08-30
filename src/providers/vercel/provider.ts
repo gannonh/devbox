@@ -298,10 +298,10 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       if (appPorts !== undefined && runtime.evidence !== 'full') {
         await clearPausedSnapshot(prepared.branchStore!, prepared.metadata);
       }
-      if (runtime.reused) {
-        request.stderr.write(runtime.snapshotResumed
-          ? 'Resumed from the retained snapshot; prior user processes ended (runtime services refreshed)\n'
-          : 'Re-entering the prepared sandbox (no re-provisioning)\n');
+      if (runtime.snapshotResumed) {
+        request.stderr.write('Resumed from the retained snapshot; prior user processes ended (runtime services refreshed)\n');
+      } else if (runtime.reused) {
+        request.stderr.write('Re-entering the prepared sandbox (no re-provisioning)\n');
       }
       await renderVercelAttachNotice(
         request,
