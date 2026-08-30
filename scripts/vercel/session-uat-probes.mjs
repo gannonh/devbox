@@ -165,7 +165,14 @@ export function createSessionUatProbes({
     const marker = markerFor(label);
     const wait = session.waitFor(marker, markerTimeoutMs);
     session.write(remoteIdentityCommand(marker));
-    return parseIdentity(await wait, marker);
+    const retry = setInterval(() => {
+      if (!session.output().includes(marker)) session.write(remoteIdentityCommand(marker));
+    }, 2_000);
+    try {
+      return parseIdentity(await wait, marker);
+    } finally {
+      clearInterval(retry);
+    }
   }
 
   async function waitForFixture(url, marker) {

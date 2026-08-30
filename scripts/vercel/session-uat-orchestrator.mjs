@@ -177,7 +177,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
 
   async function verifyInitialSession(session) {
     const marker = markerFor('identity');
-    const identity = parseIdentity(await writeAndWait(session, remoteIdentityCommand(marker), marker), marker);
+    const identity = parseIdentity(await writeAndWait(session, remoteIdentityCommand(marker), marker, 2_000), marker);
     check('initial named tmux session', identity.session === 'devbox', `session=${identity.session}`);
     check('initial session socket', identity.socket.startsWith('/tmp/devbox-tmux/session-'), 'socket uses the devbox-owned session directory');
     report.initial = { pid: identity.pid, tmuxSession: identity.session, socket: identity.socket };
@@ -448,10 +448,18 @@ export async function runSessionUat({ environment = process.env, argv = process.
     }
   }
 
-  async function writeAndWait(session, command, marker) {
+  async function writeAndWait(session, command, marker, retryIntervalMs = 0) {
     const wait = session.waitFor(marker, markerTimeoutMs);
     session.write(command);
-    return wait;
+    if (retryIntervalMs <= 0) return wait;
+    const retry = setInterval(() => {
+      if (!session.output().includes(marker)) session.write(command);
+    }, retryIntervalMs);
+    try {
+      return await wait;
+    } finally {
+      clearInterval(retry);
+    }
   }
 
   async function writeAndWaitAny(session, command, patterns) {
