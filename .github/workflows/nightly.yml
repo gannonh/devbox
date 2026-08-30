@@ -590,6 +590,7 @@ jobs:
       name: vercel-provider-smoke
     permissions:
       contents: read
+      actions: read
     env:
       SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
       IMAGE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
@@ -637,6 +638,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
           DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/preflight.json
           DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
@@ -675,6 +677,7 @@ jobs:
           VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
           GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
           DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/reconciliation.json
           DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
