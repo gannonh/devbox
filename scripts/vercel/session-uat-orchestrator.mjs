@@ -365,9 +365,15 @@ export async function runSessionUat({ environment = process.env, argv = process.
   async function startSnapshotProcess(stateHome) {
     const session = await attachSession(stateHome);
     try {
+      const workspaceMarker = markerFor('snapshot-process-workspace');
+      const workspace = parseWorkspace(
+        await writeAndWait(session, remoteWorkspaceCommand(workspaceMarker), workspaceMarker),
+        workspaceMarker,
+      );
+      check('snapshot process workspace', workspace.path.startsWith('/vercel/'), `path=${workspace.path}`);
       const startedMarker = markerFor('snapshot-process-started');
       const processMarker = markerFor('snapshot-process');
-      const sentinelPath = `/vercel/sandbox/.devbox-uat-sentinel-${randomBytes(8).toString('hex')}`;
+      const sentinelPath = `${workspace.path}/.devbox-uat-sentinel-${randomBytes(8).toString('hex')}`;
       const priorProcess = parseDetachedProcessStartup(
         await writeAndWait(session, remoteDetachedProcessCommand(startedMarker, processMarker, sentinelPath), startedMarker),
         startedMarker,
