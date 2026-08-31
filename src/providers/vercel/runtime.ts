@@ -55,8 +55,6 @@ export interface RuntimePreparationActualEvidence extends RuntimePreparationBase
   sourceSnapshotId?: string;
 }
 
-export type RuntimePreparationActual = RuntimePreparationActualEvidence;
-
 export type RuntimeVmSession =
   | { kind: 'new'; sessionId: VercelSessionId }
   | { kind: 'same-session'; sessionId: VercelSessionId }
@@ -115,7 +113,7 @@ export interface PrepareSandboxRuntimeOptions {
  */
 export function evaluatePreparation(
   marker: unknown,
-  actual: RuntimePreparationActual,
+  actual: RuntimePreparationActualEvidence,
 ): boolean {
   if (!hasPreparationMarker(marker)) return false;
   return classifyRuntimeVmSession(marker, actual).kind === 'same-session'

@@ -15,7 +15,6 @@ export const DEVBOX_TMUX_SESSION_NAME = 'devbox';
 export const VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS = 30_000;
 
 export interface VercelTerminalShell {
-  sessionId: VercelSessionId;
   socketDirectory: string;
   socketPath: string;
   program: VercelTerminalProgram;
@@ -58,7 +57,6 @@ export async function prepareVercelTerminalShell(
     );
   }
   return {
-    sessionId,
     socketDirectory,
     socketPath,
     program: {

@@ -291,11 +291,7 @@ export function createSessionUatCleanup({
   }
 
   return {
-    cleanupIdentity,
-    dependencies,
-    removeRunTaggedLeftovers,
     runCleanup,
-    waitForEmpty,
   };
 }
 
