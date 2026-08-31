@@ -11,6 +11,7 @@ import {
 describe('Vercel terminal shell', () => {
   it('reconciles other devbox sockets and returns a session-derived tmux program', async () => {
     const commands: Array<{ cmd?: string; args?: readonly string[]; signal?: AbortSignal }> = [];
+    const strictSessionIds: string[] = [];
     const runCommand = async (request: { cmd?: string; args?: readonly string[]; signal?: AbortSignal }) => {
       commands.push(request);
       return { exitCode: 0 };
@@ -18,7 +19,16 @@ describe('Vercel terminal shell', () => {
     const sandbox = {
       currentSession: () => ({ sessionId: 'session-1', runCommand }),
     } as unknown as VercelSandboxHandle;
-    const client = { runCommand: async (_sandbox: VercelSandboxHandle, request: { cmd?: string; args?: readonly string[]; signal?: AbortSignal }) => runCommand(request) } as unknown as VercelSandboxClient;
+    const client = {
+      runCommand: async (
+        _sandbox: VercelSandboxHandle,
+        request: { cmd?: string; args?: readonly string[]; signal?: AbortSignal },
+        options?: { expectedSessionId: string },
+      ) => {
+        if (options !== undefined) strictSessionIds.push(options.expectedSessionId);
+        return runCommand(request);
+      },
+    } as unknown as VercelSandboxClient;
 
     const shell = await prepareVercelTerminalShell({
       sandbox,
@@ -51,6 +61,7 @@ describe('Vercel terminal shell', () => {
     expect(commands[0]?.args?.[1]).toContain(`${DEVBOX_TMUX_SOCKET_DIRECTORY_PREFIX}`);
     expect(commands[0]?.args?.[1]).toContain('"$root"/');
     expect(commands[0]?.args?.[1]).not.toContain('"$root"/*;');
+    expect(strictSessionIds).toEqual(['session-1']);
     expect(VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS).toBe(30_000);
   });
 
@@ -88,6 +99,7 @@ describe('Vercel terminal shell', () => {
 
   it('reconciles again when runCommand resumes the sandbox into a new session', async () => {
     const commands: Array<{ args?: readonly string[] }> = [];
+    const strictSessionIds: string[] = [];
     let sessionReads = 0;
     const runCommand = async (request: { args?: readonly string[] }) => {
       commands.push(request);
@@ -99,7 +111,16 @@ describe('Vercel terminal shell', () => {
         runCommand,
       }),
     } as unknown as VercelSandboxHandle;
-    const client = { runCommand: async (_sandbox: VercelSandboxHandle, request: { args?: readonly string[] }) => runCommand(request) } as unknown as VercelSandboxClient;
+    const client = {
+      runCommand: async (
+        _sandbox: VercelSandboxHandle,
+        request: { args?: readonly string[] },
+        options?: { expectedSessionId: string },
+      ) => {
+        if (options !== undefined) strictSessionIds.push(options.expectedSessionId);
+        return runCommand(request);
+      },
+    } as unknown as VercelSandboxClient;
 
     const shell = await prepareVercelTerminalShell({
       sandbox,
@@ -110,6 +131,7 @@ describe('Vercel terminal shell', () => {
     expect(commands).toHaveLength(2);
     expect(commands[0]?.args?.[1]).toContain('c2Vzc2lvbi1iZWZvcmUtcmVzdW1l');
     expect(commands[1]?.args?.[1]).toContain('c2Vzc2lvbi1hZnRlci1yZXN1bWU');
+    expect(strictSessionIds).toEqual(['session-before-resume', 'session-after-resume']);
     expect(shell.socketDirectory).toContain('c2Vzc2lvbi1hZnRlci1yZXN1bWU');
     expect(shell.program.args).toContain(`${shell.socketDirectory}/socket`);
   });

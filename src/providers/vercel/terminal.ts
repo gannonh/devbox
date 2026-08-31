@@ -96,7 +96,6 @@ export interface VercelTerminalOptions {
   /** Provider-neutral TTY fact; avoids consulting a global process stream. */
   tty?: boolean;
   signal?: AbortSignal;
-  /** Provider session that shell setup prepared; prevents an implicit resume. */
   sessionId?: string;
   program?: VercelTerminalProgram;
   signalSource?: EventEmitter;

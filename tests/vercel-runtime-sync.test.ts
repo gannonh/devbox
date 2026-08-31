@@ -515,8 +515,6 @@ describe('Vercel runtime sync', () => {
         events.push('runtime-upload');
       }),
       runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
-        // App-port scanning and terminal-shell setup use independent deadlines,
-        // so exclude them from the shared runtime-signal assertion.
         if (request.signal && !isNonRuntimeCommand(request)) runtimeSignals.push(request.signal);
         events.push('runtime-command');
         if (request.cmd === '/usr/local/bin/devbox-status') {

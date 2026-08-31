@@ -77,7 +77,6 @@ export type VercelRunCommandRequest = Parameters<Sandbox['runCommand']>[0];
 
 export interface VercelInteractiveOptions {
   signal?: AbortSignal;
-  /** Expected provider session; used to prevent an implicit resume at attach. */
   sessionId?: string;
 }
 
@@ -264,8 +263,7 @@ export interface VercelSandboxClient {
 }
 
 export interface VercelRunCommandOptions {
-  /** Run on this already observed session instead of allowing an implicit resume. */
-  expectedSessionId?: string;
+  expectedSessionId: string;
   secrets?: readonly string[];
 }
 
@@ -425,7 +423,7 @@ export function createVercelSandboxClient(
       [],
       () => sandbox.writeFiles(files, options),
     ),
-    runCommand: async (sandbox, params, options) => options?.expectedSessionId === undefined
+    runCommand: async (sandbox, params, options) => options === undefined
       ? call('Sandbox.runCommand', [], () => sandbox.runCommand(params))
       : runCurrentSessionCommand(sandbox, options.expectedSessionId, params, options.secrets),
     updatePorts: async (sandbox, ports, updateOptions) => call(

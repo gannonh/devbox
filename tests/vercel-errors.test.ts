@@ -9,6 +9,7 @@ import { VercelSdkError } from '../src/providers/vercel/client.js';
 import { VercelDisplayStartupError } from '../src/providers/vercel/display-startup.js';
 import { VercelObsoleteMetadataError } from '../src/providers/vercel/metadata-schema.js';
 import { VercelRuntimeSyncError } from '../src/providers/vercel/runtime.js';
+import { VercelTerminalShellError } from '../src/providers/vercel/terminal-shell.js';
 
 describe('Vercel provider errors', () => {
   it('preserves creation-compensation recovery IDs without exposing secrets', () => {
@@ -110,6 +111,18 @@ describe('Vercel provider errors', () => {
     );
     expect(generic.code).toBe('api');
     expect(generic.exitCode).toBe(1);
+
+    const terminalSetup = mapVercelError(
+      new VercelTerminalShellError('tmux reconciliation failed'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(terminalSetup.code).toBe('api');
+
+    const terminalSession = mapVercelError(
+      new VercelTerminalShellError('Vercel current session ID is unavailable', 'session_unavailable'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(terminalSession.code).toBe('session');
   });
 
   it('maps rate limits with Retry-After without exposing the response body', () => {
