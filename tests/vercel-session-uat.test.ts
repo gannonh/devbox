@@ -210,6 +210,19 @@ describe('public Vercel session UAT driver', () => {
     expect(detail).toBe('Vercel devbox ready\n  access code: [REDACTED]');
   });
 
+  it('redacts device authorization URLs and codes from captured diagnostics', () => {
+    const detail = redactTailValue([
+      'Vercel device authorization URL: https://vercel.com/device?user_code=DEVICE-CODE',
+      'Vercel device authorization code: DEVICE-CODE',
+      'fallback URL: https://vercel.com/device?code=DEVICE-CODE',
+    ].join('\n'), []);
+
+    expect(detail).toContain('https://vercel.com/device?user_code=[REDACTED]');
+    expect(detail).toContain('Vercel device authorization code: [REDACTED]');
+    expect(detail).toContain('https://vercel.com/device?code=[REDACTED]');
+    expect(detail).not.toContain('DEVICE-CODE');
+  });
+
   it('observes an already-exited PTY without waiting for its timeout', async () => {
     const child = Object.assign(new EventEmitter(), {
       stdout: new PassThrough(),

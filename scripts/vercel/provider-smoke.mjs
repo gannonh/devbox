@@ -134,7 +134,9 @@ function redactText(value) {
     // The display access code travels as a pairing query parameter and as the
     // cookie it is exchanged for; neither may reach an evidence artifact.
     .replace(/([?&]token=)[^&\s"']+/gi, '$1[REDACTED]')
+    .replace(/([?&](?:user_)?code=)[^&#\s"']+/gi, '$1[REDACTED]')
     .replace(/(devbox_novnc=)[^;\s"']+/gi, '$1[REDACTED]')
+    .replace(/(Vercel device authorization code:\s*)[^\s]+/gi, '$1[REDACTED]')
     .replace(/\b(?:ghp_|github_pat_|vcp_|vercel_)[A-Za-z0-9_~-]+/gi, '[REDACTED]');
 }
 
