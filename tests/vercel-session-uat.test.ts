@@ -74,6 +74,7 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('snapshot display route healthy');
     expect(source).toContain('snapshot public route healthy');
     expect(source).toContain('snapshot workspace restored');
+    expect(source).toContain("workspace.path.startsWith('/vercel/')");
     expect(source).toContain('snapshot branch restored');
     expect(source).toContain('snapshot runtime state restored');
     expect(source).toContain('snapshot fresh provider session');
