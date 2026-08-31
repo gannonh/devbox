@@ -228,6 +228,40 @@ describe('Vercel URL output', () => {
     expect(events.at(-1)).toBe('terminal-attach');
   });
 
+  it('prints the snapshot process-boundary notice on up', async () => {
+    const routes = [
+      { port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' },
+    ];
+    const handle = {
+      ...sandbox(),
+      routes,
+      sourceSnapshotId: 'snapshot-1',
+      currentSession: () => ({ sessionId: 'resumed-session' }),
+    } as VercelSandboxHandle;
+    const lifecycle = {
+      up: vi.fn(async () => handle),
+      routes: vi.fn(async () => routes),
+    } as unknown as VercelLifecycle;
+    const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, command: VercelRunCommandRequest) =>
+        command.cmd === '/usr/local/bin/devbox-status'
+          ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+          : { exitCode: 0 }),
+    } as unknown as VercelSandboxClient;
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+    };
+    const test = await fixture(routes, { lifecycle, client, terminal });
+
+    await expect(test.provider.up(test.request)).resolves.toEqual({ exitCode: 0 });
+
+    expect(test.errorOutput()).toContain(
+      'Resumed from the retained snapshot; prior user processes ended (runtime services refreshed)',
+    );
+    expect(test.errorOutput()).toContain('Vercel devbox ready');
+  });
+
   it('rejects credential-bearing route URLs before rendering or opening them', async () => {
     const opener = vi.fn();
     const test = await fixture([

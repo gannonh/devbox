@@ -240,6 +240,9 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
           return { sandbox, runtime, appPorts };
         },
       );
+      if (runtime.snapshotResumed) {
+        writeSnapshotResumeNotice(request.stderr);
+      }
       await renderVercelReadyBlock(
         request,
         sandbox,
@@ -323,7 +326,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         },
       );
       if (runtime.snapshotResumed) {
-        request.stderr.write('Resumed from the retained snapshot; prior user processes ended (runtime services refreshed)\n');
+        writeSnapshotResumeNotice(request.stderr);
       } else if (runtime.reused) {
         request.stderr.write('Re-entering the prepared sandbox (no re-provisioning)\n');
       }
@@ -640,6 +643,10 @@ function renderScope(
   return typeof confirmation === 'object' && confirmation?.render
     ? confirmation.render(scope)
     : renderVercelScope(scope);
+}
+
+function writeSnapshotResumeNotice(stderr: NodeJS.WritableStream): void {
+  stderr.write('Resumed from the retained snapshot; prior user processes ended (runtime services refreshed)\n');
 }
 
 function configuredSessionTimeout(
