@@ -112,7 +112,7 @@ describe('public Vercel session UAT driver', () => {
       'DEVBOX_UAT_started',
     )).toEqual({ marker: 'process-marker', pid: '43' });
     expect(probes.parseWorkspace(
-      'PWD=/vercel/sandbox BRANCH=feature/session\nDEVBOX_UAT_workspace',
+      'PWD=/vercel/sandbox BRANCH=feature/session\u001b[K\nDEVBOX_UAT_workspace',
       'DEVBOX_UAT_workspace',
     )).toEqual({ path: '/vercel/sandbox', branch: 'feature/session' });
     expect(sessionSocketPath('session-1')).toBe('/tmp/devbox-tmux/session-c2Vzc2lvbi0x/socket');

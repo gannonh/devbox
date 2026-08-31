@@ -451,7 +451,11 @@ function parseDetachedProcessStartup(output, marker) {
 
 function parseWorkspace(output, marker) {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`PWD=([^\\s\\r\\n]+) BRANCH=([^\\s\\r\\n]+)\\s+${escaped}`).exec(output);
+  const terminalOutput = output.replace(
+    new RegExp(String.fromCharCode(27) + '\\[[0-?]*[ -/]*[@-~]', 'g'),
+    '',
+  );
+  const match = new RegExp(`PWD=([^\\s\\r\\n]+) BRANCH=([^\\s\\r\\n]+)\\s+${escaped}`).exec(terminalOutput);
   if (!match) throw new Error('workspace marker did not include the working directory and branch');
   return { path: match[1], branch: match[2] };
 }
