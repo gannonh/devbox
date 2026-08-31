@@ -41,6 +41,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     branch,
     repoRoot,
     cliPath,
+    environment,
     markerTimeoutMs,
     providerPollMs: durationProviderPollMs,
     redact,
@@ -167,6 +168,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
         provider: await readProviderSessionFacts(stateHome),
       };
     } catch (error) {
+      await session.close('SIGTERM').catch(() => undefined);
       const detail = redactTail(session.output());
       throw new Error(`${error instanceof Error ? error.message : String(error)}${detail ? `: ${detail}` : ''}`);
     }
@@ -342,23 +344,33 @@ export async function runSessionUat({ environment = process.env, argv = process.
 
   async function runAction(stateHome, args) {
     const session = createPty([cliPath, ...args], stateHome);
-    const exitCode = await session.waitForExit(cliTimeoutMs);
-    return { exitCode, output: session.output() };
+    try {
+      const exitCode = await session.waitForExit(cliTimeoutMs);
+      return { exitCode, output: session.output() };
+    } catch (error) {
+      await session.close('SIGTERM').catch(() => undefined);
+      throw error;
+    }
   }
 
   async function startSnapshotProcess(stateHome) {
     const session = await attachSession(stateHome);
-    const startedMarker = markerFor('snapshot-process-started');
-    const processMarker = markerFor('snapshot-process');
-    const sentinelPath = `/vercel/sandbox/.devbox-uat-sentinel-${randomBytes(8).toString('hex')}`;
-    const priorProcess = parseDetachedProcessStartup(
-      await writeAndWait(session, remoteDetachedProcessCommand(startedMarker, processMarker, sentinelPath), startedMarker),
-      startedMarker,
-    );
-    check('snapshot process marker recorded', priorProcess.marker === processMarker, 'the detached process carried a unique marker');
-    session.write(Buffer.from([0x1d]));
-    await session.waitForExit(cliTimeoutMs);
-    return { ...priorProcess, sentinelPath };
+    try {
+      const startedMarker = markerFor('snapshot-process-started');
+      const processMarker = markerFor('snapshot-process');
+      const sentinelPath = `/vercel/sandbox/.devbox-uat-sentinel-${randomBytes(8).toString('hex')}`;
+      const priorProcess = parseDetachedProcessStartup(
+        await writeAndWait(session, remoteDetachedProcessCommand(startedMarker, processMarker, sentinelPath), startedMarker),
+        startedMarker,
+      );
+      check('snapshot process marker recorded', priorProcess.marker === processMarker, 'the detached process carried a unique marker');
+      session.write(Buffer.from([0x1d]));
+      await session.waitForExit(cliTimeoutMs);
+      return { ...priorProcess, sentinelPath };
+    } catch (error) {
+      await session.close('SIGTERM').catch(() => undefined);
+      throw error;
+    }
   }
 
   async function verifySnapshotBoundary(stateHome, priorIdentity) {
