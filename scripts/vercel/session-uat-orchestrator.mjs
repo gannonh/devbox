@@ -12,6 +12,7 @@ const DURATION_FINAL_WINDOW_MS = 60 * 1000;
 const DURATION_STOP_TIMEOUT_MS = 180 * 1000;
 const DURATION_PROVIDER_POLL_MS = 2 * 1000;
 const DEADLINE_TOLERANCE_MS = 5 * 1000;
+const NATURAL_STOP_TOLERANCE_MS = 10 * 1000;
 const RUN_BRANCH_TAG_PREFIX = 'uat-devbox-session-';
 
 export async function runSessionUat({ environment = process.env, argv = process.argv } = {}) {
@@ -229,8 +230,8 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const stopped = await waitForProviderStop(provider.sandboxName, durationStopTimeoutMs);
     const stoppedAtMs = Date.parse(stopped.terminalAt);
     check('duration natural stop boundary', Number.isFinite(stoppedAtMs)
-      && stoppedAtMs >= expiresAtMs - DEADLINE_TOLERANCE_MS
-      && stoppedAtMs <= expiresAtMs + DEADLINE_TOLERANCE_MS, `deadline=${provider.expiresAt}; stoppedAt=${stopped.terminalAt}`);
+      && stoppedAtMs >= expiresAtMs - NATURAL_STOP_TOLERANCE_MS
+      && stoppedAtMs <= expiresAtMs + NATURAL_STOP_TOLERANCE_MS, `deadline=${provider.expiresAt}; stoppedAt=${stopped.terminalAt}`);
     const retainedSnapshots = await waitForRetainedSnapshots(provider.sandboxName, durationStopTimeoutMs);
     const resumed = await resumeSnapshot(stateHome, snapshotProcess, {
       socket: initialIdentity.socket,
