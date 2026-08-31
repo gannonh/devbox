@@ -15,6 +15,7 @@ import {
 import type {
   VercelCommandResult,
   VercelRunCommandRequest,
+  VercelRunCommandOptions,
   VercelSandboxClient,
   VercelSandboxHandle,
   VercelWriteFile,
@@ -31,6 +32,7 @@ interface FakeOptions {
 
 function fakeClient(options: FakeOptions = {}) {
   const commands: string[][] = [];
+  const strictSessionIds: string[] = [];
   const files: VercelWriteFile[] = [];
   const running = new Map<number, number>(
     Object.entries(options.running ?? {}).map(([logical, relay]) => [Number(logical), relay]),
@@ -41,7 +43,12 @@ function fakeClient(options: FakeOptions = {}) {
     writeFiles: vi.fn(async (_sandbox: VercelSandboxHandle, written: VercelWriteFile[]) => {
       files.push(...written);
     }),
-    runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
+    runCommand: vi.fn(async (
+      _sandbox: VercelSandboxHandle,
+      request: VercelRunCommandRequest,
+      strictOptions?: VercelRunCommandOptions,
+    ) => {
+      if (strictOptions !== undefined) strictSessionIds.push(strictOptions.expectedSessionId);
       const args = (request.args ?? []).slice(1);
       commands.push([...args]);
       const [command, ...rest] = args;
@@ -69,7 +76,7 @@ function fakeClient(options: FakeOptions = {}) {
     }),
   } as unknown as VercelSandboxClient;
 
-  return { client, commands, files, running };
+  return { client, commands, files, running, strictSessionIds };
 }
 
 const sandbox = {
@@ -108,7 +115,7 @@ describe('relay record parsing', () => {
 
 describe('relay provisioning', () => {
   it('installs the relay runtime and starts one process per app port', async () => {
-    const { options, commands, files } = manager();
+    const { options, commands, files, strictSessionIds } = manager();
 
     const result = await provisionRelays(options, {
       logical: [{ port: 5173, label: 'vite' }, { port: 3000, label: 'next' }],
@@ -123,6 +130,8 @@ describe('relay provisioning', () => {
     ]);
     expect(result.started).toEqual([5173, 3000]);
     expect(commands.filter(([command]) => command === 'start')).toHaveLength(2);
+    expect(strictSessionIds.length).toBeGreaterThan(0);
+    expect(new Set(strictSessionIds)).toEqual(new Set(['relay-session']));
   });
 
   it('forbids display ports, app ports, foreign routes, and sibling listeners', async () => {

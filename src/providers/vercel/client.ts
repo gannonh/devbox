@@ -291,11 +291,20 @@ export class VercelSdkError extends Error {
 
   constructor(operation: string, error: unknown, secrets: readonly string[]) {
     const status = getStatus(error);
-    super(redactSecrets(error instanceof Error ? error.message : String(error), secrets));
+    super(redactSecrets(error instanceof Error ? error.message : String(error), secrets), { cause: error });
     this.name = 'VercelSdkError';
     this.operation = operation;
     this.status = status;
     this.notFound = status === 404;
+  }
+}
+
+export class VercelSessionBindingError extends Error {
+  readonly code = 'session_binding';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'VercelSessionBindingError';
   }
 }
 
@@ -471,14 +480,14 @@ export function runCurrentSessionCommand(
   params: VercelRunCommandRequest,
   secrets: readonly string[] = [],
 ): Promise<VercelCommandResult> {
-  return callWithSecrets('Session.runCommand', secrets, async () => {
-    const session = sandbox.currentSession?.();
-    if (!session?.runCommand) throw new Error('Vercel current session is unavailable for a strict command');
-    if (session.sessionId !== expectedSessionId) {
-      throw new Error('Vercel current session changed before a strict command started');
-    }
-    return session.runCommand(params);
-  });
+  const session = sandbox.currentSession?.();
+  if (!session?.runCommand) {
+    throw new VercelSessionBindingError('Vercel current session is unavailable for a strict command');
+  }
+  if (session.sessionId !== expectedSessionId) {
+    throw new VercelSessionBindingError('Vercel current session changed before a strict command started');
+  }
+  return callWithSecrets('Session.runCommand', secrets, () => session.runCommand(params));
 }
 
 function matchesSandboxListFilters(

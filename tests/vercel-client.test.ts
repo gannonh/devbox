@@ -6,8 +6,8 @@ import {
   createVercelSandboxClient,
   isVercelNotFound,
   isVercelStale,
-  runCurrentSessionCommand,
   VercelSdkError,
+  VercelSessionBindingError,
   type VercelSandboxHandle,
 } from '../src/providers/vercel/client.js';
 import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
@@ -55,9 +55,10 @@ describe('Vercel Sandbox client adapter', () => {
       name: target.name,
     });
 
-    await expect(runCurrentSessionCommand(handle, 'session-1', { cmd: 'true' })).resolves.toEqual({ exitCode: 0 });
-    await expect(runCurrentSessionCommand(handle, 'session-2', { cmd: 'true' }))
-      .rejects.toThrow('Vercel current session changed before a strict command started');
+    await expect(client.runCommand(handle, { cmd: 'true' }, { expectedSessionId: 'session-1' }))
+      .resolves.toEqual({ exitCode: 0 });
+    await expect(client.runCommand(handle, { cmd: 'true' }, { expectedSessionId: 'session-2' }))
+      .rejects.toBeInstanceOf(VercelSessionBindingError);
     expect(directRun).toHaveBeenCalledWith({ cmd: 'true' });
     expect(automaticRun).not.toHaveBeenCalled();
   });
