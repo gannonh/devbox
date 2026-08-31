@@ -36,7 +36,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     deadlineToleranceMs: DEADLINE_TOLERANCE_MS,
     environment,
   });
-  const { report, redact, redactTail, check, sameDeadline, writeReport } = evidence;
+  const { report, redact, redactTail, fingerprint, check, sameDeadline, writeReport } = evidence;
   const probes = createSessionUatProbes({
     branch,
     repoRoot,
@@ -106,9 +106,9 @@ export async function runSessionUat({ environment = process.env, argv = process.
     let active;
     try {
       active = await startSession(stateHome);
-      await verifyInitialSession(active);
-      if (mode === 'duration') await verifyDurationSession(stateHome, active);
-      else await verifyReconnectSession(stateHome, active);
+      const initialIdentity = await verifyInitialSession(active);
+      if (mode === 'duration') await verifyDurationSession(stateHome, active, initialIdentity);
+      else await verifyReconnectSession(stateHome, active, initialIdentity);
     } finally {
       if (active) {
         try {
@@ -179,10 +179,15 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const identity = parseIdentity(await writeAndWait(session, remoteIdentityCommand(marker), marker, 2_000), marker);
     check('initial named tmux session', identity.session === 'devbox', `session=${identity.session}`);
     check('initial session socket', identity.socket.startsWith('/tmp/devbox-tmux/session-'), 'socket uses the devbox-owned session directory');
-    report.initial = { pid: identity.pid, tmuxSession: identity.session, socket: identity.socket };
+    report.initial = {
+      pid: identity.pid,
+      tmuxSession: identity.session,
+      socketFingerprint: fingerprint(identity.socket),
+    };
+    return identity;
   }
 
-  async function verifyDurationSession(stateHome, session) {
+  async function verifyDurationSession(stateHome, session, initialIdentity) {
     const provider = session.provider;
     check('dedicated session duration', report.timeoutMinutes === DURATION_TIMEOUT_MINUTES, `timeout=${report.timeoutMinutes} minutes`);
     check('provider configured timeout', provider.configuredTimeoutMs === DURATION_TIMEOUT_MINUTES * 60 * 1000, `timeout=${provider.configuredTimeoutMs}ms`);
@@ -196,7 +201,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const quietStartedAt = Date.now();
     const idleBoundaryAt = await waitForDeadline(quietStartedAt + durationIdleBoundaryMs);
     const idleProvider = await readProviderSessionFacts(undefined, provider.sandboxName);
-    check('duration idle provider session', idleProvider.status === 'running' && idleProvider.sessionId === provider.sessionId, `status=${idleProvider.status}; sessionId=${idleProvider.sessionId}`);
+    check('duration idle provider session', idleProvider.status === 'running' && idleProvider.sessionId === provider.sessionId, `status=${idleProvider.status}; sessionFingerprint=${fingerprint(idleProvider.sessionId)}`);
     check('duration idle deadline unchanged', sameDeadline(provider.expiresAt, idleProvider.expiresAt), `initial=${provider.expiresAt}; idle=${idleProvider.expiresAt}`);
     const idleResponse = await waitForFixture(reconnect.publicUrl, reconnect.fixtureMarker);
     check('duration survives idle boundary', idleResponse.pid === reconnect.startedIdentity.pid, `initial=${reconnect.startedIdentity.pid}; idle=${idleResponse.pid}`);
@@ -209,7 +214,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     await waitForDeadline(finalProbeTarget);
     const finalProbeAt = new Date().toISOString();
     const finalProvider = await readProviderSessionFacts(undefined, provider.sandboxName);
-    check('duration final provider session', finalProvider.status === 'running' && finalProvider.sessionId === provider.sessionId, `status=${finalProvider.status}; sessionId=${finalProvider.sessionId}`);
+    check('duration final provider session', finalProvider.status === 'running' && finalProvider.sessionId === provider.sessionId, `status=${finalProvider.status}; sessionFingerprint=${fingerprint(finalProvider.sessionId)}`);
     check('duration final deadline unchanged', sameDeadline(provider.expiresAt, finalProvider.expiresAt), `initial=${provider.expiresAt}; final=${finalProvider.expiresAt}`);
     const finalResponse = await waitForFixture(reconnect.publicUrl, reconnect.fixtureMarker);
     const remainingMs = expiresAtMs - Date.now();
@@ -226,22 +231,22 @@ export async function runSessionUat({ environment = process.env, argv = process.
       && stoppedAtMs <= expiresAtMs + DEADLINE_TOLERANCE_MS, `deadline=${provider.expiresAt}; stoppedAt=${stopped.terminalAt}`);
     const retainedSnapshots = await waitForRetainedSnapshots(provider.sandboxName, durationStopTimeoutMs);
     const resumed = await resumeSnapshot(stateHome, snapshotProcess, {
-      socket: report.initial.socket,
+      socket: initialIdentity.socket,
       providerSessionId: provider.sessionId,
     });
     check('duration provider stop observed', ['stopped', 'aborted'].includes(stopped.status), `status=${stopped.status}`);
     check('duration one retained snapshot', retainedSnapshots.length === 1, `createdSnapshots=${retainedSnapshots.length}`);
     report.duration = {
       configuredTimeoutMs: provider.configuredTimeoutMs,
-      sessionId: provider.sessionId,
-      sandboxName: provider.sandboxName,
+      sessionIdFingerprint: fingerprint(provider.sessionId),
+      sandboxNameFingerprint: fingerprint(provider.sandboxName),
       createdAt: provider.createdAt,
       expiresAt: provider.expiresAt,
       idleStatus: idleProvider.status,
-      idleSessionId: idleProvider.sessionId,
+      idleSessionIdFingerprint: fingerprint(idleProvider.sessionId),
       idleExpiresAt: idleProvider.expiresAt,
       finalStatus: finalProvider.status,
-      finalSessionId: finalProvider.sessionId,
+      finalSessionIdFingerprint: fingerprint(finalProvider.sessionId),
       finalExpiresAt: finalProvider.expiresAt,
       idleBoundaryAt: new Date(idleBoundaryAt).toISOString(),
       quietStartedAt: new Date(quietStartedAt).toISOString(),
@@ -253,17 +258,17 @@ export async function runSessionUat({ environment = process.env, argv = process.
       abortedAt: stopped.abortedAt,
       stopObservedAt: stopped.observedAt,
       stoppedStatus: stopped.status,
-      retainedSnapshots: retainedSnapshots.map((snapshot) => ({ id: snapshot.id, status: snapshot.status })),
-      resumedSessionId: resumed.identity.sessionId,
-      resumedSandboxName: resumed.identity.sandboxName,
+      retainedSnapshots: retainedSnapshots.map((snapshot) => ({ idFingerprint: fingerprint(snapshot.id), status: snapshot.status })),
+      resumedSessionIdFingerprint: fingerprint(resumed.identity.sessionId),
+      resumedSandboxNameFingerprint: fingerprint(resumed.identity.sandboxName),
     };
   }
 
-  async function verifyReconnectSession(stateHome, initial) {
+  async function verifyReconnectSession(stateHome, initial, initialIdentity) {
     const reconnect = await verifySameSessionReconnect(stateHome, initial, 'http-fixture');
     await stopFixture(reconnect.publicUrl, reconnect.fixtureMarker);
     await verifySnapshotBoundary(stateHome, {
-      socket: report.initial.socket,
+      socket: initialIdentity.socket,
       providerSessionId: initial.provider.sessionId,
     });
   }
@@ -282,7 +287,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const forcedAttach = await attachSession(stateHome);
     try {
       forcedProvider = await readProviderSessionFacts(stateHome, initial.provider.sandboxName);
-      check('forced-close same provider session', forcedProvider.sessionId === initial.provider.sessionId, `initial=${initial.provider.sessionId}; reconnect=${forcedProvider.sessionId}`);
+      check('forced-close same provider session', forcedProvider.sessionId === initial.provider.sessionId, `initialFingerprint=${fingerprint(initial.provider.sessionId)}; reconnectFingerprint=${fingerprint(forcedProvider.sessionId)}`);
       check('forced-close same provider deadline', sameDeadline(forcedProvider.expiresAt, initial.provider.expiresAt), `initial=${initial.provider.expiresAt}; reconnect=${forcedProvider.expiresAt}`);
       const forcedResponse = await waitForFixture(initial.publicUrl, fixtureMarker);
       check('forced-close same foreground PID', forcedResponse.pid === startedIdentity.pid, `initial=${startedIdentity.pid}; reconnect=${forcedResponse.pid}`);
@@ -297,7 +302,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const cleanAttach = await attachSession(stateHome);
     try {
       cleanProvider = await readProviderSessionFacts(stateHome, initial.provider.sandboxName);
-      check('clean attach same provider session', cleanProvider.sessionId === initial.provider.sessionId, `initial=${initial.provider.sessionId}; attach=${cleanProvider.sessionId}`);
+      check('clean attach same provider session', cleanProvider.sessionId === initial.provider.sessionId, `initialFingerprint=${fingerprint(initial.provider.sessionId)}; attachFingerprint=${fingerprint(cleanProvider.sessionId)}`);
       check('clean attach same provider deadline', sameDeadline(cleanProvider.expiresAt, initial.provider.expiresAt), `initial=${initial.provider.expiresAt}; attach=${cleanProvider.expiresAt}`);
       const cleanResponse = await waitForFixture(initial.publicUrl, fixtureMarker);
       check('clean attach same foreground PID', cleanResponse.pid === startedIdentity.pid, `initial=${startedIdentity.pid}; attach=${cleanResponse.pid}`);
@@ -317,9 +322,9 @@ export async function runSessionUat({ environment = process.env, argv = process.
       forcedClosePid: startedIdentity.pid,
       cleanAttachPid: startedIdentity.pid,
       tmuxSession: startedIdentity.session,
-      initialSessionId: initial.provider.sessionId,
-      forcedAttachSessionId: forcedProvider.sessionId,
-      cleanAttachSessionId: cleanProvider.sessionId,
+      initialSessionIdFingerprint: fingerprint(initial.provider.sessionId),
+      forcedAttachSessionIdFingerprint: fingerprint(forcedProvider.sessionId),
+      cleanAttachSessionIdFingerprint: fingerprint(cleanProvider.sessionId),
       initialExpiresAt: initial.provider.expiresAt,
       forcedAttachExpiresAt: forcedProvider.expiresAt,
       cleanAttachExpiresAt: cleanProvider.expiresAt,
@@ -432,7 +437,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
       await stopFixture(appUrl, snapshotFixtureMarker);
       resumed.write(Buffer.from([0x1d]));
       await resumed.waitForExit(cliTimeoutMs);
-      check('snapshot fresh provider session', provider.sessionId !== priorIdentity.providerSessionId, `prior=${priorIdentity.providerSessionId}; resumed=${provider.sessionId}`);
+      check('snapshot fresh provider session', provider.sessionId !== priorIdentity.providerSessionId, `priorFingerprint=${fingerprint(priorIdentity.providerSessionId)}; resumedFingerprint=${fingerprint(provider.sessionId)}`);
       check('snapshot resumed timeout', provider.configuredTimeoutMs === timeoutMinutes * 60 * 1000, `timeout=${provider.configuredTimeoutMs}ms`);
       report.snapshot = {
         notice: processBoundaryNotice,
@@ -446,8 +451,8 @@ export async function runSessionUat({ environment = process.env, argv = process.
         displayRouteStatus: displayProbe.status,
         appRouteStatus: appProbe.status,
         fixturePid: snapshotFixtureIdentity.pid,
-        sandboxName: provider.sandboxName,
-        sessionId: provider.sessionId,
+        sandboxNameFingerprint: fingerprint(provider.sandboxName),
+        sessionIdFingerprint: fingerprint(provider.sessionId),
       };
       return { identity: provider };
     } finally {

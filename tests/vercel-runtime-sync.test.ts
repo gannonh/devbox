@@ -657,6 +657,111 @@ describe('Vercel runtime sync', () => {
     expect(runtimeStarts).toBe(2);
   });
 
+  it('waits for in-flight runtime preparation before explicitly stopping the sandbox', async () => {
+    const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-provider-stop-lock-'));
+    const branch = 'feature/ui';
+    const remote = 'github.com/acme/repo';
+    const identity = createVercelIdentity({
+      remote,
+      branch,
+      scope: { teamId: 'team-1', projectId: 'project-1' },
+    });
+    const scope = createVercelScopeMetadataStore({ stateHome: hostEnv, repoKey: remote });
+    const branchMetadata = createVercelBranchMetadataStore({ stateHome: hostEnv, repoKey: remote, branch });
+    await scope.write({ teamId: 'team-1', projectId: 'project-1' });
+    await branchMetadata.write({
+      identity: {
+        name: identity.name,
+        repository: identity.canonicalRepository,
+        branch: identity.branch,
+        packageVersion: identity.packageVersion,
+        tags: { ...identity.tags },
+      },
+      configuration: {
+        imageReference: TEST_IMAGE_REFERENCE,
+        sourceUrl: 'https://github.com/acme/repo.git',
+        sourceRevision: 'main',
+        requestedBranch: branch,
+        needsBranchSetup: false,
+        persistent: true,
+        keepLastSnapshots: 1,
+        timeoutMs: 1_800_000,
+      },
+      displayCredentials: { username: 'devbox', password: 'display-secret' },
+    });
+    let releaseRuntime!: () => void;
+    const runtimeGate = new Promise<void>((resolve) => { releaseRuntime = resolve; });
+    let runtimeStarted = false;
+    let stopCalled = false;
+    const lifecycle = {
+      up: vi.fn(async () => sandbox()),
+      stop: vi.fn(async () => {
+        stopCalled = true;
+        return { name: identity.name, sessions: [] };
+      }),
+    } as unknown as VercelLifecycle;
+    const client: VercelSandboxClient = {
+      writeFiles: vi.fn(async () => {}),
+      runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
+        if (request.args?.[1]?.includes('/vercel/.devbox/runtime/preparation.json')) {
+          runtimeStarted = true;
+          await runtimeGate;
+        }
+        if (request.cmd === '/usr/local/bin/devbox-status') {
+          return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };
+        }
+        return { exitCode: 0 };
+      }),
+    };
+    const terminal: VercelTerminalAdapter = {
+      attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
+    };
+    const sourceRunner: ShellRunner = {
+      exec: vi.fn(async (_command, args) => {
+        if (args[0] === 'remote') return 'git@github.com:Acme/Repo.git';
+        if (args[0] === 'ls-remote' && args.includes('--symref')) return 'ref: refs/heads/main\tHEAD\n';
+        throw new Error(`unexpected exec: ${args.join(' ')}`);
+      }),
+      execQuiet: vi.fn(async () => ({ stdout: '', code: 0 })),
+      spawnInherit: vi.fn(),
+    };
+    const provider = createVercelProvider({
+      runner: sourceRunner,
+      lifecycle,
+      client,
+      terminal,
+      confirmation: vi.fn(async () => true),
+      stateHome: hostEnv,
+    });
+    const makeRequest = (): ProviderBranchRequest => ({
+      repoRoot: '/host/repo',
+      repoName: 'repo',
+      env: {
+        HOME: hostEnv,
+        GH_TOKEN: 'github-secret',
+        VERCEL_TOKEN: 'vercel-secret',
+        VERCEL_TEAM_ID: 'team-1',
+        VERCEL_PROJECT_ID: 'project-1',
+      },
+      tty: true,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      branch,
+    });
+
+    const up = provider.up(makeRequest());
+    await vi.waitFor(() => expect(runtimeStarted).toBe(true));
+    const stop = provider.stop(makeRequest());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopCalled).toBe(false);
+    releaseRuntime();
+
+    await expect(up).resolves.toEqual({ exitCode: 0 });
+    await expect(stop).resolves.toEqual({ exitCode: 0 });
+    expect(stopCalled).toBe(true);
+  });
+
   it('runs runtime sync on attach before terminal readiness', async () => {
     const hostEnv = await mkdtemp(join(tmpdir(), 'devbox-runtime-provider-attach-'));
     const envPath = join(hostEnv, '.env');

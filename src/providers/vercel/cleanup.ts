@@ -347,7 +347,7 @@ export async function cleanupVercelSandbox(
         const terminalListing = observation.listingOk && observation.terminal;
         const stopResolved =
           observation.stopSucceeded || (terminalListing && !observation.stopAttempted);
-        sessionObservationOk = observation.listingOk && stopResolved;
+        sessionObservationOk = observation.listingOk && stopResolved && observation.terminal;
         finalSessions = observation.sessions;
         if (terminalListing) clearSessionObservationErrors();
         if (stopResolved) clearErrors('sandbox stop');
@@ -355,6 +355,8 @@ export async function cleanupVercelSandbox(
           residualSandboxIds.add(sandboxIdentifier(sandbox) ?? options.name);
           if (sessionObservationOk) {
             recordError('session verification', new Error('not every Sandbox session is stopped or aborted'));
+          } else if (observation.listingOk && !observation.terminal) {
+            recordError('session verification', new Error('Sandbox session listing did not provide terminal proof'));
           }
         }
         if (observation.stop !== undefined) {
@@ -517,7 +519,7 @@ async function stopAndVerifySessions(
   return {
     sessions: after.sessions,
     listingOk: after.listingOk,
-    terminal: after.listingOk && !hasNonTerminalSessions(after.sessions),
+    terminal: after.listingOk && hasTerminalSessionProof(after.sessions),
     stopAttempted: true,
     stopSucceeded,
     ...(stop === undefined ? {} : { stop }),
@@ -535,7 +537,7 @@ async function listSessions(
     return {
       sessions,
       listingOk: true,
-      terminal: !hasNonTerminalSessions(sessions),
+      terminal: hasTerminalSessionProof(sessions),
       stopAttempted: false,
       stopSucceeded: false,
     };
@@ -676,6 +678,10 @@ function matchesExpectedIdentity(
 
 function hasNonTerminalSessions(sessions: SandboxSessionRecord[]): boolean {
   return sessions.some((session) => !TERMINAL_SESSION_STATES.has(session.status));
+}
+
+function hasTerminalSessionProof(sessions: SandboxSessionRecord[]): boolean {
+  return sessions.length > 0 && !hasNonTerminalSessions(sessions);
 }
 
 function sandboxIdentifier(sandbox: VercelCleanupSandbox | undefined): string | undefined {

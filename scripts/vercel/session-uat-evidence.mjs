@@ -24,6 +24,7 @@ export function createEvidence({ mode, branch, timeoutMinutes, reportPath, deadl
     report,
     redact,
     redactTail,
+    fingerprint,
     check,
     sameDeadline: (expected, actual) => sameDeadline(expected, actual, deadlineToleranceMs),
     writeReport: async () => {

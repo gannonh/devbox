@@ -70,7 +70,7 @@ export interface VercelInteractiveSandbox {
   readonly createdAt?: Date;
   readonly expiresAt?: Date;
   readonly timeout?: number;
-  openInteractive(options?: { signal?: AbortSignal }): Promise<{
+  openInteractive(options?: { signal?: AbortSignal; sessionId?: string }): Promise<{
     url: string;
     token: string;
   }>;
@@ -96,6 +96,8 @@ export interface VercelTerminalOptions {
   /** Provider-neutral TTY fact; avoids consulting a global process stream. */
   tty?: boolean;
   signal?: AbortSignal;
+  /** Provider session that shell setup prepared; prevents an implicit resume. */
+  sessionId?: string;
   program?: VercelTerminalProgram;
   signalSource?: EventEmitter;
   detachSignals?: readonly ('SIGTERM' | 'SIGHUP')[];
@@ -172,7 +174,10 @@ async function attachTerminal(input: {
   });
   let interactive: Awaited<ReturnType<VercelInteractiveSandbox['openInteractive']>>;
   try {
-    interactive = await sandbox.openInteractive({ signal: options.signal });
+    interactive = await sandbox.openInteractive({
+      signal: options.signal,
+      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+    });
   } catch (error) {
     if (options.signal?.aborted) return { status: 'detached', reason: 'abort' };
     return failureResult(reportFailure(error));

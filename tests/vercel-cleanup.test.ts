@@ -606,6 +606,32 @@ describe('Vercel sandbox cleanup', () => {
     expect(calls).toEqual(['stop', 'sandbox-delete', 'snapshot-delete']);
   });
 
+  it('does not delete a present sandbox after an empty session listing', async () => {
+    const sandbox = { name: 'empty-session-listing', status: 'running' as const, tags: identityTags };
+    const adapter: VercelCleanupAdapter = {
+      get: vi.fn(async () => sandbox),
+      listSessions: vi.fn(async () => []),
+      stop: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
+      listSnapshots: vi.fn(async () => []),
+      getSnapshot: vi.fn(),
+      deleteByName: vi.fn(async () => ({ missing: false })),
+      delete: vi.fn(async () => {}),
+    };
+
+    const result = await cleanupVercelSandbox({
+      name: sandbox.name,
+      credentials: credentials(),
+      expectedTags: identityTags,
+      adapter,
+      maxAttempts: 1,
+      sleep: async () => {},
+    });
+
+    expect(result.verified).toBe(false);
+    expect(result.errors.join(' ')).toContain('session verification');
+    expect(adapter.delete).not.toHaveBeenCalled();
+  });
+
   it('does not treat an empty premature relist as proof that a known snapshot is absent', async () => {
     let deleted = false;
     let listCalls = 0;

@@ -30,6 +30,7 @@ describe('Vercel terminal shell', () => {
     expect(shell.socketDirectory).toMatch(
       new RegExp(`^${DEVBOX_TMUX_SOCKET_ROOT}/${DEVBOX_TMUX_SOCKET_DIRECTORY_PREFIX}`),
     );
+    expect(shell.sessionId).toBe('session-1');
     expect(shell.program).toEqual({
       command: 'tmux',
       args: [

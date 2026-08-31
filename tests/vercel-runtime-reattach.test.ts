@@ -203,6 +203,32 @@ describe('Vercel cheap re-attach', () => {
       (command.args?.[1] ?? '').includes('gh auth login'))).toBe(false);
   });
 
+  it('rewrites the preparation marker when its upload resumes the provider session', async () => {
+    const harness = reattachClient();
+    let sessionId = 'initial-session';
+    const client = {
+      ...harness.client,
+      writeFiles: async (_sandbox: VercelSandboxHandle, written: VercelWriteFile[]) => {
+        for (const file of written) harness.files.set(file.path, Buffer.from(file.content));
+        harness.uploads.push(written);
+        if (written.some((file) => file.path === VERCEL_RUNTIME_PREPARATION_PATH)) sessionId = 'resumed-session';
+      },
+    } as unknown as VercelSandboxClient;
+    const resumedDuringMarker = {
+      ...sandbox(),
+      currentSession: () => ({ sessionId }),
+    } as VercelSandboxHandle;
+
+    await prepareSandboxRuntime(prepareOptions({
+      client,
+      sandbox: resumedDuringMarker,
+    }));
+
+    expect(markerOf(harness)).toMatchObject({ sessionId: 'resumed-session' });
+    expect(harness.uploads.flat().filter((file) => file.path === VERCEL_RUNTIME_PREPARATION_PATH))
+      .toHaveLength(2);
+  });
+
   it('relaunches background setup that failed after preparation', async () => {
     const harness = reattachClient();
     await prepareSandboxRuntime(prepareOptions({ client: harness.client }));

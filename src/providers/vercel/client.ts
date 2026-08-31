@@ -75,6 +75,17 @@ export type VercelCommandResult = Command | CommandFinished;
 export type VercelWriteFile = Parameters<Sandbox['writeFiles']>[0][number];
 export type VercelRunCommandRequest = Parameters<Sandbox['runCommand']>[0];
 
+export interface VercelInteractiveOptions {
+  signal?: AbortSignal;
+  /** Expected provider session; used to prevent an implicit resume at attach. */
+  sessionId?: string;
+}
+
+export interface VercelSandboxSession {
+  readonly sessionId?: string;
+  openInteractive(options?: { signal?: AbortSignal }): Promise<{ url: string; token: string }>;
+}
+
 export interface VercelSandboxHandle {
   readonly id?: string;
   readonly name: string;
@@ -93,13 +104,13 @@ export interface VercelSandboxHandle {
   /** Snapshot used to create the current session, when the session was resumed from one. */
   readonly sourceSnapshotId?: string;
   /** SDK 3 exposes the current session ID through this method, not `Sandbox.id`. */
-  readonly currentSession?: () => { readonly sessionId?: string };
+  readonly currentSession?: () => VercelSandboxSession;
   readonly activeCpuUsageMs?: number;
   readonly networkTransfer?: { ingress: number; egress: number };
   readonly totalActiveCpuDurationMs?: number;
   readonly totalIngressBytes?: number;
   readonly totalEgressBytes?: number;
-  openInteractive(options?: { signal?: AbortSignal }): Promise<{ url: string; token: string }>;
+  openInteractive(options?: VercelInteractiveOptions): Promise<{ url: string; token: string }>;
   listSessions(params?: { signal?: AbortSignal }): Promise<unknown>;
   stop(params?: { signal?: AbortSignal }): Promise<VercelStopResult>;
   delete(params?: { signal?: AbortSignal }): Promise<void>;
@@ -479,10 +490,19 @@ function wrapSandboxHandle(
   return new Proxy(handle, {
     get(target, property, receiver) {
       if (property === 'openInteractive') {
-        return (options?: { signal?: AbortSignal }) => callWithSecrets(
+        return (options?: VercelInteractiveOptions) => callWithSecrets(
           'Sandbox.openInteractive',
           secrets,
-          () => target.openInteractive(options),
+          async () => {
+            const session = target.currentSession?.();
+            if (!session?.openInteractive) {
+              throw new Error('Vercel current session is unavailable for interactive terminal');
+            }
+            if (options?.sessionId !== undefined && session.sessionId !== options.sessionId) {
+              throw new Error('Vercel current session changed before interactive terminal opened');
+            }
+            return session.openInteractive(options === undefined ? undefined : { signal: options.signal });
+          },
         );
       }
       if (property === 'listSessions') {
