@@ -25,7 +25,6 @@ export function createEvidence({ mode, branch, timeoutMinutes, reportPath, deadl
     redact,
     redactTail,
     check,
-    markerFor,
     sameDeadline: (expected, actual) => sameDeadline(expected, actual, deadlineToleranceMs),
     writeReport: async () => {
       await mkdir(dirname(reportPath), { recursive: true });

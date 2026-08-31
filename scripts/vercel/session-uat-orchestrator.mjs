@@ -180,7 +180,6 @@ export async function runSessionUat({ environment = process.env, argv = process.
     check('initial named tmux session', identity.session === 'devbox', `session=${identity.session}`);
     check('initial session socket', identity.socket.startsWith('/tmp/devbox-tmux/session-'), 'socket uses the devbox-owned session directory');
     report.initial = { pid: identity.pid, tmuxSession: identity.session, socket: identity.socket };
-    return identity;
   }
 
   async function verifyDurationSession(stateHome, session) {
