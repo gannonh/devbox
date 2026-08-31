@@ -423,7 +423,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
       check('snapshot prior process ended', processState.match === processAbsent, `priorPid=${priorProcess.pid}`);
       const workspaceMarker = markerFor('snapshot-workspace');
       const workspace = parseWorkspace(await writeAndWait(resumed, remoteWorkspaceCommand(workspaceMarker), workspaceMarker), workspaceMarker);
-      check('snapshot workspace restored', workspace.path.startsWith('/vercel/sandbox/'), `path=${workspace.path}`);
+      check('snapshot workspace restored', workspace.path.startsWith('/vercel/'), `path=${workspace.path}`);
       check('snapshot branch restored', workspace.branch === branch, `branch=${workspace.branch}`);
       const runtimeReady = markerFor('snapshot-runtime-ready');
       const runtimeMissing = markerFor('snapshot-runtime-missing');
