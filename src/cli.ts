@@ -79,10 +79,9 @@ NOTE
   local dirty files and unpushed commits are not copied to the sandbox.
   First use displays the Vercel team/project and requires TTY confirmation.
   In the remote terminal, Ctrl-C reaches the remote process and Ctrl-]
-  detaches without stopping the sandbox. Each VM session uses the configured
-  --timeout (default 60 minutes). Terminal input does not extend that lease.
-  A Vercel VM is the process boundary; continuous VPS hosting is outside this
-  provider.
+  detaches without stopping the sandbox. Reconnect attaches to the same
+  devbox-owned tmux session while the VM session remains alive. A Vercel VM is
+  the process boundary; continuous VPS hosting is outside this provider.
   App routes are plain HTTPS; the noVNC
   link carries a one-use access code that pairs the browser on click and is then
   dropped from the URL. --password prints that code for the pairing form.
@@ -152,10 +151,10 @@ VERCEL CORE
   First use confirms the displayed team/project in a TTY.
   Without a complete credential triad, OIDC token, or cached Vercel auth, device
   auth prints the verification URL and user code. Ctrl-C is sent to the remote process.
-  Ctrl-] detaches without stopping it. Each VM session uses the configured
-  --timeout (default 60 minutes). Terminal input does not extend that lease.
-  Snapshot resume starts a new VM session with the stored timeout. Vercel
-  provides a VM process boundary, not continuous VPS hosting.
+  Ctrl-] detaches without stopping it. Reconnect attaches to the same
+  devbox-owned tmux session while the VM session remains alive. Snapshot resume
+  starts a new VM session and ends prior user processes. Vercel provides a VM
+  process boundary, not continuous VPS hosting.
   App ports detected in the remote checkout (Vite/Next) are offered once as
   public routes; --expose-ports <list> selects them without a prompt and is
   required for any new exposure outside a TTY.
