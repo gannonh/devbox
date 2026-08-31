@@ -123,8 +123,8 @@ describe('cli dispatch', () => {
     const output = stdout + stderr;
     expect(output).toContain('attach');
     expect(output).toContain('USAGE');
-    expect(output).not.toContain('tmux');
-    expect(output).toContain('Reconnect reattaches until the lease expires');
+    expect(output).toContain('tmux');
+    expect(output).toContain('Reconnect attaches to the same devbox-owned tmux');
   });
 
   it('<branch> --stop --help prints stop usage and exits 0', async () => {
