@@ -41,7 +41,6 @@ export async function runSessionUat({ environment = process.env, argv = process.
     branch,
     repoRoot,
     cliPath,
-    cliTimeoutMs,
     markerTimeoutMs,
     providerPollMs: durationProviderPollMs,
     redact,

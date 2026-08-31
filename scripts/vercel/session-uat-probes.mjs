@@ -8,7 +8,6 @@ export function createSessionUatProbes({
   branch,
   repoRoot,
   cliPath,
-  cliTimeoutMs,
   markerTimeoutMs,
   providerPollMs,
   redact,
