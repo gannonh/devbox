@@ -30,12 +30,18 @@ export interface PrepareVercelTerminalShellOptions {
   secrets?: readonly string[];
 }
 
-export class VercelTerminalShellError extends Error {
-  readonly code = 'terminal_shell_setup_failed';
+type VercelTerminalShellErrorCode =
+  | 'terminal_shell_setup_failed'
+  | 'session_unavailable'
+  | 'session_changed';
 
-  constructor(message: string) {
+export class VercelTerminalShellError extends Error {
+  readonly code: VercelTerminalShellErrorCode;
+
+  constructor(message: string, code: VercelTerminalShellErrorCode = 'terminal_shell_setup_failed') {
     super(message);
     this.name = 'VercelTerminalShellError';
+    this.code = code;
   }
 }
 
@@ -44,7 +50,7 @@ export async function prepareVercelTerminalShell(
 ): Promise<VercelTerminalShell> {
   let sessionId = currentVercelSessionId(options.sandbox);
   if (sessionId === null) {
-    throw new VercelTerminalShellError('Vercel current session ID is unavailable');
+    throw new VercelTerminalShellError('Vercel current session ID is unavailable', 'session_unavailable');
   }
   const signal = options.signal ?? AbortSignal.timeout(VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS);
   for (let attempt = 0; attempt < MAX_TMUX_RECONCILIATION_ATTEMPTS; attempt += 1) {
@@ -61,7 +67,7 @@ export async function prepareVercelTerminalShell(
     }
     const confirmedSessionId = currentVercelSessionId(options.sandbox);
     if (confirmedSessionId === null) {
-      throw new VercelTerminalShellError('Vercel current session ID is unavailable');
+      throw new VercelTerminalShellError('Vercel current session ID is unavailable', 'session_unavailable');
     }
     if (confirmedSessionId !== sessionId) {
       sessionId = confirmedSessionId;
@@ -87,7 +93,7 @@ export async function prepareVercelTerminalShell(
       },
     };
   }
-  throw new VercelTerminalShellError('Vercel current session changed during tmux setup');
+  throw new VercelTerminalShellError('Vercel current session changed during tmux setup', 'session_changed');
 }
 
 function sessionDirectoryName(sessionId: VercelSessionId): string {

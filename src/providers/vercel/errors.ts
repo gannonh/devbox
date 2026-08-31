@@ -249,8 +249,7 @@ export function mapVercelError(
   if (isAbortError(error, message, lifecycleCode)) {
     return new VercelProviderError('aborted', 'The Vercel operation was aborted; retry the command.');
   }
-  if (lifecycleCode === 'terminal_shell_setup_failed'
-    || lifecycleCode === 'session_unavailable'
+  if (lifecycleCode === 'session_unavailable'
     || lifecycleCode === 'session_changed'
     || (error instanceof VercelSdkError && error.operation === 'Session.runCommand')) {
     return new VercelProviderError(

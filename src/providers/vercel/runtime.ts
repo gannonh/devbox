@@ -127,13 +127,6 @@ export function evaluatePreparation(
     && marker.envSha256 === actual.envSha256;
 }
 
-/**
- * Classify the VM before considering hashes or snapshot metadata.
- *
- * A matching preparation session is the only same-session proof. A different
- * marker session plus a provider source snapshot is a snapshot resume, even
- * when runtime files need refreshing afterward.
- */
 export function classifyRuntimeVmSession(
   marker: unknown,
   actual: RuntimePreparationActualEvidence,
@@ -258,6 +251,12 @@ async function reusePreparedRuntime(
 export async function prepareSandboxRuntime(
   options: PrepareSandboxRuntimeOptions,
 ): Promise<PreparedSandboxRuntime> {
+  if (currentVercelSessionId(options.sandbox) === null) {
+    throw new VercelRuntimeSyncError(
+      'Vercel current session ID is unavailable before runtime preparation',
+      'session_unavailable',
+    );
+  }
   const runtimeEnvironment = await resolveRuntimeEnvironment(options);
   assertSafeEnvironmentKeys(runtimeEnvironment);
   options.runtimeEnvironment = runtimeEnvironment;
@@ -295,8 +294,6 @@ export async function prepareSandboxRuntime(
         if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
         if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
           await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
-          // Same relaunch semantics as reusePreparedRuntime: a snapshot can retain
-          // setup.status=running after --pause killed the setup PID. Verify/restart.
           const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
             sandbox: options.sandbox,
             client: options.client,

@@ -242,6 +242,7 @@ describe('Vercel cheap re-attach', () => {
     }))).rejects.toMatchObject({
       code: 'session_unavailable',
     });
+    expect(harness.commands).toEqual([]);
     expect(markerOf(harness)).toBeUndefined();
   });
 

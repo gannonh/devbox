@@ -276,10 +276,6 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
           const sandbox = await prepared.lifecycle.attach();
           const repository = prepared.source?.remote.repository;
           if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
-          // Say this before anything that can prompt. Runtime sync and the app-port
-          // question both come first, and a boot-shaped prompt with no preceding
-          // context reads as "it is creating a new sandbox" -- which attach cannot
-          // do: it fails when there is no record and no live box to resume.
           request.stderr.write(`Attaching to the existing Vercel sandbox for ${request.branch}\n`);
           const runtimeOptions = {
             repoRoot: request.repoRoot,
@@ -299,8 +295,6 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
           };
           const runtime = await prepareSandboxRuntime(runtimeOptions);
           request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
-          // A cheap attach still proves the transport before it reuses a URL; only
-          // exact healthy evidence skips the scan, the prompt, and the route call.
           const reused = runtime.reused && request.exposePorts === undefined
             ? await reuseRecordedAppPorts(request, client, sandbox, prepared.branchStore!, repository, secrets)
             : undefined;
@@ -399,19 +393,7 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         secrets,
         async (prepared) => {
           if (prepared.alreadyAbsent) {
-            try {
-              await prepared.branchStore?.remove();
-            } catch {
-              // No live resource remains; local recovery state is best effort.
-            }
-            // Removal stays idempotent, but must not report a deletion it did not
-            // perform: "cleanup verified" here is indistinguishable from having
-            // actually removed a box, which hides a mistyped branch.
-            //
-            // Nor may it claim nothing exists while --list is showing one. A
-            // same-branch box in another Vercel team/project is deliberately left
-            // alone, but saying so is the difference between an honest no-op and a
-            // command that appears broken.
+            await prepared.branchStore?.remove().catch(() => undefined);
             if (prepared.foreignScope.length > 0) {
               request.stderr.write(
                 `No Vercel sandbox for ${request.branch} in this team/project.\n`
@@ -942,10 +924,6 @@ async function withRuntimeSyncLock<T>(
   branchStore: VercelBranchMetadataStore,
   operation: () => Promise<T>,
 ): Promise<T> {
-  // Keep this separate from the branch metadata lock because display startup
-  // reads and rotates credentials through that lock during preparation.
-  // Acquire and release the store lock once so its private parent directory is
-  // present before the sibling lock is created, including for first-time --rm.
   const directorySetupLock = await branchStore.acquireLock();
   await directorySetupLock.release();
   const lock = await acquireMetadataLock(
