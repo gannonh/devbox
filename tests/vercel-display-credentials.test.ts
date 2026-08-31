@@ -770,17 +770,18 @@ describe('Vercel display credentials', () => {
         timeoutMs: 1_800_000,
       },
     });
+    const runCommand = vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
+      ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+      : { exitCode: 0 });
     const handle = {
       name: identity.name,
       cwd: '/vercel/sandbox',
       status: 'running',
-      currentSession: () => ({ sessionId: 'display-credentials-session' }),
+      currentSession: () => ({ sessionId: 'display-credentials-session', runCommand }),
       tags: { ...identity.tags },
       routes: [{ port: 6080, subdomain: 'sandbox', url: 'https://sandbox.example/6080' }],
       writeFiles: vi.fn(async () => {}),
-      runCommand: vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
-        ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
-        : { exitCode: 0 }),
+      runCommand,
       domain: (port: number) => `https://sandbox.example/${port}`,
     } as unknown as VercelSandboxHandle;
     const lifecycle = {

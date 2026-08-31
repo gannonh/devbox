@@ -6,6 +6,7 @@ import {
   createVercelSandboxClient,
   isVercelNotFound,
   isVercelStale,
+  runCurrentSessionCommand,
   VercelSdkError,
   type VercelSandboxHandle,
 } from '../src/providers/vercel/client.js';
@@ -36,6 +37,29 @@ describe('Vercel Sandbox client adapter', () => {
       .rejects.toThrow('Vercel current session changed before interactive terminal opened');
     expect(directOpen).toHaveBeenCalledWith({ signal: undefined });
     expect(automaticOpen).not.toHaveBeenCalled();
+  });
+
+  it('runs strict commands on the current session without an implicit resume', async () => {
+    const directRun = vi.fn(async () => ({ exitCode: 0 }));
+    const automaticRun = vi.fn(async () => ({ exitCode: 0 }));
+    const target = {
+      name: 'session-bound-command',
+      currentSession: () => ({ sessionId: 'session-1', runCommand: directRun }),
+      runCommand: automaticRun,
+    };
+    const client = createVercelSandboxClient({
+      sandbox: { get: vi.fn(async () => target) } as never,
+    });
+    const handle = await client.get({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      name: target.name,
+    });
+
+    await expect(runCurrentSessionCommand(handle, 'session-1', { cmd: 'true' })).resolves.toEqual({ exitCode: 0 });
+    await expect(runCurrentSessionCommand(handle, 'session-2', { cmd: 'true' }))
+      .rejects.toThrow('Vercel current session changed before a strict command started');
+    expect(directRun).toHaveBeenCalledWith({ cmd: 'true' });
+    expect(automaticRun).not.toHaveBeenCalled();
   });
 
   it('deletes a stale named sandbox through the authenticated v2 fetch seam', async () => {

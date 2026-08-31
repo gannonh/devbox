@@ -251,6 +251,7 @@ export function createSessionUatProbes({
     remoteRuntimeStateCommand,
     remoteSnapshotStateCommand,
     remoteWorkspaceCommand,
+    sessionSocketPath,
     stopFixture,
     waitForDeadline,
     waitForFixture,
@@ -268,6 +269,10 @@ export function providerCredentials(environment = process.env) {
     throw new Error('VERCEL_TOKEN, VERCEL_TEAM_ID, and VERCEL_PROJECT_ID are required for provider probes');
   }
   return { token, teamId, projectId };
+}
+
+export function sessionSocketPath(sessionId) {
+  return `/tmp/devbox-tmux/session-${Buffer.from(sessionId, 'utf8').toString('base64url')}/socket`;
 }
 
 export function waitForOutput(child, probe, timeoutMs) {

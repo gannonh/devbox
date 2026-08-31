@@ -72,7 +72,11 @@ function fakeClient(options: FakeOptions = {}) {
   return { client, commands, files, running };
 }
 
-const sandbox = { name: 'devbox-vercel-test', routes: [] } as unknown as VercelSandboxHandle;
+const sandbox = {
+  name: 'devbox-vercel-test',
+  routes: [],
+  currentSession: () => ({ sessionId: 'relay-session' }),
+} as unknown as VercelSandboxHandle;
 
 function manager(options: FakeOptions = {}) {
   const fake = fakeClient(options);

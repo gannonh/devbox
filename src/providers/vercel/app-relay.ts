@@ -20,6 +20,7 @@ import {
   DEVBOX_VNC_PORT,
 } from './ports.js';
 import { redactSecrets } from './redaction.js';
+import { currentVercelSessionId } from './session-lease.js';
 import type {
   VercelCommandResult,
   VercelRunCommandRequest,
@@ -353,9 +354,16 @@ async function runRelayCommand(
     timeoutMs: RELAY_COMMAND_TIMEOUT_MS,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   };
+  const sessionId = currentVercelSessionId(options.sandbox);
+  if (sessionId === null) {
+    throw relayError(`${operation} command failed: Vercel current session ID is unavailable`, options.secrets);
+  }
   let result: VercelCommandResult;
   try {
-    result = await options.client.runCommand(options.sandbox, request);
+    result = await options.client.runCommand(options.sandbox, request, {
+      expectedSessionId: sessionId,
+      secrets: options.secrets,
+    });
   } catch (error) {
     throw relayError(`${operation} command failed: ${redactSecrets(error, options.secrets ?? [])}`, options.secrets);
   }

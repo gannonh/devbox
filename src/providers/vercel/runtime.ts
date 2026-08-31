@@ -77,12 +77,15 @@ export interface PreparedSandboxRuntime {
   snapshotResumed: boolean;
 }
 
-export class VercelRuntimeSyncError extends Error {
-  readonly code = 'runtime_sync_failed';
+export type VercelRuntimeSyncErrorCode = 'runtime_sync_failed' | 'session_unavailable' | 'session_changed';
 
-  constructor(message: string) {
+export class VercelRuntimeSyncError extends Error {
+  readonly code: VercelRuntimeSyncErrorCode;
+
+  constructor(message: string, code: VercelRuntimeSyncErrorCode = 'runtime_sync_failed') {
     super(message);
     this.name = 'VercelRuntimeSyncError';
+    this.code = code;
   }
 }
 
@@ -461,11 +464,19 @@ async function writeCurrentPreparationMarker(
 ): Promise<void> {
   for (let attempt = 0; attempt < MAX_PREPARATION_MARKER_ATTEMPTS; attempt += 1) {
     const sessionId = currentVercelSessionId(options.sandbox);
-    if (sessionId === null) return;
+    if (sessionId === null) {
+      throw new VercelRuntimeSyncError(
+        'Vercel current session ID is unavailable during runtime preparation marker publication',
+        'session_unavailable',
+      );
+    }
     await writePreparationMarker(options, secrets, { ...marker, sessionId });
     if (currentVercelSessionId(options.sandbox) === sessionId) return;
   }
-  throw new VercelRuntimeSyncError('Vercel current session changed during runtime preparation marker publication');
+  throw new VercelRuntimeSyncError(
+    'Vercel current session changed during runtime preparation marker publication',
+    'session_changed',
+  );
 }
 
 function sandboxImageDigest(sandbox: VercelSandboxHandle): string {

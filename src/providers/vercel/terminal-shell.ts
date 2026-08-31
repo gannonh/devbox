@@ -27,6 +27,7 @@ export interface PrepareVercelTerminalShellOptions {
   client: VercelSandboxClient;
   cwd: string;
   signal?: AbortSignal;
+  secrets?: readonly string[];
 }
 
 export class VercelTerminalShellError extends Error {
@@ -52,7 +53,7 @@ export async function prepareVercelTerminalShell(
       cmd: 'sh',
       args: ['-c', reconciliationScript(socketDirectory)],
       signal,
-    });
+    }, { expectedSessionId: sessionId, secrets: options.secrets });
     if (result.exitCode !== 0) {
       throw new VercelTerminalShellError(
         `Vercel tmux socket reconciliation failed${await commandDetail(result)}`,

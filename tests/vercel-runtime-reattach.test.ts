@@ -229,6 +229,22 @@ describe('Vercel cheap re-attach', () => {
       .toHaveLength(2);
   });
 
+  it('fails closed when the current session is unavailable before marker publication', async () => {
+    const harness = reattachClient();
+    const missingSession = {
+      ...sandbox(),
+      currentSession: () => ({}),
+    } as VercelSandboxHandle;
+
+    await expect(prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: missingSession,
+    }))).rejects.toMatchObject({
+      code: 'session_unavailable',
+    });
+    expect(markerOf(harness)).toBeUndefined();
+  });
+
   it('relaunches background setup that failed after preparation', async () => {
     const harness = reattachClient();
     await prepareSandboxRuntime(prepareOptions({ client: harness.client }));

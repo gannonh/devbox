@@ -67,21 +67,22 @@ function runner(): ShellRunner {
 }
 
 function sandbox(): VercelSandboxHandle {
+  const runCommand = vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
+    ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+    : { exitCode: 0 });
   return {
     id: 'sandbox-id',
     name: 'devbox-vercel-test',
     status: 'running',
     cwd: '/vercel/sandbox',
     tags: {},
-    currentSession: vi.fn(() => ({ sessionId: 'sandbox-id' })),
+    currentSession: vi.fn(() => ({ sessionId: 'sandbox-id', runCommand })),
     openInteractive: vi.fn(),
     listSessions: vi.fn(),
     stop: vi.fn(),
     delete: vi.fn(),
     writeFiles: vi.fn(async () => {}),
-    runCommand: vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
-      ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
-      : { exitCode: 0 }),
+    runCommand,
     domain: vi.fn((port: number) => `https://sandbox.example/${port}`),
   } as unknown as VercelSandboxHandle;
 }

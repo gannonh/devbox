@@ -9,7 +9,7 @@ import {
   waitForEmptyResourceInventory,
 } from '../scripts/vercel/session-uat-cleanup.mjs';
 import { createEvidence, redactTailValue } from '../scripts/vercel/session-uat-evidence.mjs';
-import { createSessionUatProbes, waitForExit, waitForOutput } from '../scripts/vercel/session-uat-probes.mjs';
+import { createSessionUatProbes, sessionSocketPath, waitForExit, waitForOutput } from '../scripts/vercel/session-uat-probes.mjs';
 
 async function driverSource(): Promise<string> {
   const files = [
@@ -60,6 +60,9 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('forced-close same foreground PID');
     expect(source).toContain('clean Ctrl-] detach');
     expect(source).toContain('snapshot fresh socket');
+    expect(source).toContain('initial socket matches provider session');
+    expect(source).toContain('snapshot socket matches provider session');
+    expect(source).toContain('snapshot fresh deadline');
     expect(source).toContain('snapshot prior process ended');
     expect(source).toContain('prior user processes ended');
     expect(source).toContain('waitForPublicRoute');
@@ -106,6 +109,7 @@ describe('public Vercel session UAT driver', () => {
       'PWD=/vercel/sandbox BRANCH=feature/session\nDEVBOX_UAT_workspace',
       'DEVBOX_UAT_workspace',
     )).toEqual({ path: '/vercel/sandbox', branch: 'feature/session' });
+    expect(sessionSocketPath('session-1')).toBe('/tmp/devbox-tmux/session-c2Vzc2lvbi0x/socket');
   });
 
   it('writes redacted evidence and has an explicit cleanup mode', async () => {
