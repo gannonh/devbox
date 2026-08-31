@@ -51,10 +51,10 @@ provider.
    display services, and relay routes without clone, dependency install, or
    post-create work. Metadata is removed only after cloud cleanup converges;
    residual IDs remain in a mode-`0600` retry record after partial cleanup.
-7. Re-entry writes a mode-`0600` remote heartbeat on terminal input and a
-   successful display health poll. The idle controller pauses only after the
-   configured window, while setup is not running and no fresh heartbeat exists.
-   A missing heartbeat is conservative until the full window has elapsed.
+7. Re-entry keeps the existing VM session and its configured timeout. Terminal
+   transport pings stay on the WebSocket only. They do not extend the lease or
+   pause the Sandbox. Snapshot resume starts a new VM session with the stored
+   timeout.
 
 ```mermaid
 flowchart LR
@@ -66,8 +66,9 @@ flowchart LR
   Vercel --> SDK[@vercel/sandbox v3]
   SDK --> Image[Public digest-pinned VCR image]
   SDK --> Runtime[Runtime secrets/display/setup]
-  Runtime --> Heartbeat[0600 input/display heartbeat]
   SDK --> TTY[Interactive terminal]
+  Vercel --> Lease[Fixed VM session lease]
+  Lease --> Deadline[Provider expiresAt]
   Vercel --> Detect[Bounded Vite/Next detector]
   Detect --> Confirm[Public-route confirmation]
   Confirm --> Relays[One relay per logical app port]
@@ -76,8 +77,6 @@ flowchart LR
   Update --> Routes
   Runtime --> Routes
   Relays --> App[localhost app listeners]
-  Heartbeat --> Idle[Idle pause controller]
-  Idle --> SDK
 ```
 
 ## CI and acceptance

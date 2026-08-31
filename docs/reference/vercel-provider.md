@@ -279,22 +279,18 @@ and relists until every matching snapshot is absent or `deleted`. A failed
 cleanup retains non-secret scope/residual IDs in mode-`0600` metadata for
 retry; metadata is removed only after verification.
 
-### Idle pause
+### Session lifetime
 
-The TTY adapter writes `/vercel/.devbox/runtime/heartbeat` with mode `0600` when
-the user sends input, and a successful display health poll refreshes it while
-the display is healthy.
-WebSocket pings and the existence of an attach process are not activity. The
-new session created by a snapshot resume gets one bootstrap heartbeat before
-the idle timer starts. The default window is 15 minutes. Set
-`DEVBOX_IDLE_PAUSE_MINUTES=0` to disable automatic pause, or choose an integer
-from 1 through 1440. The value is stored per branch and can be changed on a
-later attach. A fresh heartbeat suppresses the pause. A missing or unreadable
-heartbeat is treated as idle only after the full window, and setup is never
-paused while `setup.status` is `running`. When the idle controller pauses a
-box, the next successful attach reports the UTC timestamp of that idle pause.
-`Ctrl-]` (or stdin EOF) detaches the remote TTY without stopping the Sandbox;
-the local CLI keeps the idle monitor running until that pause fires, then exits.
+Each new or snapshot-resumed VM session receives one configured timeout
+(default 60 minutes). Same-session attach keeps that deadline. Snapshot resume
+starts a fresh session with the stored timeout. Terminal input, display
+checks, and WebSocket pings do not extend the lease.
+
+`Ctrl-]` (or stdin EOF) detaches the remote TTY without stopping the Sandbox.
+Explicit `--pause`, `--stop`, and `--rm` remain the operator-owned early-stop
+paths. When Vercel rejects a create request above 45 minutes, the CLI keeps
+the redacted provider cause and appends the Hobby 45-minute and Pro or
+Enterprise 24-hour limits plus a `--timeout 45` example.
 
 `--list` reports Vercel records with `running`, `paused`, or `stopped` state.
 A stopped record with a retained snapshot is `paused` and includes its

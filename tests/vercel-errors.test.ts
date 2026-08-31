@@ -1,5 +1,6 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { mapVercelError } from '../src/providers/vercel/errors.js';
+import { mapVercelError, VERCEL_LONG_SESSION_REJECTION_SIGNATURE } from '../src/providers/vercel/errors.js';
 import {
   VercelCreationCompensationError,
   VercelRecoveryCleanupError,
@@ -105,29 +106,67 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).not.toContain(token);
   });
 
-  it('preserves a redacted create cause and adds a generic long-session hint', () => {
-    const token = 'long-session-secret';
+  it('uses the captured redacted provider signature for the long-session hint', async () => {
+    const probe = JSON.parse(await readFile('tests/fixtures/vercel-timeout-rejection.json', 'utf8')) as {
+      message: string;
+      operation: string;
+      requestedTimeoutMs: number;
+      status: number;
+      redacted: boolean;
+    };
+    expect(probe.redacted).toBe(true);
+    expect(probe.operation).toBe('Sandbox.getOrCreate');
     const mapped = mapVercelError(
       new VercelSdkError(
         'Sandbox.getOrCreate',
-        new Error(`Sandbox timeout rejected: ${token}`),
-        [token],
+        Object.assign(new Error(probe.message), { status: probe.status }),
+        [],
       ),
       {
         action: 'up',
         branch: 'feature/ui',
-        requestedTimeoutMs: 60 * 60 * 1000,
-        secrets: [token],
+        requestedTimeoutMs: probe.requestedTimeoutMs,
       },
     );
 
     expect(mapped.code).toBe('api');
-    expect(mapped.message).toContain('Sandbox timeout rejected');
-    expect(mapped.message).toContain('requested timeout: 60 minutes');
+    expect(mapped.message).toContain(probe.message);
+    expect(mapped.message).toContain('requested timeout: 1441 minutes');
     expect(mapped.message).toContain('Hobby supports up to 45 minutes');
     expect(mapped.message).toContain('Pro and Enterprise support up to 24 hours');
     expect(mapped.message).toContain('--timeout 45');
-    expect(mapped.message).not.toContain(token);
+  });
+
+  it('does not classify an unobserved long-session status', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError(
+        'Sandbox.getOrCreate',
+        Object.assign(new Error(VERCEL_LONG_SESSION_REJECTION_SIGNATURE), { status: 422 }),
+        [],
+      ),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 46 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
+  });
+
+  it('does not add plan guidance to an unclassified long create failure', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError('Sandbox.getOrCreate', new Error('network connection failed'), []),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
   });
 
   it('redacts obsolete session metadata with remove-and-recreate guidance', () => {
@@ -142,6 +181,7 @@ describe('Vercel provider errors', () => {
       expect(mapped.code).toBe('stale');
       expect(mapped.message).toContain('--rm');
       expect(mapped.message).toContain('create the box again');
+      expect(mapped.message).toContain('devbox --provider vercel feature/ui');
       expect(mapped.message).not.toContain(detail);
     }
   });

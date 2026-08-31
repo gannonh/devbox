@@ -113,7 +113,7 @@ In the remote terminal, `Ctrl-C` reaches the foreground process. `Ctrl-]` discon
 
 `--pause` stops the Vercel Sandbox session and retains its latest snapshot. The next boot or attach restores that snapshot, refreshes GitHub credentials, dotenv values, Pi configuration, display services, and public relays, then opens the terminal without recloning or reinstalling dependencies. The snapshot ID and source session are stored in mode-`0600` host metadata. `--stop` reports the same Vercel snapshot as paused. `--rm` deletes the Sandbox and retained snapshots after verification.
 
-Re-entry records terminal input and successful display health polls at `/vercel/.devbox/runtime/heartbeat` with mode `0600`. A resumed Vercel box pauses automatically after 15 idle minutes by default. Set `DEVBOX_IDLE_PAUSE_MINUTES=0` to disable it, or use another integer from 1 through 1440. A fresh heartbeat prevents pausing; a missing or unreadable heartbeat becomes idle only after the full window. The next attach reports when an idle pause occurred.
+Each new or snapshot-resumed VM session receives the configured `--timeout` (default 60 minutes). Ready and attach output report that duration and, when Vercel returns it, the absolute deadline. Devbox does not extend the lease from terminal input, display checks, or WebSocket pings. Explicit `--pause`, `--stop`, and `--rm` remain the early-stop paths. Vercel Hobby rejects requests above 45 minutes; use `--timeout 45` in that case.
 
 After checkout, devbox reads `package.json` files without executing them and suggests common application ports such as Vite's `5173`. It also scans npm workspace members. Approved ports become public without recreating the Sandbox. To skip the prompt, pass the ports explicitly:
 

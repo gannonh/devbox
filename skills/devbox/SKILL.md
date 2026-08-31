@@ -88,23 +88,10 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 
 Vercel re-entry resumes the retained snapshot without recloning, dependency
 installation, or the post-create hook. It refreshes runtime secrets, Pi
-configuration, display services, and recorded public routes first. The remote
-heartbeat at `/vercel/.devbox/runtime/heartbeat` is mode `0600` and is updated
-by terminal input and successful display health polls. Automatic pause defaults
-to 15 minutes; set
-`DEVBOX_IDLE_PAUSE_MINUTES=0` to disable it or choose 1 through 1440. A missing
-heartbeat becomes idle only after the full window. A freshly snapshot-resumed
-session receives one bootstrap heartbeat before the idle timer starts; an
-ordinary attach does not reset an old heartbeat just by existing. After `Ctrl-]`
-detaches the remote TTY, the local CLI keeps watching that heartbeat until
-auto-pause fires, then exits.
-
-For long-running work without terminal input, an agent may refresh the heartbeat
-explicitly:
-
-```sh
-(umask 077; mkdir -p /vercel/.devbox/runtime; date +%s > /vercel/.devbox/runtime/heartbeat; chmod 600 /vercel/.devbox/runtime/heartbeat)
-```
+configuration, display services, and recorded public routes first. Each VM
+session uses the configured `--timeout` (default 60 minutes). Terminal input
+and WebSocket pings do not extend that lease. `Ctrl-]` detaches the remote TTY
+without stopping the Sandbox.
 
 ## Inside the box
 
