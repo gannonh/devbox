@@ -593,7 +593,6 @@ jobs:
       actions: read
     env:
       SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
-      IMAGE_DIGEST: ${{ needs.candidate.outputs.candidate_digest }}
       DEVBOX_UAT_BRANCH: uat/devbox-session-${{ github.run_id }}-${{ github.run_attempt }}
       DEVBOX_UAT_STATE_HOME: ${{ github.workspace }}/.devbox-session-uat-state
       ARTIFACT_DIR: ${{ github.workspace }}/.devbox-session-uat
