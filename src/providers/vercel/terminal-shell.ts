@@ -18,6 +18,7 @@ const MAX_TMUX_RECONCILIATION_ATTEMPTS = 3;
 export interface VercelTerminalShell {
   socketDirectory: string;
   socketPath: string;
+  sessionId: VercelSessionId;
   program: VercelTerminalProgram;
 }
 
@@ -69,6 +70,7 @@ export async function prepareVercelTerminalShell(
     return {
       socketDirectory,
       socketPath,
+      sessionId,
       program: {
         command: 'tmux',
         args: [

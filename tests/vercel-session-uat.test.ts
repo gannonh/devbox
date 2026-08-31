@@ -37,6 +37,9 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('waitForFixture');
     expect(source).toContain('readProviderSessionFacts');
     expect(source).toContain('configuredTimeoutMs');
+    expect(source).toContain('sessionIdFingerprint');
+    expect(source).toContain('sandboxNameFingerprint');
+    expect(source).toContain('idFingerprint');
     expect(source).toContain('createdAt');
     expect(source).toContain('expiresAt');
     expect(source).toContain('waitForProviderStop');

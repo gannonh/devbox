@@ -130,7 +130,7 @@ describe('Vercel lifecycle', () => {
         image: TEST_IMAGE_REFERENCE,
         tags: { ...identity.tags },
       }]),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => []),
       getSnapshot: vi.fn(),
       stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
@@ -716,7 +716,7 @@ describe('Vercel lifecycle', () => {
     } as unknown as VercelBranchMetadataStore;
     const client = {
       get: vi.fn(async () => handle),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => []),
       getSnapshot: vi.fn(async () => ({
         snapshotId: 'recovered-snapshot',
@@ -839,7 +839,7 @@ describe('Vercel lifecycle', () => {
         if (deleted) throw Object.assign(new Error('not found'), { notFound: true });
         return handle;
       }),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => []),
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
@@ -1130,6 +1130,7 @@ describe('Vercel lifecycle', () => {
       exitCode: 1,
       stderr: async () => 'branch setup failed with github-token',
     });
+    target.listSessions = async () => [{ id: 'session', status: 'stopped' }];
     const sandboxApi = {
       getOrCreate: vi.fn(async (params: Record<string, unknown>) => {
         await (params.onCreate as ((sandbox: VercelSandboxHandle) => Promise<void>))(target);
@@ -1440,7 +1441,7 @@ describe('Vercel lifecycle', () => {
         if (deleteAttempts === 1) throw new Error('delete unavailable');
         return { missing: false };
       }),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       stopSandbox: vi.fn(async () => ({ id: 'session', status: 'stopped' as const })),
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;

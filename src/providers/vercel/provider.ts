@@ -190,53 +190,56 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
           await prepared.scopeStore.write(scope);
         }
       });
-      const lifecycle = createLifecycle(
-        request,
-        options,
-        runner,
-        makeLifecycle,
-        injectedLifecycle,
-        credentials,
-        prepared.source,
+      const { sandbox, runtime, appPorts } = await withRuntimeSyncLock(
         prepared.branchStore,
-        prepared.metadata,
+        async () => {
+          const lifecycle = createLifecycle(
+            request,
+            options,
+            runner,
+            makeLifecycle,
+            injectedLifecycle,
+            credentials,
+            prepared.source,
+            prepared.branchStore,
+            prepared.metadata,
+          );
+          const sandbox = await lifecycle.up();
+          const runtimeOptions = {
+            repoRoot: request.repoRoot,
+            repository: prepared.source.remote.repository,
+            env: request.env,
+            ...(request.envPath === undefined ? {} : { envPath: request.envPath }),
+            ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
+            shellRunner: runner,
+            sandbox,
+            client,
+            stderr: request.stderr,
+            hostHome: request.env.HOME,
+            displayCredentialsStore: prepared.branchStore,
+            secrets,
+            signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
+            mode: 'boot' as const,
+          };
+          const runtime = await prepareSandboxRuntime(runtimeOptions);
+          request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
+          const appPorts = await resolveAppPorts(
+            request,
+            options,
+            client,
+            sandbox,
+            prepared.branchStore,
+            prepared.source.remote.repository,
+            secrets,
+            'boot',
+            runtime.snapshotResumed && request.exposePorts === undefined,
+          );
+          if (appPorts !== undefined && runtime.evidence !== 'full') {
+            await clearPausedSnapshot(prepared.branchStore, prepared.metadata);
+          }
+          return { sandbox, runtime, appPorts };
+        },
       );
-      const sandbox = await lifecycle.up();
-      const runtimeOptions = {
-        repoRoot: request.repoRoot,
-        repository: prepared.source.remote.repository,
-        env: request.env,
-        ...(request.envPath === undefined ? {} : { envPath: request.envPath }),
-        ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
-        shellRunner: runner,
-        sandbox,
-        client,
-        stderr: request.stderr,
-        hostHome: request.env.HOME,
-        displayCredentialsStore: prepared.branchStore,
-        secrets,
-        signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
-        mode: 'boot' as const,
-      };
-      const runtime = await withRuntimeSyncLock(
-        prepared.branchStore,
-        () => prepareSandboxRuntime(runtimeOptions),
-      );
-      request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
-      const appPorts = await resolveAppPorts(
-        request,
-        options,
-        client,
-        sandbox,
-        prepared.branchStore,
-        prepared.source.remote.repository,
-        secrets,
-        'boot',
-        runtime.snapshotResumed && request.exposePorts === undefined,
-      );
-      if (appPorts !== undefined && runtime.evidence !== 'full') {
-        await clearPausedSnapshot(prepared.branchStore, prepared.metadata);
-      }
       await renderVercelReadyBlock(
         request,
         sandbox,
@@ -260,55 +263,71 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       );
     }),
     attach: (request) => providerErrors(request, 'attach', async (secrets) => {
-      const prepared = await prepareStored(request, 'attach', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
-      const sandbox = await prepared.lifecycle.attach();
-      const repository = prepared.source?.remote.repository;
-      if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
-      // Say this before anything that can prompt. Runtime sync and the app-port
-      // question both come first, and a boot-shaped prompt with no preceding
-      // context reads as "it is creating a new sandbox" -- which attach cannot
-      // do: it fails when there is no record and no live box to resume.
-      request.stderr.write(`Attaching to the existing Vercel sandbox for ${request.branch}\n`);
-      const runtimeOptions = {
-        repoRoot: request.repoRoot,
-        repository,
-        env: request.env,
-        ...(request.envPath === undefined ? {} : { envPath: request.envPath }),
-        ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
-        shellRunner: runner,
-        sandbox,
-        client,
-        stderr: request.stderr,
-        hostHome: request.env.HOME,
-        displayCredentialsStore: prepared.branchStore!,
-        secrets,
-        signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
-        mode: 'attach' as const,
-      };
-      const runtime = await withRuntimeSyncLock(
-        prepared.branchStore!,
-        () => prepareSandboxRuntime(runtimeOptions),
-      );
-      request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
-      // A cheap attach still proves the transport before it reuses a URL; only
-      // exact healthy evidence skips the scan, the prompt, and the route call.
-      const reused = runtime.reused && request.exposePorts === undefined
-        ? await reuseRecordedAppPorts(request, client, sandbox, prepared.branchStore!, repository, secrets)
-        : undefined;
-      const appPorts = reused ?? await resolveAppPorts(
+      const { sandbox, repository, runtime, appPorts, branchStore, metadata } = await withPreparedStoredRuntime(
         request,
+        'attach',
+        runner,
         options,
+        makeLifecycle,
+        injectedLifecycle,
         client,
-        sandbox,
-        prepared.branchStore!,
-        repository,
         secrets,
-        'resume',
-        runtime.snapshotResumed && request.exposePorts === undefined,
+        async (prepared) => {
+          const sandbox = await prepared.lifecycle.attach();
+          const repository = prepared.source?.remote.repository;
+          if (!repository) throw new VercelLifecycleError('metadata_incomplete', 'Stored Vercel source repository is unavailable');
+          // Say this before anything that can prompt. Runtime sync and the app-port
+          // question both come first, and a boot-shaped prompt with no preceding
+          // context reads as "it is creating a new sandbox" -- which attach cannot
+          // do: it fails when there is no record and no live box to resume.
+          request.stderr.write(`Attaching to the existing Vercel sandbox for ${request.branch}\n`);
+          const runtimeOptions = {
+            repoRoot: request.repoRoot,
+            repository,
+            env: request.env,
+            ...(request.envPath === undefined ? {} : { envPath: request.envPath }),
+            ...(request.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: request.runtimeEnvironment }),
+            shellRunner: runner,
+            sandbox,
+            client,
+            stderr: request.stderr,
+            hostHome: request.env.HOME,
+            displayCredentialsStore: prepared.branchStore!,
+            secrets,
+            signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
+            mode: 'attach' as const,
+          };
+          const runtime = await prepareSandboxRuntime(runtimeOptions);
+          request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
+          // A cheap attach still proves the transport before it reuses a URL; only
+          // exact healthy evidence skips the scan, the prompt, and the route call.
+          const reused = runtime.reused && request.exposePorts === undefined
+            ? await reuseRecordedAppPorts(request, client, sandbox, prepared.branchStore!, repository, secrets)
+            : undefined;
+          const appPorts = reused ?? await resolveAppPorts(
+            request,
+            options,
+            client,
+            sandbox,
+            prepared.branchStore!,
+            repository,
+            secrets,
+            'resume',
+            runtime.snapshotResumed && request.exposePorts === undefined,
+          );
+          if (appPorts !== undefined && runtime.evidence !== 'full') {
+            await clearPausedSnapshot(prepared.branchStore!, prepared.metadata);
+          }
+          return {
+            sandbox,
+            repository,
+            runtime,
+            appPorts,
+            branchStore: prepared.branchStore!,
+            metadata: prepared.metadata,
+          };
+        },
       );
-      if (appPorts !== undefined && runtime.evidence !== 'full') {
-        await clearPausedSnapshot(prepared.branchStore!, prepared.metadata);
-      }
       if (runtime.snapshotResumed) {
         request.stderr.write('Resumed from the retained snapshot; prior user processes ended (runtime services refreshed)\n');
       } else if (runtime.reused) {
@@ -318,10 +337,10 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         request,
         sandbox,
         runtime.setupStatus,
-        await displayToken(prepared.branchStore, secrets),
+        await displayToken(branchStore, secrets),
         appPorts,
         createVercelSessionLease({
-          configuredTimeoutMs: configuredSessionTimeout(request, sandbox, prepared.metadata, false),
+          configuredTimeoutMs: configuredSessionTimeout(request, sandbox, metadata, false),
           expiresAt: sandbox.expiresAt,
         }),
       );
@@ -337,57 +356,86 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
       );
     }),
     stop: (request) => providerErrors(request, 'stop', async (secrets) => {
-      const prepared = await prepareStored(request, 'stop', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
-      const report = await prepared.lifecycle.stop();
+      const report = await withPreparedStoredRuntime(
+        request,
+        'stop',
+        runner,
+        options,
+        makeLifecycle,
+        injectedLifecycle,
+        client,
+        secrets,
+        (prepared) => prepared.lifecycle.stop(),
+      );
       renderStopReport(request, report);
       return { exitCode: 0 };
     }),
     pause: (request) => providerErrors(request, 'pause', async (secrets) => {
-      const prepared = await prepareStored(request, 'pause', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
-      const report = prepared.lifecycle.pause === undefined
-        ? await prepared.lifecycle.stop()
-        : await prepared.lifecycle.pause();
+      const report = await withPreparedStoredRuntime(
+        request,
+        'pause',
+        runner,
+        options,
+        makeLifecycle,
+        injectedLifecycle,
+        client,
+        secrets,
+        (prepared) => prepared.lifecycle.pause === undefined
+          ? prepared.lifecycle.stop()
+          : prepared.lifecycle.pause(),
+      );
       renderStopReport(request, report, 'pause');
       return { exitCode: 0 };
     }),
     remove: (request) => providerErrors(request, 'remove', async (secrets) => {
-      const prepared = await prepareStored(request, 'remove', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
-      if (prepared.alreadyAbsent) {
-        try {
-          await prepared.branchStore?.remove();
-        } catch {
-          // No live resource remains; local recovery state is best effort.
-        }
-        // Removal stays idempotent, but must not report a deletion it did not
-        // perform: "cleanup verified" here is indistinguishable from having
-        // actually removed a box, which hides a mistyped branch.
-        //
-        // Nor may it claim nothing exists while --list is showing one. A
-        // same-branch box in another Vercel team/project is deliberately left
-        // alone, but saying so is the difference between an honest no-op and a
-        // command that appears broken.
-        if (prepared.foreignScope.length > 0) {
-          request.stderr.write(
-            `No Vercel sandbox for ${request.branch} in this team/project.\n`
-            + `  ${prepared.foreignScope.length} sandbox(es) for this branch belong to another Vercel `
-            + 'team/project and were not touched:\n'
-            + prepared.foreignScope.map((name) => `    ${name}\n`).join('')
-            + '  set VERCEL_TEAM_ID/VERCEL_PROJECT_ID to that scope and retry to remove them\n',
-          );
+      return withPreparedStoredRuntime(
+        request,
+        'remove',
+        runner,
+        options,
+        makeLifecycle,
+        injectedLifecycle,
+        client,
+        secrets,
+        async (prepared) => {
+          if (prepared.alreadyAbsent) {
+            try {
+              await prepared.branchStore?.remove();
+            } catch {
+              // No live resource remains; local recovery state is best effort.
+            }
+            // Removal stays idempotent, but must not report a deletion it did not
+            // perform: "cleanup verified" here is indistinguishable from having
+            // actually removed a box, which hides a mistyped branch.
+            //
+            // Nor may it claim nothing exists while --list is showing one. A
+            // same-branch box in another Vercel team/project is deliberately left
+            // alone, but saying so is the difference between an honest no-op and a
+            // command that appears broken.
+            if (prepared.foreignScope.length > 0) {
+              request.stderr.write(
+                `No Vercel sandbox for ${request.branch} in this team/project.\n`
+                + `  ${prepared.foreignScope.length} sandbox(es) for this branch belong to another Vercel `
+                + 'team/project and were not touched:\n'
+                + prepared.foreignScope.map((name) => `    ${name}\n`).join('')
+                + '  set VERCEL_TEAM_ID/VERCEL_PROJECT_ID to that scope and retry to remove them\n',
+              );
+              return { exitCode: 0 };
+            }
+            request.stderr.write(
+              `No Vercel sandbox exists for ${request.branch}; nothing to remove.\n`
+              + '  run devbox --provider vercel --list to see existing boxes\n',
+            );
+            return { exitCode: 0 };
+          }
+          const result = await prepared.lifecycle.remove();
+          if (!result.verified) {
+            throw new VercelLifecycleError('cleanup_incomplete', 'Vercel cleanup verification did not converge');
+          }
+          request.stderr.write(`Vercel sandbox ${prepared.recovery?.identity.name ?? sandboxName(prepared.metadata, request.branch)}: cleanup verified\n`);
           return { exitCode: 0 };
-        }
-        request.stderr.write(
-          `No Vercel sandbox exists for ${request.branch}; nothing to remove.\n`
-          + '  run devbox --provider vercel --list to see existing boxes\n',
-        );
-        return { exitCode: 0 };
-      }
-      const result = await prepared.lifecycle.remove();
-      if (!result.verified) {
-        throw new VercelLifecycleError('cleanup_incomplete', 'Vercel cleanup verification did not converge');
-      }
-      request.stderr.write(`Vercel sandbox ${prepared.recovery?.identity.name ?? sandboxName(prepared.metadata, request.branch)}: cleanup verified\n`);
-      return { exitCode: 0 };
+        },
+      );
     }),
     list: (request) => providerErrors(request, 'list', async (secrets) => {
       const prepared = await prepareStored(request, 'list', runner, options, makeLifecycle, injectedLifecycle, client, secrets);
@@ -482,8 +530,9 @@ async function prepareStored(
   injectedLifecycle: VercelLifecycle | undefined,
   client: VercelSandboxClient,
   secrets: string[],
+  resolvedOrigin?: GitHubSourceRemote,
 ): Promise<PreparedOperation> {
-  const origin = await resolveGitHubSourceOrigin({
+  const origin = resolvedOrigin ?? await resolveGitHubSourceOrigin({
     repoRoot: request.repoRoot,
     env: request.env,
     shellRunner: runner,
@@ -837,6 +886,7 @@ async function terminalResult(
     },
     ...(request.runtimeEnvironment === undefined ? {} : { env: request.runtimeEnvironment }),
     ...(signalSource === undefined ? {} : { signalSource }),
+    sessionId: terminalShell.sessionId,
     program: terminalShell.program,
   };
   const result = await terminal.attach(sandbox, terminalOptions);
@@ -851,12 +901,53 @@ async function terminalResult(
   return mapTerminalResult(result);
 }
 
+async function withPreparedStoredRuntime<T>(
+  request: ProviderBranchRequest,
+  action: string,
+  runner: ShellRunner,
+  options: VercelProviderOptions,
+  makeLifecycle: VercelLifecycleFactory,
+  injectedLifecycle: VercelLifecycle | undefined,
+  client: VercelSandboxClient,
+  secrets: string[],
+  operation: (prepared: PreparedOperation) => Promise<T>,
+): Promise<T> {
+  const origin = await resolveGitHubSourceOrigin({
+    repoRoot: request.repoRoot,
+    env: request.env,
+    shellRunner: runner,
+  });
+  const branchStore = createBranchStore(
+    origin,
+    normalizeRequestedSourceBranch(request.branch),
+    options,
+  );
+  return withRuntimeSyncLock(branchStore, async () => {
+    const prepared = await prepareStored(
+      request,
+      action,
+      runner,
+      options,
+      makeLifecycle,
+      injectedLifecycle,
+      client,
+      secrets,
+      origin,
+    );
+    return operation(prepared);
+  });
+}
+
 async function withRuntimeSyncLock<T>(
   branchStore: VercelBranchMetadataStore,
   operation: () => Promise<T>,
 ): Promise<T> {
   // Keep this separate from the branch metadata lock because display startup
   // reads and rotates credentials through that lock during preparation.
+  // Acquire and release the store lock once so its private parent directory is
+  // present before the sibling lock is created, including for first-time --rm.
+  const directorySetupLock = await branchStore.acquireLock();
+  await directorySetupLock.release();
   const lock = await acquireMetadataLock(
     `${branchStore.path}.runtime-sync`,
     `${branchStore.lockPath}.runtime-sync`,
@@ -1134,7 +1225,7 @@ async function withProviderErrors(
       branch: typeof branch === 'string' ? branch : undefined,
       requestedTimeoutMs: 'timeoutMs' in request && typeof request.timeoutMs === 'number'
         ? request.timeoutMs
-        : undefined,
+        : action === 'up' ? DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS : undefined,
       secrets,
     });
   }

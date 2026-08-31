@@ -36,6 +36,7 @@ export const VERCEL_RUNTIME_PREPARATION_PATH = `${VERCEL_RUNTIME_DIRECTORY}/prep
 export const RUNTIME_PREPARATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 const PREPARATION_EVIDENCE_SENTINEL = '--DEVBOX--';
+const MAX_PREPARATION_MARKER_ATTEMPTS = 3;
 
 /** Positive evidence that this Sandbox instance has a reusable runtime state. */
 export interface RuntimePreparationBase {
@@ -300,9 +301,8 @@ export async function prepareSandboxRuntime(
             ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
             ...(options.signal === undefined ? {} : { signal: options.signal }),
           }));
-          await writePreparationMarker(options, secrets, {
+          await writeCurrentPreparationMarker(options, secrets, {
             sandboxName: options.sandbox.name,
-            sessionId: actual.sessionId,
             sourceRevision: actual.sourceRevision,
             imageDigest: actual.imageDigest,
             githubTokenSha256: githubTokenHash,
@@ -327,12 +327,10 @@ export async function prepareSandboxRuntime(
     ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   }));
-  const sessionId = currentVercelSessionId(options.sandbox);
-  if (revision !== undefined && sessionId !== null) {
+  if (revision !== undefined) {
     // Written last: moving it earlier would let a crash mid-preparation fake evidence.
-    await writePreparationMarker(options, secrets, {
+    await writeCurrentPreparationMarker(options, secrets, {
       sandboxName: options.sandbox.name,
-      sessionId,
       sourceRevision: revision,
       imageDigest: sandboxImageDigest(options.sandbox),
       githubTokenSha256: githubTokenHash,
@@ -454,6 +452,20 @@ async function writePreparationMarker(
     content: Buffer.from(JSON.stringify(marker)),
     mode: 0o600,
   }], secrets);
+}
+
+async function writeCurrentPreparationMarker(
+  options: PrepareSandboxRuntimeOptions,
+  secrets: readonly string[],
+  marker: RuntimePreparationBase,
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_PREPARATION_MARKER_ATTEMPTS; attempt += 1) {
+    const sessionId = currentVercelSessionId(options.sandbox);
+    if (sessionId === null) return;
+    await writePreparationMarker(options, secrets, { ...marker, sessionId });
+    if (currentVercelSessionId(options.sandbox) === sessionId) return;
+  }
+  throw new VercelRuntimeSyncError('Vercel current session changed during runtime preparation marker publication');
 }
 
 function sandboxImageDigest(sandbox: VercelSandboxHandle): string {

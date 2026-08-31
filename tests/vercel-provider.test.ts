@@ -15,7 +15,12 @@ import {
   createVercelScopeMetadataStore,
 } from '../src/providers/vercel/metadata.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
-import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
+import {
+  VercelSdkError,
+  type VercelSandboxClient,
+  type VercelSandboxHandle,
+} from '../src/providers/vercel/client.js';
+import { VERCEL_LONG_SESSION_REJECTION_SIGNATURE } from '../src/providers/vercel/errors.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 import { resolveTestImage, TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
@@ -128,6 +133,27 @@ function isRelayControl(request: { cmd?: string; args?: string[] }): boolean {
 }
 
 describe('Vercel provider', () => {
+  it('includes the effective default timeout in long-session rejection guidance', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-default-timeout-'));
+    const provider = createVercelProvider({
+      runner: runner(),
+      stateHome,
+      lifecycle: () => {
+        throw new VercelSdkError(
+          'Sandbox.getOrCreate',
+          Object.assign(new Error(VERCEL_LONG_SESSION_REJECTION_SIGNATURE), { status: 400 }),
+          [],
+        );
+      },
+      confirmation: vi.fn(async () => true),
+    });
+
+    await expect(provider.up(request())).rejects.toMatchObject({
+      code: 'api',
+      message: expect.stringContaining('requested timeout: 60 minutes'),
+    });
+  });
+
   it('uses production device auth defaults to render and optionally open the verification URL', async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-provider-device-auth-'));
     await mkdir(join(repoRoot, '.vercel'));
@@ -744,6 +770,7 @@ describe('Vercel provider', () => {
       expect.objectContaining({ cwd: '/vercel/sandbox' }),
       expect.objectContaining({
         cwd: '/vercel/sandbox/repo',
+        sessionId: 'sandbox-id',
         program: expect.objectContaining({
           command: 'tmux',
           args: expect.arrayContaining(['new-session', '-A', '-s', 'devbox', '-c', '/vercel/sandbox/repo']),
@@ -1525,7 +1552,7 @@ describe('Vercel provider', () => {
         tags: { ...recovered.tags },
       }]),
       get: vi.fn(async () => handle),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => []),
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
@@ -1595,7 +1622,7 @@ describe('Vercel provider', () => {
         }
         return live;
       }),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async ({ name }: { name: string }) => {
         if (name !== oldIdentity.name) throw Object.assign(new Error('snapshot listing failed'), { status: 500 });
         return [];
@@ -1736,7 +1763,7 @@ describe('Vercel provider', () => {
         }
         return handle;
       }),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => []),
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;
