@@ -1077,7 +1077,19 @@ describe('Vercel supply-chain script boundaries', () => {
       const publisherToken = 'publisher-arbitrary-token-123';
       const consumerToken = 'consumer-arbitrary-token-456';
       const displayCode = 'display-code-123';
-      await writeFile(artifact, JSON.stringify({ error: `${publisherToken} ${consumerToken}`, output: `access code: ${displayCode}`, redacted: false }));
+      const deviceCode = 'device-code-456';
+      await writeFile(artifact, JSON.stringify({
+        error: `${publisherToken} ${consumerToken}`,
+        output: [
+          `access code: ${displayCode}`,
+          `Vercel device authorization URL: https://vercel.com/device?user_code=${deviceCode}`,
+          `Vercel device authorization code: ${deviceCode}`,
+          `fallback URL: https://vercel.com/device?code=${deviceCode}`,
+        ].join('\n'),
+        device_code: deviceCode,
+        user_code: deviceCode,
+        redacted: false,
+      }));
       const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
         ...process.env,
         VERCEL_PUBLISHER_TOKEN: publisherToken,
@@ -1088,7 +1100,11 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(redacted).not.toContain(publisherToken);
       expect(redacted).not.toContain(consumerToken);
       expect(redacted).not.toContain(displayCode);
+      expect(redacted).not.toContain(deviceCode);
       expect(redacted).toContain('access code: [REDACTED]');
+      expect(redacted).toContain('user_code=[REDACTED]');
+      expect(redacted).toContain('device authorization code: [REDACTED]');
+      expect(redacted).toContain('code=[REDACTED]');
       expect(redacted).toContain('[REDACTED]');
     } finally {
       await rm(temp, { recursive: true, force: true });

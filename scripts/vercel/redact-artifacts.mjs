@@ -12,7 +12,7 @@ import { basename, join } from 'node:path';
 // Field-name redaction targets exact raw sensitive fields only: a generic parent
 // key like `fixture` must be recursed (its fingerprint subtree is safe evidence),
 // and any *Fingerprint field is a non-reversible hash that must survive.
-const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)/i;
+const sensitiveFieldName = /(TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_|DEVICE_CODE|USER_CODE)/i;
 const sensitiveEnvironmentName = /(?:TOKEN|PASSWORD|SECRET|AUTH|CREDENTIAL|PRIVATE_KEY|TEAM_ID|PROJECT_ID|ENV_CONTENT|UAT_)|^DEVBOX_GITHUB_FIXTURE_/i;
 const binaryArtifactExtension = /\.(?:png|webm|mp4)$/i;
 const isSensitiveField = (name) => !/Fingerprint/i.test(name) && sensitiveFieldName.test(name);
@@ -33,8 +33,10 @@ function redactText(input) {
     // The display access code travels as a pairing query parameter and as the
     // cookie it is exchanged for; neither may reach an evidence artifact.
     .replace(/([?&]token=)[^&\s"']+/gi, '$1[REDACTED]')
+    .replace(/([?&](?:user_)?code=)[^&#\s"']+/gi, '$1[REDACTED]')
     .replace(/(devbox_novnc=)[^;\s"']+/gi, '$1[REDACTED]')
     .replace(/(access code:\s*)[^\s]+/gi, '$1[REDACTED]')
+    .replace(/(Vercel device authorization code:\s*)[^\s]+/gi, '$1[REDACTED]')
     .replace(/(VERCEL_(?:TOKEN|OIDC_TOKEN|PASSWORD)\s*[=:]\s*)[^\s,}]+/gi, '$1[REDACTED]');
 }
 
