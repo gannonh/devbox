@@ -9,7 +9,7 @@ import {
   waitForEmptyResourceInventory,
 } from '../scripts/vercel/session-uat-cleanup.mjs';
 import { createEvidence, redactTailValue } from '../scripts/vercel/session-uat-evidence.mjs';
-import { waitForExit, waitForOutput } from '../scripts/vercel/session-uat-probes.mjs';
+import { createSessionUatProbes, waitForExit, waitForOutput } from '../scripts/vercel/session-uat-probes.mjs';
 
 async function driverSource(): Promise<string> {
   const files = [
@@ -66,8 +66,43 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('snapshot branch restored');
     expect(source).toContain('snapshot runtime state restored');
     expect(source).toContain('snapshot fresh provider session');
+    expect(source).toContain('parseIdentity(session.output(), marker)');
+    expect(source).toContain('return session.output();');
     expect(source).not.toContain("waitFor('▲ ', cliTimeoutMs)");
     expect(source).not.toContain("'▲ ',");
+  });
+
+  it('parses complete PTY records after their readiness markers', () => {
+    const probes = createSessionUatProbes({
+      branch: 'feature/session',
+      repoRoot: '/tmp',
+      cliPath: '/tmp/cli.js',
+      environment: {},
+      markerTimeoutMs: 1_000,
+      providerPollMs: 1,
+      redact: (value) => value,
+    });
+
+    expect(probes.parseIdentity(
+      'ubuntu@uat:~$ PID=41 TMUX=devbox SOCKET=/tmp/devbox-tmux/session-a/socket\nDEVBOX_UAT_identity',
+      'DEVBOX_UAT_identity',
+    )).toEqual({
+      pid: '41',
+      session: 'devbox',
+      socket: '/tmp/devbox-tmux/session-a/socket',
+    });
+    expect(probes.parseFixtureStartup(
+      'PID=42 TMUX=devbox\nDEVBOX_UAT_fixture',
+      'DEVBOX_UAT_fixture',
+    )).toEqual({ marker: 'DEVBOX_UAT_fixture', pid: '42', session: 'devbox' });
+    expect(probes.parseDetachedProcessStartup(
+      'PID=43 MARKER=process-marker\nDEVBOX_UAT_started',
+      'DEVBOX_UAT_started',
+    )).toEqual({ marker: 'process-marker', pid: '43' });
+    expect(probes.parseWorkspace(
+      'PWD=/vercel/sandbox BRANCH=feature/session\nDEVBOX_UAT_workspace',
+      'DEVBOX_UAT_workspace',
+    )).toEqual({ path: '/vercel/sandbox', branch: 'feature/session' });
   });
 
   it('writes redacted evidence and has an explicit cleanup mode', async () => {

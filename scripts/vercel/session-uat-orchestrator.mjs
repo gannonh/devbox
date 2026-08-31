@@ -459,12 +459,16 @@ export async function runSessionUat({ environment = process.env, argv = process.
   async function writeAndWait(session, command, marker, retryIntervalMs = 0) {
     const wait = session.waitFor(marker, markerTimeoutMs);
     session.write(command);
-    if (retryIntervalMs <= 0) return wait;
+    if (retryIntervalMs <= 0) {
+      await wait;
+      return session.output();
+    }
     const retry = setInterval(() => {
       if (!session.output().includes(marker)) session.write(command);
     }, retryIntervalMs);
     try {
-      return await wait;
+      await wait;
+      return session.output();
     } finally {
       clearInterval(retry);
     }
