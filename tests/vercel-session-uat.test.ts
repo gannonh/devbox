@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
@@ -7,6 +9,7 @@ import {
   waitForEmptyResourceInventory,
 } from '../scripts/vercel/session-uat-cleanup.mjs';
 import { createEvidence, redactTailValue } from '../scripts/vercel/session-uat-evidence.mjs';
+import { waitForExit, waitForOutput } from '../scripts/vercel/session-uat-probes.mjs';
 
 async function driverSource(): Promise<string> {
   const files = [
@@ -161,5 +164,18 @@ describe('public Vercel session UAT driver', () => {
     expect(detail).toContain('provider startup failed');
     expect(detail).not.toContain('private-token');
     expect(detail.length).toBeLessThanOrEqual(1200);
+  });
+
+  it('observes an already-exited PTY without waiting for its timeout', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: 0,
+      signalCode: null,
+    });
+
+    await expect(waitForOutput(child, () => false, 1_000))
+      .rejects.toThrow('CLI PTY exited before the marker appeared');
+    await expect(waitForExit(child, 1_000)).resolves.toBe(0);
   });
 });

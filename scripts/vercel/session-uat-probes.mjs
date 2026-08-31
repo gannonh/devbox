@@ -8,6 +8,7 @@ export function createSessionUatProbes({
   branch,
   repoRoot,
   cliPath,
+  environment = process.env,
   markerTimeoutMs,
   providerPollMs,
   redact,
@@ -16,7 +17,7 @@ export function createSessionUatProbes({
     const name = sandboxName ?? await readStoredSandboxName(stateHome);
     let sandbox;
     try {
-      sandbox = await Sandbox.get({ ...providerCredentials(), name, resume: false });
+      sandbox = await Sandbox.get({ ...providerCredentials(environment), name, resume: false });
     } catch {
       throw new Error('Vercel provider session facts probe failed');
     }
@@ -67,7 +68,7 @@ export function createSessionUatProbes({
 
   async function listProviderSnapshots(sandboxName) {
     try {
-      const page = await Snapshot.list({ ...providerCredentials(), name: sandboxName, limit: 50 });
+      const page = await Snapshot.list({ ...providerCredentials(environment), name: sandboxName, limit: 50 });
       return page.toArray();
     } catch {
       throw new Error('Vercel provider snapshot probe failed');
@@ -123,6 +124,7 @@ export function createSessionUatProbes({
       cwd: repoRoot,
       env: {
         ...process.env,
+        ...environment,
         XDG_STATE_HOME: stateHome,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -144,7 +146,9 @@ export function createSessionUatProbes({
       },
       waitForExit: (timeoutMs) => waitForExit(child, timeoutMs),
       close: async (signal) => {
-        if (child.exitCode !== null) return child.exitCode;
+        if (child.exitCode !== null || child.signalCode !== null) {
+          return child.exitCode ?? signalCode(child.signalCode);
+        }
         child.kill(signal);
         return waitForExit(child, 5_000).catch(() => {
           child.kill('SIGKILL');
@@ -265,18 +269,23 @@ export function providerCredentials(environment = process.env) {
   return { token, teamId, projectId };
 }
 
-function waitForOutput(child, probe, timeoutMs) {
-  const found = probe();
-  if (found) return Promise.resolve(found);
+export function waitForOutput(child, probe, timeoutMs) {
   return new Promise((resolvePromise, reject) => {
-    const timer = setTimeout(() => finish(new Error('CLI PTY marker timeout')), timeoutMs);
+    let timer;
+    let settled = false;
     const onData = () => {
-      const result = probe();
-      if (result) finish(result);
+      try {
+        const result = probe();
+        if (result) finish(result);
+      } catch (error) {
+        finish(error);
+      }
     };
     const onExit = () => finish(new Error('CLI PTY exited before the marker appeared'));
     const finish = (value) => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
       child.stdout.removeListener('data', onData);
       child.stderr.removeListener('data', onData);
       child.removeListener('exit', onExit);
@@ -286,21 +295,44 @@ function waitForOutput(child, probe, timeoutMs) {
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.once('exit', onExit);
+    timer = setTimeout(() => finish(new Error('CLI PTY marker timeout')), timeoutMs);
+    if (settled) {
+      clearTimeout(timer);
+      return;
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      finish(new Error('CLI PTY exited before the marker appeared'));
+      return;
+    }
+    try {
+      const found = probe();
+      if (found) finish(found);
+    } catch (error) {
+      finish(error);
+    }
   });
 }
 
-function waitForExit(child, timeoutMs) {
-  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
+export function waitForExit(child, timeoutMs) {
   return new Promise((resolvePromise, reject) => {
-    const timer = setTimeout(() => finish(new Error('CLI PTY exit timeout')), timeoutMs);
+    let timer;
+    let settled = false;
     const onExit = (code, signal) => finish(undefined, code ?? signalCode(signal));
     const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       child.removeListener('exit', onExit);
       if (error) reject(error);
       else resolvePromise(value);
     };
     child.once('exit', onExit);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      finish(undefined, child.exitCode ?? signalCode(child.signalCode));
+      return;
+    }
+    timer = setTimeout(() => finish(new Error('CLI PTY exit timeout')), timeoutMs);
+    if (settled) clearTimeout(timer);
   });
 }
 
