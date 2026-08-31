@@ -338,7 +338,7 @@ export function waitForExit(child, timeoutMs) {
 
 function remoteIdentityCommand(marker) {
   const encoded = Buffer.from(marker).toString('base64');
-  return `printf '%s PID=%s TMUX=%s SOCKET=%s\\n' "$(printf '%s' '${encoded}' | base64 -d)" "$$" "$(tmux display-message -p '#S')" "$(find /tmp/devbox-tmux -mindepth 2 -maxdepth 2 -type s -name socket -print | head -n 1)"\n`;
+  return `printf 'PID=%s TMUX=%s SOCKET=%s\\n%s\\n' "$$" "$(tmux display-message -p '#S')" "$(find /tmp/devbox-tmux -mindepth 2 -maxdepth 2 -type s -name socket -print | head -n 1)" "$(printf '%s' '${encoded}' | base64 -d)"\n`;
 }
 
 function remoteHttpFixtureCommand(marker) {
@@ -397,7 +397,7 @@ function remoteRuntimeStateCommand(ready, missing, sessionId) {
 
 function parseIdentity(output, marker) {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(`${escaped} PID=([0-9]+) TMUX=([^\\s\\r\\n]+) SOCKET=([^\\s\\r\\n]+)`).exec(output);
+  const match = new RegExp(`PID=([0-9]+) TMUX=([^\\s\\r\\n]+) SOCKET=([^\\s\\r\\n]+)\\s+${escaped}`).exec(output);
   if (!match) throw new Error(`identity marker ${marker} did not include a PID, tmux session, and socket`);
   return { pid: match[1], session: match[2], socket: match[3] };
 }
