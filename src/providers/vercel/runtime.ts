@@ -161,7 +161,7 @@ export function classifyPreparation(
   const stable = marker.sandboxName === actual.sandboxName
     && marker.sourceRevision === actual.sourceRevision
     && marker.imageDigest === actual.imageDigest;
-  if (!stable) return vmSession.kind === 'snapshot-resumed' ? 'snapshot' : 'full';
+  if (!stable) return 'full';
   const hashesMatch = marker.githubTokenSha256 === actual.githubTokenSha256
     && marker.envSha256 === actual.envSha256;
   if (vmSession.kind === 'snapshot-resumed') return hashesMatch ? 'snapshot' : 'snapshot-sync';

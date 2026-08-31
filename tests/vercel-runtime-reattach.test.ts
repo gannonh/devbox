@@ -13,6 +13,7 @@ import type {
 } from '../src/providers/vercel/client.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 import {
+  classifyPreparation,
   evaluatePreparation,
   prepareSandboxRuntime,
   VERCEL_RUNTIME_PREPARATION_PATH,
@@ -152,6 +153,17 @@ describe('preparation evidence', () => {
     expect(evaluatePreparation([], actual)).toBe(false);
     expect(evaluatePreparation({ sandboxName: 'runtime-sync' }, actual)).toBe(false);
     expect(evaluatePreparation({ ...actual, sourceRevision: 7 }, actual)).toBe(false);
+  });
+
+  it('takes full preparation when a snapshot resume has a stale checkout or image', () => {
+    const resumed = {
+      ...actual,
+      sessionId: 'resumed-session' as never,
+      sourceSnapshotId: 'snapshot-1',
+    };
+    expect(classifyPreparation({ ...actual }, resumed)).toBe('snapshot');
+    expect(classifyPreparation({ ...actual, sourceRevision: 'c'.repeat(40) }, resumed)).toBe('full');
+    expect(classifyPreparation({ ...actual, imageDigest: 'other-image' }, resumed)).toBe('full');
   });
 });
 
@@ -357,6 +369,35 @@ describe('Vercel cheap re-attach', () => {
         mode: 'attach',
       }));
       expect(result.reused).toBe(false);
+      expect(harness.commands.some((command) =>
+        (command.args?.[1] ?? '').includes('gh auth login'))).toBe(true);
+    }
+  });
+
+  it('takes the full path when a retained snapshot has a stale checkout or image', async () => {
+    for (const mutated of [
+      { sourceRevision: 'c'.repeat(40) },
+      { imageDigest: 'other-image' },
+    ]) {
+      const harness = reattachClient();
+      await prepareSandboxRuntime(prepareOptions({ client: harness.client }));
+      const marker = JSON.parse(harness.files.get(VERCEL_RUNTIME_PREPARATION_PATH)!.toString('utf8'));
+      harness.files.set(
+        VERCEL_RUNTIME_PREPARATION_PATH,
+        Buffer.from(JSON.stringify({ ...marker, ...mutated })),
+      );
+
+      const result = await prepareSandboxRuntime(prepareOptions({
+        client: harness.client,
+        mode: 'attach',
+        sandbox: {
+          ...sandbox(),
+          sourceSnapshotId: 'snapshot-1',
+          currentSession: () => ({ sessionId: 'resumed-session' }),
+        } as VercelSandboxHandle,
+      }));
+
+      expect(result).toMatchObject({ reused: false, evidence: 'full' });
       expect(harness.commands.some((command) =>
         (command.args?.[1] ?? '').includes('gh auth login'))).toBe(true);
     }
