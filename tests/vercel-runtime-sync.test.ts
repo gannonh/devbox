@@ -483,10 +483,11 @@ describe('Vercel runtime sync', () => {
     expect(fake.commands).toEqual([]);
   });
 
-  function isAppPortScan(request: VercelRunCommandRequest): boolean {
+  function isNonRuntimeCommand(request: VercelRunCommandRequest): boolean {
     const args = (request.args ?? []).join(' ');
     return (request.cmd === 'git' && args === 'rev-parse HEAD')
-      || args.includes('package.json');
+      || args.includes('package.json')
+      || args.includes('/tmp/devbox-tmux');
   }
 
   it('runs runtime sync on up before terminal readiness', async () => {
@@ -514,9 +515,9 @@ describe('Vercel runtime sync', () => {
         events.push('runtime-upload');
       }),
       runCommand: vi.fn(async (_sandbox: VercelSandboxHandle, request: VercelRunCommandRequest) => {
-        // The app-port scan runs after runtime sync under its own, shorter
-        // deadline, so it is excluded from the shared-signal assertion.
-        if (request.signal && !isAppPortScan(request)) runtimeSignals.push(request.signal);
+        // App-port scanning and terminal-shell setup use independent deadlines,
+        // so exclude them from the shared runtime-signal assertion.
+        if (request.signal && !isNonRuntimeCommand(request)) runtimeSignals.push(request.signal);
         events.push('runtime-command');
         if (request.cmd === '/usr/local/bin/devbox-status') {
           return { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT };

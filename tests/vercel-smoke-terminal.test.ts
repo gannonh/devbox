@@ -131,6 +131,26 @@ describe('provider smoke output waiting', () => {
     expect(stream.listenerCount('data')).toBe(0);
   });
 
+  it('handles markers split across chunks and clears its timer', async () => {
+    const stream = new PassThrough();
+    const timer = Symbol('timer');
+    const clearTimeout = vi.fn();
+    const resultPromise = waitForOutput(
+      stream,
+      'ready',
+      1_000,
+      undefined,
+      undefined,
+      { setTimeout: () => timer, clearTimeout },
+    );
+
+    stream.write('prefix-');
+    stream.write('ready');
+
+    await expect(resultPromise).resolves.toBe('prefix-ready');
+    expect(clearTimeout).toHaveBeenCalledWith(timer);
+  });
+
   it('does not miss a marker emitted while reading captured output', async () => {
     const stream = new PassThrough();
 
