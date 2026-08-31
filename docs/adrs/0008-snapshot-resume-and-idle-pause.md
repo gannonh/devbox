@@ -1,12 +1,12 @@
 ---
 type: Architecture
-title: "Vercel snapshot resume and idle pause"
-description: "Persistent pause, source-session evidence, runtime refresh, and heartbeat-based idle control."
+title: "Vercel snapshot resume"
+description: "Persistent pause, source-session evidence, and runtime refresh."
 status: Accepted
 issue: https://github.com/gannonh/devbox/issues/19
 ---
 
-# Vercel snapshot resume and idle pause
+# Vercel snapshot resume
 
 ## Decision
 
@@ -27,15 +27,6 @@ refreshes GitHub auth, dotenv state, Pi configuration, display services, and
 recorded relays, then writes a new running-session marker. It never reclones,
 installs dependencies, or reruns the post-create hook. Missing or mismatched
 evidence takes the full path.
-
-The remote heartbeat is mode `0600` and is updated by actual terminal input or
-a successful display health poll. The idle controller uses a 15-minute
-per-branch default, accepts zero to disable, and never treats WebSocket pings or
-host-side attachment as activity. A newly snapshot-resumed session gets one
-bootstrap heartbeat before the timer starts. It waits through the complete
-window for a missing or unreadable heartbeat and does not pause while setup
-status is `running`. A clean terminal detach (`Ctrl-]`, stdin EOF) releases the
-TTY but keeps the idle monitor in the CLI process until auto-pause fires.
 
 ## Consequences
 

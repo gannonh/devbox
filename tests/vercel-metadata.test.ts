@@ -8,6 +8,7 @@ import {
   createVercelMetadataStore,
   createVercelScopeMetadataStore,
 } from '../src/providers/vercel/metadata.js';
+import { VercelObsoleteMetadataError } from '../src/providers/vercel/metadata-schema.js';
 
 describe('Vercel metadata', () => {
   it('keeps repository scope and branch sandbox records in independent keyed stores', async () => {
@@ -118,7 +119,7 @@ describe('Vercel metadata', () => {
     expect('vcpus' in stored).toBe(false);
   });
 
-  it('round-trips paused snapshot and idle policy metadata', async () => {
+  it('round-trips retained snapshot metadata without policy fields', async () => {
     const stateHome = await mkdtemp(join(tmpdir(), 'devbox-metadata-pause-'));
     const store = createVercelBranchMetadataStore({
       stateHome,
@@ -131,9 +132,7 @@ describe('Vercel metadata', () => {
         id: 'snapshot-1',
         sourceSessionId: 'session-1',
         createdAt: 1_700_000_000_000,
-        idlePausedAt: 1_700_000_001_000,
       },
-      idlePauseMinutes: 15,
     });
 
     await expect(store.read()).resolves.toMatchObject({
@@ -141,9 +140,7 @@ describe('Vercel metadata', () => {
         id: 'snapshot-1',
         sourceSessionId: 'session-1',
         createdAt: 1_700_000_000_000,
-        idlePausedAt: 1_700_000_001_000,
       },
-      idlePauseMinutes: 15,
     });
   });
 
@@ -792,6 +789,15 @@ describe('Vercel app port metadata', () => {
     // stale mapping is simply gone, which is the full-provisioning path.
     expect(metadata?.sandboxId).toBe('sbx_test');
     expect(metadata?.appPorts).toBeUndefined();
+  });
+
+  it('rejects obsolete idle-policy metadata with a typed error', async () => {
+    const branch = await store();
+    await branch.write({ sandboxId: 'sbx_test' });
+    const stored = JSON.parse(await readFile(branch.path, 'utf8')) as Record<string, unknown>;
+    await writeFile(branch.path, `${JSON.stringify({ ...stored, idlePauseMinutes: 15 })}\n`, { mode: 0o600 });
+
+    await expect(branch.read()).rejects.toBeInstanceOf(VercelObsoleteMetadataError);
   });
 
   it('keeps the stored record free of any project text', async () => {

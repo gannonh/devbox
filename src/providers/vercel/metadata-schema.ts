@@ -33,8 +33,17 @@ export interface VercelPausedSnapshot {
   id: string;
   sourceSessionId: string;
   createdAt?: number;
-  /** Set only when the idle controller, rather than the user, paused it. */
-  idlePausedAt?: number;
+}
+
+export class VercelObsoleteMetadataError extends Error {
+  readonly code = 'obsolete_metadata';
+  readonly fields: readonly string[];
+
+  constructor(fields: readonly string[]) {
+    super(`Vercel metadata contains removed idle-policy field(s): ${fields.join(', ')}`);
+    this.name = 'VercelObsoleteMetadataError';
+    this.fields = [...fields];
+  }
 }
 
 export interface VercelCreateConfiguration {
@@ -144,8 +153,6 @@ export interface VercelBranchMetadataInput {
   sandboxId?: string;
   snapshotIds?: string[];
   pausedSnapshot?: VercelPausedSnapshot;
-  /** Mutable per-branch policy. Zero disables the idle controller. */
-  idlePauseMinutes?: number;
   residual?: VercelResidualMetadata;
   configuration?: VercelCreateConfiguration;
   displayCredentials?: VercelDisplayCredentials;
@@ -173,7 +180,6 @@ export function toBranchMetadataInput(metadata: VercelBranchMetadata): VercelBra
     ...(metadata.sandboxId === undefined ? {} : { sandboxId: metadata.sandboxId }),
     ...(metadata.snapshotIds === undefined ? {} : { snapshotIds: metadata.snapshotIds }),
     ...(metadata.pausedSnapshot === undefined ? {} : { pausedSnapshot: metadata.pausedSnapshot }),
-    ...(metadata.idlePauseMinutes === undefined ? {} : { idlePauseMinutes: metadata.idlePauseMinutes }),
     ...(metadata.residual === undefined ? {} : { residual: metadata.residual }),
     ...(metadata.configuration === undefined ? {} : { configuration: metadata.configuration }),
     ...(metadata.displayCredentials === undefined ? {} : { displayCredentials: metadata.displayCredentials }),
@@ -307,7 +313,6 @@ const BRANCH_INPUT_FIELDS = [
   'sandboxId',
   'snapshotIds',
   'pausedSnapshot',
-  'idlePauseMinutes',
   'residual',
   'configuration',
   'displayCredentials',
@@ -385,7 +390,6 @@ export function validateBranchMetadataInput(value: unknown): VercelBranchMetadat
     ...(input.sandboxId === undefined ? {} : { sandboxId: requireString(input.sandboxId, 'sandboxId') }),
     ...(input.snapshotIds === undefined ? {} : { snapshotIds: parseStringArray(input.snapshotIds, 'snapshotIds') }),
     ...(input.pausedSnapshot === undefined ? {} : { pausedSnapshot: parsePausedSnapshot(input.pausedSnapshot) }),
-    ...(input.idlePauseMinutes === undefined ? {} : { idlePauseMinutes: parseIdlePauseMinutes(input.idlePauseMinutes) }),
     ...(input.residual === undefined ? {} : { residual: parseResidual(input.residual) }),
     ...(input.configuration === undefined ? {} : { configuration: parseConfiguration(input.configuration) }),
     ...(input.displayCredentials === undefined ? {} : { displayCredentials: parseDisplayCredentials(input.displayCredentials) }),
@@ -490,17 +494,15 @@ function parsePausedSnapshot(value: unknown): VercelPausedSnapshot {
   const snapshot = expectRecord(value, 'Vercel paused snapshot');
   assertExactKeys(
     snapshot,
-    ['id', 'sourceSessionId', 'createdAt', 'idlePausedAt'],
+    ['id', 'sourceSessionId', 'createdAt'],
     ['id', 'sourceSessionId'],
     'Vercel paused snapshot',
   );
   const createdAt = parseOptionalTimestamp(snapshot.createdAt, 'createdAt');
-  const idlePausedAt = parseOptionalTimestamp(snapshot.idlePausedAt, 'idlePausedAt');
   return {
     id: requireString(snapshot.id, 'pausedSnapshot.id'),
     sourceSessionId: requireString(snapshot.sourceSessionId, 'pausedSnapshot.sourceSessionId'),
     ...(createdAt === undefined ? {} : { createdAt }),
-    ...(idlePausedAt === undefined ? {} : { idlePausedAt }),
   };
 }
 
@@ -510,13 +512,6 @@ function parseOptionalTimestamp(value: unknown, field: string): number | undefin
     throw new Error(`Vercel paused snapshot ${field} must be a non-negative number`);
   }
   return value;
-}
-
-function parseIdlePauseMinutes(value: unknown): number {
-  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 1440) {
-    throw new Error('Vercel idlePauseMinutes must be an integer between 0 and 1440');
-  }
-  return value as number;
 }
 
 function parseDisplayCredentials(value: unknown): VercelDisplayCredentials {
@@ -768,6 +763,10 @@ function assertExactKeys(
   label: string,
 ): void {
   const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  const obsolete = unknown.filter((key) => key === 'idlePauseMinutes' || key === 'idlePausedAt');
+  if (obsolete.length > 0) {
+    throw new VercelObsoleteMetadataError(obsolete);
+  }
   if (unknown.length > 0) {
     throw new Error(`Unknown ${label} field(s): ${unknown.join(', ')}`);
   }

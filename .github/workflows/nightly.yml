@@ -30,6 +30,11 @@ on:
         required: false
         default: '15'
         type: string
+      duration:
+        description: 'Run the public CLI Vercel session UAT, including the 60-minute lease path'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '17 3 * * *'
 
@@ -509,7 +514,6 @@ jobs:
           EXPECTED_IMAGE_PROJECT_SLUG: ${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}
           SMOKE_ROLE: consumer
           SMOKE_TIMEOUT_MS: '1200000'
-          SMOKE_TERMINAL_LONGEVITY_IDLE_MS: '360000'
           SMOKE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#consumer-smoke
           SMOKE_REPORT: ${{ runner.temp }}/vercel-image-evidence/consumer-smoke.json
         run: node scripts/vercel/smoke-sandbox.mjs
@@ -571,6 +575,135 @@ jobs:
         with:
           name: vercel-image-evidence-${{ github.run_id }}
           path: ${{ runner.temp }}/vercel-image-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+  session-uat:
+    name: Public CLI Vercel session UAT
+    needs: candidate
+    if: >-
+      needs.candidate.result == 'success' &&
+      inputs.duration == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment:
+      name: vercel-provider-smoke
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SOURCE_COMMIT: ${{ needs.candidate.outputs.source_commit }}
+      DEVBOX_UAT_BRANCH: uat/devbox-session-${{ github.run_id }}-${{ github.run_attempt }}
+      DEVBOX_UAT_STATE_HOME: ${{ github.workspace }}/.devbox-session-uat-state
+      ARTIFACT_DIR: ${{ github.workspace }}/.devbox-session-uat
+    steps:
+      - name: Checkout verified source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.candidate.outputs.source_commit }}
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production CLI
+        run: npm run build
+
+      - name: Prepare fixture and evidence directories
+        env:
+          GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_COMMIT}"
+          mkdir -p "${ARTIFACT_DIR}" "${DEVBOX_UAT_STATE_HOME}"
+          source_root="${RUNNER_TEMP}/devbox-session-uat-source"
+          gh repo clone "${DEVBOX_GITHUB_FIXTURE_REPOSITORY}" "${source_root}" -- --branch "${DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH}" --single-branch
+          test -d "${source_root}/.git"
+          echo "DEVBOX_UAT_REPO_ROOT=${source_root}" >> "${GITHUB_ENV}"
+
+      - name: Preflight exact branch cleanup
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/preflight.json
+          DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
+        run: node scripts/vercel/session-uat.mjs --cleanup
+
+      - name: Run dedicated 60-minute Sandbox lease path (120-minute job)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_VERCEL_IMAGE: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ needs.candidate.outputs.candidate_digest }}
+          DEVBOX_UAT_MODE: duration
+          DEVBOX_UAT_TIMEOUT_MINUTES: '60'
+          DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/duration.json
+          DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
+        run: node scripts/vercel/session-uat.mjs
+
+      - name: Run public CLI forced-close and reconnect path
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_VERCEL_IMAGE: vcr.vercel.com/${{ secrets.VERCEL_PUBLISHER_TEAM_SLUG }}/${{ secrets.VERCEL_PUBLISHER_PROJECT_SLUG }}/${{ env.VERCEL_IMAGE_REPOSITORY }}@${{ needs.candidate.outputs.candidate_digest }}
+          DEVBOX_UAT_MODE: reconnect
+          DEVBOX_UAT_TIMEOUT_MINUTES: '60'
+          DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/reconnect.json
+          DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
+        run: node scripts/vercel/session-uat.mjs
+
+      - name: Reconcile exact branch cleanup
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_UAT_REPORT: ${{ env.ARTIFACT_DIR }}/reconciliation.json
+          DEVBOX_CLI: ${{ github.workspace }}/dist/cli.js
+        run: node scripts/vercel/session-uat.mjs --cleanup
+
+      - name: Redact session UAT evidence
+        id: redact_session_uat
+        if: always()
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_CONSUMER_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_CONSUMER_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_CONSUMER_PROJECT_ID }}
+          DEVBOX_GITHUB_FIXTURE_TOKEN: ${{ secrets.DEVBOX_GITHUB_FIXTURE_TOKEN }}
+          DEVBOX_GITHUB_FIXTURE_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}
+          DEVBOX_GITHUB_FIXTURE_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH: ${{ secrets.DEVBOX_GITHUB_FIXTURE_DEFAULT_BRANCH }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_FILE }}
+          DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT: ${{ secrets.DEVBOX_GITHUB_FIXTURE_EXPECTED_CONTENT }}
+        run: node scripts/vercel/redact-artifacts.mjs "${ARTIFACT_DIR}"
+
+      - name: Upload redacted session UAT evidence
+        if: always() && steps.redact_session_uat.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vercel-session-uat-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_DIR }}
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 30
 

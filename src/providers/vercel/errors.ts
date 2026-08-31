@@ -10,6 +10,7 @@ import {
   VercelRouteNotFoundError,
   VercelScopeConflictError,
 } from './lifecycle.js';
+import { VercelObsoleteMetadataError } from './metadata-schema.js';
 import { redactSecrets } from './redaction.js';
 
 export type VercelProviderErrorCode =
@@ -27,6 +28,7 @@ export type VercelProviderErrorCode =
   | 'locked'
   | 'timeout'
   | 'aborted'
+  | 'session'
   | 'cleanup'
   | 'route'
   | 'display'
@@ -36,8 +38,12 @@ export interface VercelErrorContext {
   action?: string;
   operation?: 'source' | 'terminal' | 'api';
   branch?: string;
+  requestedTimeoutMs?: number;
   secrets?: readonly string[];
 }
+
+/** Captured from a live Sandbox create probe with a timeout above one day. */
+export const VERCEL_LONG_SESSION_REJECTION_SIGNATURE = 'status code 400 is not ok: `timeout` should be <= 1d';
 
 /** A stable, redacted error exposed by the provider boundary. */
 export class VercelProviderError extends ProviderOperationError {
@@ -69,6 +75,13 @@ export function mapVercelError(
   const detail = safeDetail(error, context.secrets ?? []);
   const command = recoveryCommand(context);
   const message = detail.toLowerCase();
+
+  if (error instanceof VercelObsoleteMetadataError || lifecycleCode === 'obsolete_metadata') {
+    return new VercelProviderError(
+      'stale',
+      `Stored Vercel metadata contains the removed idle policy; run ${removeRecoveryCommand(context)}, then create the box again with ${createRecoveryCommand(context)}.`,
+    );
+  }
 
   if (isMetadataLockContention(error, message)) {
     return new VercelProviderError(
@@ -236,6 +249,16 @@ export function mapVercelError(
   if (isAbortError(error, message, lifecycleCode)) {
     return new VercelProviderError('aborted', 'The Vercel operation was aborted; retry the command.');
   }
+  if (lifecycleCode === 'session_binding'
+    || lifecycleCode === 'session_unavailable'
+    || lifecycleCode === 'session_changed'
+  ) {
+    return new VercelProviderError(
+      'session',
+      `The Vercel provider session changed or is unavailable; retry ${command}.`,
+      2,
+    );
+  }
   if (isTimeoutError(error, message, lifecycleCode)) {
     return new VercelProviderError(
       'timeout',
@@ -251,9 +274,12 @@ export function mapVercelError(
   }
 
   const suffix = detail ? `: ${detail}` : '';
+  const durationHint = isLongSessionCreate(context, operation, status, message)
+    ? `; requested timeout: ${Math.round(context.requestedTimeoutMs! / 60_000)} minutes. Vercel Hobby supports up to 45 minutes; Pro and Enterprise support up to 24 hours. Try --timeout 45.`
+    : '';
   return new VercelProviderError(
     'api',
-    `Vercel API request failed${suffix}; check credentials and network access, then retry ${command}.`,
+    `Vercel API request failed${suffix}${durationHint}; check credentials and network access, then retry ${command}.`,
   );
 }
 
@@ -262,17 +288,21 @@ function statusOf(error: unknown): number | undefined {
   const candidate = error as {
     status?: unknown;
     response?: { status?: unknown };
+    cause?: unknown;
   } | null;
   if (typeof candidate?.status === 'number') return candidate.status;
   if (typeof candidate?.response?.status === 'number') return candidate.response.status;
+  if (candidate?.cause !== undefined && candidate.cause !== error) return statusOf(candidate.cause);
   return undefined;
 }
 
 function codeOf(error: unknown): string | undefined {
-  return typeof error === 'object' && error !== null && 'code' in error
-    && typeof (error as { code?: unknown }).code === 'string'
-    ? (error as { code: string }).code
-    : undefined;
+  if (typeof error !== 'object' || error === null) return undefined;
+  if ('code' in error && typeof (error as { code?: unknown }).code === 'string') {
+    return (error as { code: string }).code;
+  }
+  const cause = 'cause' in error ? (error as { cause?: unknown }).cause : undefined;
+  return cause === undefined || cause === error ? undefined : codeOf(cause);
 }
 
 function safeDetail(error: unknown, secrets: readonly string[]): string {
@@ -318,6 +348,20 @@ function isMetadataLockContention(error: unknown, message: string): boolean {
     || /^timed out waiting for vercel metadata lock: .+$/.test(message);
 }
 
+function isLongSessionCreate(
+  context: VercelErrorContext,
+  operation: string | undefined,
+  status: number | undefined,
+  message: string,
+): boolean {
+  return context.action === 'up'
+    && operation === 'Sandbox.getOrCreate'
+    && context.requestedTimeoutMs !== undefined
+    && context.requestedTimeoutMs > 45 * 60_000
+    && status === 400
+    && message === VERCEL_LONG_SESSION_REJECTION_SIGNATURE;
+}
+
 function isScopeLinkError(message: string, code: string | undefined): boolean {
   return code === 'scope_link'
     || /^vercel project link is missing: .+$/.test(message)
@@ -356,20 +400,33 @@ function isStoredScopeMismatch(message: string): boolean {
 }
 
 function isAbortError(error: unknown, message: string, code: string | undefined): boolean {
-  return (error instanceof Error && error.name === 'AbortError')
+  if ((error instanceof Error && error.name === 'AbortError')
     || code === 'ABORT_ERR'
-    || /^vercel (?:authentication|operation) aborted$/.test(message);
+    || /^vercel (?:authentication|operation) aborted$/.test(message)) return true;
+  const cause = causeOf(error);
+  return cause !== undefined && cause !== error
+    && isAbortError(cause, String(cause).toLowerCase(), codeOf(cause));
 }
 
 function isTimeoutError(error: unknown, message: string, code: string | undefined): boolean {
-  return (error instanceof Error && error.name === 'TimeoutError')
+  if ((error instanceof Error && error.name === 'TimeoutError')
     || code === 'ETIMEDOUT'
-    || /^vercel (?:authentication|operation) timed out$/.test(message);
+    || /^vercel (?:authentication|operation) timed out$/.test(message)) return true;
+  const cause = causeOf(error);
+  return cause !== undefined && cause !== error
+    && isTimeoutError(cause, String(cause).toLowerCase(), codeOf(cause));
 }
 
 function operationOf(error: unknown): string | undefined {
   const candidate = error as { operation?: unknown } | null;
-  return typeof candidate?.operation === 'string' ? candidate.operation : undefined;
+  if (typeof candidate?.operation === 'string') return candidate.operation;
+  const cause = causeOf(error);
+  return cause === undefined || cause === error ? undefined : operationOf(cause);
+}
+
+function causeOf(error: unknown): unknown {
+  if (typeof error !== 'object' || error === null || !('cause' in error)) return undefined;
+  return (error as { cause?: unknown }).cause;
 }
 
 function isStableCode(code: string | undefined, expected: readonly string[]): boolean {

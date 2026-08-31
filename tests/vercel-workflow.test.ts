@@ -309,7 +309,7 @@ describe('Vercel image and release workflows', () => {
     expect(zstdAssertion).toContain('application/vnd.oci.image.layer.v1.tar+zstd');
   });
 
-  it('runs the six-minute production terminal adapter smoke for reused and rebuilt images', async () => {
+  it('keeps the image smoke bounded and gates the public CLI session UAT separately', async () => {
     const workflow = await workflowText();
     const smoke = await readFile('scripts/vercel/smoke-sandbox.mjs', 'utf8');
     const consumerStep = workflow.match(/- name: Independent cross-project consumer Sandbox smoke gate[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
@@ -326,13 +326,28 @@ describe('Vercel image and release workflows', () => {
     expect(resolveStep.match(/run: \|([\s\S]*)/)?.[1]).not.toContain('${{');
     expect(consumerStep).not.toContain("steps.drift.outputs.skip != 'true'");
     expect(consumerStep).toContain('steps.resolved.outputs.digest');
-    expect(consumerStep).toContain("SMOKE_TERMINAL_LONGEVITY_IDLE_MS: '360000'");
     expect(consumerStep).toContain("SMOKE_TIMEOUT_MS: '1200000'");
+    expect(consumerStep).not.toContain('SMOKE_TERMINAL_LONGEVITY_IDLE_MS');
     expect(workflow).toContain('timeout-minutes: 75');
-    expect(smoke).toContain("../../dist/providers/vercel/terminal.js");
-    expect(smoke).toContain('runTerminalLongevity');
-    expect(smoke).toContain("timed('terminal-longevity'");
-    expect(smoke).toContain('Sandbox.get({ ...credentials, name: sandbox.name');
+    expect(smoke).not.toContain('runTerminalLongevity');
+    expect(smoke).not.toContain('SMOKE_TERMINAL_LONGEVITY_IDLE_MS');
+    expect(workflow).toContain('duration:');
+    expect(workflow).toContain('timeout-minutes: 120');
+    const durationStep = workflow.match(/- name: Run dedicated 60-minute Sandbox lease path \(120-minute job\)[\s\S]*?(?=\n\s{6}- name:)/)?.[0] ?? '';
+    expect(durationStep).toContain("DEVBOX_UAT_TIMEOUT_MINUTES: '60'");
+    expect(durationStep).not.toContain("DEVBOX_UAT_TIMEOUT_MINUTES: '120'");
+    const sessionJob = workflow.match(/\n {2}session-uat:[\s\S]*?(?=\n {2}publish:)/)?.[0] ?? '';
+    expect(sessionJob).not.toContain('DEVBOX_UAT_STATE_HOME: ${{ runner.temp }}');
+    expect(sessionJob).not.toContain('ARTIFACT_DIR: ${{ runner.temp }}');
+    expect(workflow).toContain('Run public CLI forced-close and reconnect path');
+    expect(workflow).toContain('Preflight exact branch cleanup');
+    expect(workflow).toContain('Reconcile exact branch cleanup');
+    expect(workflow).toContain('DEVBOX_UAT_REPOSITORY: ${{ secrets.DEVBOX_GITHUB_FIXTURE_REPOSITORY }}');
+    expect(workflow).toContain('GITHUB_TOKEN: ${{ github.token }}');
+    expect(workflow).toContain('actions: read');
+    expect(workflow).toContain('if: always()');
+    expect(workflow).toContain('node scripts/vercel/session-uat.mjs');
+    expect(sessionJob).toContain('include-hidden-files: true');
   });
 
   it('redacts workflow evidence and emits a pin only after both smoke gates', async () => {

@@ -13,7 +13,7 @@ import {
   REQUIRED_SMOKE_CHECKS,
   REQUIRED_SMOKE_TIMINGS,
 } from '../scripts/vercel/smoke-contract.mjs';
-import { fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
+import { fetchTextWithTimeout, fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
 import { verifySandboxDeleted, waitForTerminalSessionStates } from '../scripts/vercel/sandbox-cleanup.mjs';
 import {
   applyOwnedRecoveryEvidence,
@@ -115,6 +115,22 @@ describe('Vercel supply-chain script boundaries', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('test server did not bind');
       await expect(fetchWithTimeout(`http://127.0.0.1:${address.port}/hang`, {}, 50)).rejects.toThrow(/timed out|aborted/i);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('aborts a response body that stalls after headers', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.write('partial');
+    }).listen(0, '127.0.0.1');
+    try {
+      await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not bind');
+      await expect(fetchTextWithTimeout(`http://127.0.0.1:${address.port}/slow-body`, {}, 50))
+        .rejects.toThrow(/timed out|aborted/i);
     } finally {
       server.close();
     }
@@ -845,8 +861,8 @@ describe('Vercel supply-chain script boundaries', () => {
       expect(stdout).not.toContain('=working');
       expect(stdout).not.toContain('image checks passed');
       const status = await readFile('images/vercel/status-devbox.sh', 'utf8');
-      expect(status).toContain('write_display_heartbeat');
-      expect(status).toContain('chmod 600');
+      expect(status).not.toContain('write_display_heartbeat');
+      expect(status).not.toContain('/vercel/.devbox/runtime/heartbeat');
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -1076,7 +1092,20 @@ describe('Vercel supply-chain script boundaries', () => {
       const artifact = join(temp, 'error.json');
       const publisherToken = 'publisher-arbitrary-token-123';
       const consumerToken = 'consumer-arbitrary-token-456';
-      await writeFile(artifact, JSON.stringify({ error: `${publisherToken} ${consumerToken}`, redacted: false }));
+      const displayCode = 'display-code-123';
+      const deviceCode = 'device-code-456';
+      await writeFile(artifact, JSON.stringify({
+        error: `${publisherToken} ${consumerToken}`,
+        output: [
+          `access code: ${displayCode}`,
+          `Vercel device authorization URL: https://vercel.com/device?user_code=${deviceCode}`,
+          `Vercel device authorization code: ${deviceCode}`,
+          `fallback URL: https://vercel.com/device?code=${deviceCode}`,
+        ].join('\n'),
+        device_code: deviceCode,
+        user_code: deviceCode,
+        redacted: false,
+      }));
       const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
         ...process.env,
         VERCEL_PUBLISHER_TOKEN: publisherToken,
@@ -1086,6 +1115,12 @@ describe('Vercel supply-chain script boundaries', () => {
       const redacted = await readFile(artifact, 'utf8');
       expect(redacted).not.toContain(publisherToken);
       expect(redacted).not.toContain(consumerToken);
+      expect(redacted).not.toContain(displayCode);
+      expect(redacted).not.toContain(deviceCode);
+      expect(redacted).toContain('access code: [REDACTED]');
+      expect(redacted).toContain('user_code=[REDACTED]');
+      expect(redacted).toContain('device authorization code: [REDACTED]');
+      expect(redacted).toContain('code=[REDACTED]');
       expect(redacted).toContain('[REDACTED]');
     } finally {
       await rm(temp, { recursive: true, force: true });

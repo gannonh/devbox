@@ -472,38 +472,6 @@ async function monorepoScenario({ env, stateHome, credentials, realClient, origi
     listReportsRunning: true,
   });
 
-  const idleRegistry = idleProviderRegistry(client, stateHome);
-  const idleRun = await runCli(['--provider', 'vercel', branch, '--attach'], {
-    env: { ...env, DEVBOX_IDLE_PAUSE_MINUTES: '1' },
-    stateHome,
-    registry: idleRegistry,
-  });
-  assert(idleRun.code === 0, `monorepo idle run exited ${idleRun.code}`);
-  assert(/auto-paused after the idle window/.test(idleRun.stderr), 'idle controller did not pause the stale-heartbeat box');
-  const idleMetadata = await store.read();
-  assert(idleMetadata?.pausedSnapshot?.idlePausedAt !== undefined, 'idle pause timestamp was not retained');
-  const idleList = await runCli(['--provider', 'vercel', '--list'], { env, stateHome, registry });
-  assert(idleList.code === 0 && /paused/.test(idleList.stderr), 'idle-paused box was not listed as paused');
-  record('monorepo-idle-pause', {
-    paused: true,
-    heartbeat: 'stale',
-    timestampRecorded: true,
-    listReportsPaused: true,
-  });
-
-  const resumedAfterIdle = await runCli(['--provider', 'vercel', branch, '--attach'], {
-    env,
-    stateHome,
-    registry,
-  });
-  assert(resumedAfterIdle.code === 0, `idle snapshot resume exited ${resumedAfterIdle.code}`);
-  assert(/idle-paused at \d{4}-\d{2}-\d{2}T/.test(resumedAfterIdle.stderr), 'next attach did not report the idle pause timestamp');
-  assert((await store.read())?.pausedSnapshot === undefined, 'idle pause metadata was not cleared after resume');
-  record('monorepo-idle-resume', {
-    noticeReported: true,
-    pausedMetadataCleared: true,
-  });
-
   await removeAndVerify(cleanupContext);
   cleanupContext = undefined;
 }
@@ -988,24 +956,6 @@ function providerRegistryWithTerminal(client, stateHome, terminal) {
       terminal,
     }),
   };
-}
-
-function idleProviderRegistry(client, stateHome) {
-  return providerRegistryWithTerminal(client, stateHome, {
-    attach: async (sandbox) => {
-      await client.runCommand(sandbox, {
-        cmd: 'sh',
-        args: [
-          '-c',
-          'umask 077; mkdir -p /vercel/.devbox/runtime; printf "1\\n" > /vercel/.devbox/runtime/heartbeat; chmod 600 /vercel/.devbox/runtime/heartbeat; touch -d @1 /vercel/.devbox/runtime/heartbeat',
-        ],
-      });
-      // One full one-minute policy window plus a margin lets the production
-      // idle monitor issue the real stop-and-snapshot operation.
-      await new Promise((resolve) => setTimeout(resolve, 70_000));
-      return { status: 'detached', reason: 'escape' };
-    },
-  });
 }
 
 function recordingClient(client, updates) {

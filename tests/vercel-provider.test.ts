@@ -5,7 +5,7 @@ import { access, chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { dispatch } from '../src/cli.js';
-import { createVercelProvider, awaitPendingIdleGuards } from '../src/providers/vercel/provider.js';
+import { createVercelProvider } from '../src/providers/vercel/provider.js';
 import type { DevboxProvider, ProviderBranchRequest } from '../src/providers/types.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 import type { VercelLifecycle, VercelLifecycleOptions } from '../src/providers/vercel/lifecycle.js';
@@ -15,7 +15,12 @@ import {
   createVercelScopeMetadataStore,
 } from '../src/providers/vercel/metadata.js';
 import type { VercelTerminalAdapter } from '../src/providers/vercel/terminal.js';
-import type { VercelSandboxClient, VercelSandboxHandle } from '../src/providers/vercel/client.js';
+import {
+  VercelSdkError,
+  type VercelSandboxClient,
+  type VercelSandboxHandle,
+} from '../src/providers/vercel/client.js';
+import { VERCEL_LONG_SESSION_REJECTION_SIGNATURE } from '../src/providers/vercel/errors.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
 import { resolveTestImage, TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
@@ -31,7 +36,6 @@ function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranch
       VERCEL_TOKEN: 'vercel-secret',
       VERCEL_TEAM_ID: 'team-1',
       VERCEL_PROJECT_ID: 'project-1',
-      DEVBOX_IDLE_PAUSE_MINUTES: '0',
     },
     tty: true,
     stdin: new PassThrough(),
@@ -44,7 +48,6 @@ function request(overrides: Partial<ProviderBranchRequest> = {}): ProviderBranch
     ...defaults,
     ...overrides,
     env: {
-      DEVBOX_IDLE_PAUSE_MINUTES: '0',
       ...env,
       HOME: env.HOME ?? defaults.env.HOME,
     },
@@ -64,21 +67,22 @@ function runner(): ShellRunner {
 }
 
 function sandbox(): VercelSandboxHandle {
+  const runCommand = vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
+    ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
+    : { exitCode: 0 });
   return {
     id: 'sandbox-id',
     name: 'devbox-vercel-test',
     status: 'running',
     cwd: '/vercel/sandbox',
     tags: {},
+    currentSession: vi.fn(() => ({ sessionId: 'sandbox-id', runCommand })),
     openInteractive: vi.fn(),
-    extendTimeout: vi.fn(),
     listSessions: vi.fn(),
     stop: vi.fn(),
     delete: vi.fn(),
     writeFiles: vi.fn(async () => {}),
-    runCommand: vi.fn(async (command: { cmd?: string }) => command.cmd === '/usr/local/bin/devbox-status'
-      ? { exitCode: 0, stdout: async () => DISPLAY_STATUS_OUTPUT }
-      : { exitCode: 0 }),
+    runCommand,
     domain: vi.fn((port: number) => `https://sandbox.example/${port}`),
   } as unknown as VercelSandboxHandle;
 }
@@ -130,6 +134,27 @@ function isRelayControl(request: { cmd?: string; args?: string[] }): boolean {
 }
 
 describe('Vercel provider', () => {
+  it('includes the effective default timeout in long-session rejection guidance', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-default-timeout-'));
+    const provider = createVercelProvider({
+      runner: runner(),
+      stateHome,
+      lifecycle: () => {
+        throw new VercelSdkError(
+          'Sandbox.getOrCreate',
+          Object.assign(new Error(VERCEL_LONG_SESSION_REJECTION_SIGNATURE), { status: 400 }),
+          [],
+        );
+      },
+      confirmation: vi.fn(async () => true),
+    });
+
+    await expect(provider.up(request())).rejects.toMatchObject({
+      code: 'api',
+      message: expect.stringContaining('requested timeout: 60 minutes'),
+    });
+  });
+
   it('uses production device auth defaults to render and optionally open the verification URL', async () => {
     const repoRoot = await mkdtemp(join(tmpdir(), 'devbox-provider-device-auth-'));
     await mkdir(join(repoRoot, '.vercel'));
@@ -725,6 +750,7 @@ describe('Vercel provider', () => {
       stateHome,
       lifecycle: (options) => {
         expect(options.credentials).toEqual({ token: 'new-vercel-token', teamId: 'stored-team', projectId: 'stored-project' });
+        expect(options.timeoutMs).toBe(5_400_000);
         expect(options.source?.source.password).toBe('');
         return currentLifecycle;
       },
@@ -735,6 +761,7 @@ describe('Vercel provider', () => {
     const code = await provider.attach(request({
       branch: 'feature/ui',
       env: { VERCEL_TOKEN: 'new-vercel-token' },
+      timeoutMs: 5_400_000,
       tty: true,
     }));
 
@@ -742,7 +769,14 @@ describe('Vercel provider', () => {
     expect(currentLifecycle.attach).toHaveBeenCalledOnce();
     expect(terminal.attach).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: '/vercel/sandbox' }),
-      expect.objectContaining({ cwd: '/vercel/sandbox/repo' }),
+      expect.objectContaining({
+        cwd: '/vercel/sandbox/repo',
+        sessionId: 'sandbox-id',
+        program: expect.objectContaining({
+          command: 'tmux',
+          args: expect.arrayContaining(['new-session', '-A', '-s', 'devbox', '-c', '/vercel/sandbox/repo']),
+        }),
+      }),
     );
     expect(confirmation).not.toHaveBeenCalled();
     expect(execQuiet).not.toHaveBeenCalled();
@@ -787,10 +821,12 @@ describe('Vercel provider', () => {
       },
     });
     const marker = {
-      sandboxId: 'sandbox-id',
-      revision: head,
-      githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
-      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
+      sandboxName: 'devbox-vercel-test',
+      sessionId: 'sandbox-id',
+      sourceRevision: head,
+      imageDigest: '',
+      githubTokenSha256: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
+      envSha256: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
     };
     const commands: Array<{ cmd?: string; args?: string[] }> = [];
     const updatedPorts: number[][] = [];
@@ -885,7 +921,7 @@ describe('Vercel provider', () => {
       || command.cmd === 'stat'
       || isRelayControl(command)
       || (command.args?.[1] ?? '').includes('cat /vercel/.devbox/runtime/preparation.json')
-      || (command.cmd === 'sh' && (command.args?.[1] ?? '').includes('/vercel/.devbox/runtime/heartbeat'))))
+      || (command.args?.[1] ?? '').includes('tmux')))
       .toBe(true);
     expect(commands.filter(isRelayControl).map((command) => command.args?.[1])).toEqual(['status']);
     expect(terminal.attach).toHaveBeenCalledOnce();
@@ -930,10 +966,12 @@ describe('Vercel provider', () => {
       },
     });
     const marker = {
-      sandboxId: 'sandbox-id',
-      revision: head,
-      githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
-      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
+      sandboxName: 'devbox-vercel-test',
+      sessionId: 'sandbox-session',
+      sourceRevision: head,
+      imageDigest: '',
+      githubTokenSha256: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
+      envSha256: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
     };
     const updatedPorts: number[][] = [];
     const client = {
@@ -1071,10 +1109,12 @@ describe('Vercel provider', () => {
       },
     });
     const marker = {
-      sandboxId: 'sandbox-id',
-      revision: head,
-      githubTokenHash: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
-      environmentHash: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
+      sandboxName: 'devbox-vercel-test',
+      sessionId: 'sandbox-id',
+      sourceRevision: head,
+      imageDigest: '',
+      githubTokenSha256: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
+      envSha256: createHash('sha256').update(JSON.stringify([['API_KEY', 'dotenv-secret']]), 'utf8').digest('hex'),
     };
     const updatedPorts: number[][] = [];
     const client = {
@@ -1400,62 +1440,9 @@ describe('Vercel provider', () => {
       VERCEL_TOKEN: 'vercel-secret',
       VERCEL_TEAM_ID: 'team-1',
       VERCEL_PROJECT_ID: 'project-1',
-      DEVBOX_IDLE_PAUSE_MINUTES: '0',
     } }))).resolves.toEqual({ exitCode: 0 });
     expect(currentLifecycle.stop).not.toHaveBeenCalled();
     expect(currentLifecycle.remove).not.toHaveBeenCalled();
-  });
-
-  it('keeps idle monitoring after a clean terminal detach until auto-pause', async () => {
-    const currentLifecycle = lifecycle();
-    currentLifecycle.pause = vi.fn(async () => ({
-      name: 'devbox-vercel-test',
-      sessions: [],
-      snapshot: { id: 'idle-snapshot', status: 'created' as const },
-    }));
-    const stateHome = await mkdtemp(join(tmpdir(), 'devbox-provider-idle-detach-'));
-    await seedBranchMetadata(stateHome);
-    let tick: (() => void) | undefined;
-    const scheduler = {
-      setTimeout: vi.fn((next: () => void) => {
-        tick = next;
-        return 1;
-      }),
-      clearTimeout: vi.fn(),
-    };
-    const terminal = {
-      attach: vi.fn(async () => ({ status: 'detached' as const, reason: 'escape' as const })),
-    } as VercelTerminalAdapter;
-    const provider = createVercelProvider({
-      resolveImage: resolveTestImage,
-      runner: runner(),
-      stateHome,
-      lifecycle: currentLifecycle,
-      terminal,
-      confirmation: vi.fn(async () => true),
-      idlePause: {
-        scheduler,
-        now: () => 60_000,
-        readyAtMs: 0,
-        pollIntervalMs: 1_000,
-      },
-    });
-
-    await expect(provider.up(request({
-      env: {
-        GH_TOKEN: 'github-secret',
-        VERCEL_TOKEN: 'vercel-secret',
-        VERCEL_TEAM_ID: 'team-1',
-        VERCEL_PROJECT_ID: 'project-1',
-        DEVBOX_IDLE_PAUSE_MINUTES: '1',
-      },
-    }))).resolves.toEqual({ exitCode: 0 });
-    expect(currentLifecycle.pause).not.toHaveBeenCalled();
-    expect(tick).toBeTypeOf('function');
-
-    tick?.();
-    await awaitPendingIdleGuards();
-    expect(currentLifecycle.pause).toHaveBeenCalledOnce();
   });
 
   it('passes recovered identity and snapshots directly into removal without seeding metadata', async () => {
@@ -1566,7 +1553,7 @@ describe('Vercel provider', () => {
         tags: { ...recovered.tags },
       }]),
       get: vi.fn(async () => handle),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => []),
       deleteSandbox: vi.fn(async () => {}),
     } as unknown as VercelSandboxClient;
@@ -1636,7 +1623,7 @@ describe('Vercel provider', () => {
         }
         return live;
       }),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async ({ name }: { name: string }) => {
         if (name !== oldIdentity.name) throw Object.assign(new Error('snapshot listing failed'), { status: 500 });
         return [];
@@ -1777,7 +1764,7 @@ describe('Vercel provider', () => {
         }
         return handle;
       }),
-      listSessions: vi.fn(async () => []),
+      listSessions: vi.fn(async () => [{ id: 'session', status: 'stopped' as const }]),
       listSnapshots: vi.fn(async () => []),
       deleteSandbox: vi.fn(async () => { deleted = true; }),
     } as unknown as VercelSandboxClient;

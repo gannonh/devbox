@@ -75,6 +75,17 @@ export type VercelCommandResult = Command | CommandFinished;
 export type VercelWriteFile = Parameters<Sandbox['writeFiles']>[0][number];
 export type VercelRunCommandRequest = Parameters<Sandbox['runCommand']>[0];
 
+export interface VercelInteractiveOptions {
+  signal?: AbortSignal;
+  sessionId?: string;
+}
+
+export interface VercelSandboxSession {
+  readonly sessionId?: string;
+  openInteractive(options?: { signal?: AbortSignal }): Promise<{ url: string; token: string }>;
+  runCommand(params: VercelRunCommandRequest): Promise<VercelCommandResult>;
+}
+
 export interface VercelSandboxHandle {
   readonly id?: string;
   readonly name: string;
@@ -93,14 +104,13 @@ export interface VercelSandboxHandle {
   /** Snapshot used to create the current session, when the session was resumed from one. */
   readonly sourceSnapshotId?: string;
   /** SDK 3 exposes the current session ID through this method, not `Sandbox.id`. */
-  readonly currentSession?: () => { readonly sessionId?: string };
+  readonly currentSession?: () => VercelSandboxSession;
   readonly activeCpuUsageMs?: number;
   readonly networkTransfer?: { ingress: number; egress: number };
   readonly totalActiveCpuDurationMs?: number;
   readonly totalIngressBytes?: number;
   readonly totalEgressBytes?: number;
-  openInteractive(options?: { signal?: AbortSignal }): Promise<{ url: string; token: string }>;
-  extendTimeout(durationMs: number, options?: { signal?: AbortSignal }): Promise<void>;
+  openInteractive(options?: VercelInteractiveOptions): Promise<{ url: string; token: string }>;
   listSessions(params?: { signal?: AbortSignal }): Promise<unknown>;
   stop(params?: { signal?: AbortSignal }): Promise<VercelStopResult>;
   delete(params?: { signal?: AbortSignal }): Promise<void>;
@@ -226,6 +236,7 @@ export interface VercelSandboxClient {
   runCommand(
     sandbox: VercelSandboxHandle,
     params: VercelRunCommandRequest,
+    options?: VercelRunCommandOptions,
   ): Promise<VercelCommandResult>;
   /**
    * Replace the Sandbox's exposed ports with `ports` on the running Sandbox.
@@ -249,6 +260,11 @@ export interface VercelSandboxClient {
     signal?: AbortSignal;
   }): Promise<VercelSnapshotHandle>;
   deleteSnapshot(snapshot: VercelSnapshotHandle, options?: { signal?: AbortSignal }): Promise<void>;
+}
+
+export interface VercelRunCommandOptions {
+  expectedSessionId: string;
+  secrets?: readonly string[];
 }
 
 export interface VercelSandboxApi {
@@ -275,11 +291,20 @@ export class VercelSdkError extends Error {
 
   constructor(operation: string, error: unknown, secrets: readonly string[]) {
     const status = getStatus(error);
-    super(redactSecrets(error instanceof Error ? error.message : String(error), secrets));
+    super(redactSecrets(error instanceof Error ? error.message : String(error), secrets), { cause: error });
     this.name = 'VercelSdkError';
     this.operation = operation;
     this.status = status;
     this.notFound = status === 404;
+  }
+}
+
+export class VercelSessionBindingError extends Error {
+  readonly code = 'session_binding';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'VercelSessionBindingError';
   }
 }
 
@@ -407,11 +432,9 @@ export function createVercelSandboxClient(
       [],
       () => sandbox.writeFiles(files, options),
     ),
-    runCommand: async (sandbox, params) => call(
-      'Sandbox.runCommand',
-      [],
-      () => sandbox.runCommand(params),
-    ),
+    runCommand: async (sandbox, params, options) => options === undefined
+      ? call('Sandbox.runCommand', [], () => sandbox.runCommand(params))
+      : runCurrentSessionCommand(sandbox, options.expectedSessionId, params, options.secrets),
     updatePorts: async (sandbox, ports, updateOptions) => call(
       'Sandbox.update',
       [],
@@ -442,6 +465,29 @@ export function createVercelSandboxClient(
     },
     deleteSnapshot: async (snapshot, options) => call('Snapshot.delete', [], () => snapshot.delete(options)),
   };
+}
+
+/**
+ * Run a command on the already materialized provider session.
+ *
+ * Sandbox.runCommand may transparently resume a stopped VM. Session.runCommand
+ * keeps the command bound to the session that the caller observed, so teardown
+ * cannot be undone by terminal or relay preparation.
+ */
+export function runCurrentSessionCommand(
+  sandbox: VercelSandboxHandle,
+  expectedSessionId: string,
+  params: VercelRunCommandRequest,
+  secrets: readonly string[] = [],
+): Promise<VercelCommandResult> {
+  const session = sandbox.currentSession?.();
+  if (!session?.runCommand) {
+    throw new VercelSessionBindingError('Vercel current session is unavailable for a strict command');
+  }
+  if (session.sessionId !== expectedSessionId) {
+    throw new VercelSessionBindingError('Vercel current session changed before a strict command started');
+  }
+  return callWithSecrets('Session.runCommand', secrets, () => session.runCommand(params));
 }
 
 function matchesSandboxListFilters(
@@ -480,17 +526,19 @@ function wrapSandboxHandle(
   return new Proxy(handle, {
     get(target, property, receiver) {
       if (property === 'openInteractive') {
-        return (options?: { signal?: AbortSignal }) => callWithSecrets(
+        return (options?: VercelInteractiveOptions) => callWithSecrets(
           'Sandbox.openInteractive',
           secrets,
-          () => target.openInteractive(options),
-        );
-      }
-      if (property === 'extendTimeout') {
-        return (durationMs: number, options?: { signal?: AbortSignal }) => callWithSecrets(
-          'Sandbox.extendTimeout',
-          secrets,
-          () => target.extendTimeout(durationMs, options),
+          async () => {
+            const session = target.currentSession?.();
+            if (!session?.openInteractive) {
+              throw new Error('Vercel current session is unavailable for interactive terminal');
+            }
+            if (options?.sessionId !== undefined && session.sessionId !== options.sessionId) {
+              throw new Error('Vercel current session changed before interactive terminal opened');
+            }
+            return session.openInteractive(options === undefined ? undefined : { signal: options.signal });
+          },
         );
       }
       if (property === 'listSessions') {

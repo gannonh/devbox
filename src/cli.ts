@@ -17,7 +17,6 @@ import {
   resolveProvider,
   type ProviderRegistry,
 } from './providers/registry.js';
-import { awaitPendingIdleGuards } from './providers/vercel/provider.js';
 import { describeProviderChoice, resolveProviderChoice } from './providers/preference.js';
 import { parseExposePortsList, VercelPortsError } from './providers/ports.js';
 import { readEnvironmentFile } from './providers/local/env.js';
@@ -59,7 +58,7 @@ OPTIONS
   --expose-ports <list>     Vercel only, with a boot or --attach: expose these
                             comma-separated app ports as public routes without
                             the interactive prompt
-  --timeout <minutes>       Vercel only, on the boot that creates the sandbox:
+  --timeout <minutes>       Vercel only, for each new or snapshot-resumed VM:
                             timeout in minutes (1-1440); default 60
   --vcpus <n>               Vercel only, on the boot that creates the sandbox:
                             vCPUs, 1 or even up to 32; memory is 2048 MB per
@@ -80,7 +79,10 @@ NOTE
   local dirty files and unpushed commits are not copied to the sandbox.
   First use displays the Vercel team/project and requires TTY confirmation.
   In the remote terminal, Ctrl-C reaches the remote process and Ctrl-]
-  detaches without stopping the sandbox. App routes are plain HTTPS; the noVNC
+  detaches without stopping the sandbox. Reconnect attaches to the same
+  devbox-owned tmux session while the VM session remains alive. A Vercel VM is
+  the process boundary; continuous VPS hosting is outside this provider.
+  App routes are plain HTTPS; the noVNC
   link carries a one-use access code that pairs the browser on click and is then
   dropped from the URL. --password prints that code for the pairing form.
   Vercel does not require init. Missing .devbox/ and .devcontainer/ are fine.
@@ -127,8 +129,9 @@ FLAGS
                             copied into the box or host worktree
   --expose-ports <list>     Vercel only: expose these comma-separated app ports
                             as public routes instead of prompting
-  --timeout <minutes>       Vercel only, create-only: Sandbox timeout in
-                            minutes (1-1440); default 60
+  --timeout <minutes>       Vercel only: duration for each new or
+                            snapshot-resumed VM in minutes (1-1440); default 60;
+                            same-session attach keeps its existing deadline
   --vcpus <n>               Vercel only, create-only: Sandbox vCPUs, 1 or even
                             up to 32; memory is 2048 MB per vCPU and Vercel
                             defaults to 2. Neither resizes an existing box;
@@ -148,7 +151,10 @@ VERCEL CORE
   First use confirms the displayed team/project in a TTY.
   Without a complete credential triad, OIDC token, or cached Vercel auth, device
   auth prints the verification URL and user code. Ctrl-C is sent to the remote process.
-  Ctrl-] detaches without stopping it.
+  Ctrl-] detaches without stopping it. Reconnect attaches to the same
+  devbox-owned tmux session while the VM session remains alive. Snapshot resume
+  starts a new VM session and ends prior user processes. Vercel provides a VM
+  process boundary, not continuous VPS hosting.
   App ports detected in the remote checkout (Vite/Next) are offered once as
   public routes; --expose-ports <list> selects them without a prompt and is
   required for any new exposure outside a TTY.
@@ -186,8 +192,10 @@ DESCRIPTION
   without restarting the display. If it is stopped, starts it and re-brings
   the display stack up, then drops into a shell in /workspace.
   For Vercel, Ctrl-C reaches the remote process and Ctrl-] detaches without
-  stopping the sandbox, and confirmed app routes are re-applied without a new
-  prompt; --expose-ports <list> changes the exposed app ports.
+  stopping the sandbox. Reconnect attaches to the same devbox-owned tmux
+  session; a snapshot resume starts a fresh VM session and ends prior user
+  processes. Confirmed app routes are re-applied without a new prompt;
+  --expose-ports <list> changes the exposed app ports.
 
 EXAMPLES
   devbox ${branch} --attach
@@ -867,10 +875,6 @@ async function main() {
     stdout: process.stdout,
     stderr: process.stderr,
   });
-  // Clean Ctrl-] detach returns from the provider immediately so the TTY is
-  // released, but the idle cost-guard may still be running. Wait for it before
-  // forcing process exit; otherwise no process remains to observe the heartbeat.
-  await awaitPendingIdleGuards();
   process.exit(code);
 }
 

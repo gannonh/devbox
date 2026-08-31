@@ -7,11 +7,62 @@ import {
   isVercelNotFound,
   isVercelStale,
   VercelSdkError,
+  VercelSessionBindingError,
   type VercelSandboxHandle,
 } from '../src/providers/vercel/client.js';
 import { TEST_IMAGE_REFERENCE } from './vercel-image.fixture.js';
 
 describe('Vercel Sandbox client adapter', () => {
+  it('opens interactive terminals on the current session without an implicit resume', async () => {
+    const directOpen = vi.fn(async () => ({ url: 'wss://session.example', token: 'session-token' }));
+    const automaticOpen = vi.fn(async () => ({ url: 'wss://resume.example', token: 'resume-token' }));
+    const target = {
+      name: 'session-bound-terminal',
+      currentSession: () => ({ sessionId: 'session-1', openInteractive: directOpen }),
+      openInteractive: automaticOpen,
+    };
+    const client = createVercelSandboxClient({
+      sandbox: { get: vi.fn(async () => target) } as never,
+    });
+    const handle = await client.get({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      name: target.name,
+    });
+
+    await expect(handle.openInteractive({ sessionId: 'session-1' })).resolves.toEqual({
+      url: 'wss://session.example',
+      token: 'session-token',
+    });
+    await expect(handle.openInteractive({ sessionId: 'session-2' }))
+      .rejects.toThrow('Vercel current session changed before interactive terminal opened');
+    expect(directOpen).toHaveBeenCalledWith({ signal: undefined });
+    expect(automaticOpen).not.toHaveBeenCalled();
+  });
+
+  it('runs strict commands on the current session without an implicit resume', async () => {
+    const directRun = vi.fn(async () => ({ exitCode: 0 }));
+    const automaticRun = vi.fn(async () => ({ exitCode: 0 }));
+    const target = {
+      name: 'session-bound-command',
+      currentSession: () => ({ sessionId: 'session-1', runCommand: directRun }),
+      runCommand: automaticRun,
+    };
+    const client = createVercelSandboxClient({
+      sandbox: { get: vi.fn(async () => target) } as never,
+    });
+    const handle = await client.get({
+      credentials: { token: 'vercel-token', teamId: 'team', projectId: 'project' },
+      name: target.name,
+    });
+
+    await expect(client.runCommand(handle, { cmd: 'true' }, { expectedSessionId: 'session-1' }))
+      .resolves.toEqual({ exitCode: 0 });
+    await expect(client.runCommand(handle, { cmd: 'true' }, { expectedSessionId: 'session-2' }))
+      .rejects.toBeInstanceOf(VercelSessionBindingError);
+    expect(directRun).toHaveBeenCalledWith({ cmd: 'true' });
+    expect(automaticRun).not.toHaveBeenCalled();
+  });
+
   it('deletes a stale named sandbox through the authenticated v2 fetch seam', async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 204 }));
     const client = createVercelSandboxClient({ fetch });

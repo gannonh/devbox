@@ -88,23 +88,17 @@ Or browse to `http://<container-name>.orb.local:6080/vnc.html` (OrbStack) manual
 
 Vercel re-entry resumes the retained snapshot without recloning, dependency
 installation, or the post-create hook. It refreshes runtime secrets, Pi
-configuration, display services, and recorded public routes first. The remote
-heartbeat at `/vercel/.devbox/runtime/heartbeat` is mode `0600` and is updated
-by terminal input and successful display health polls. Automatic pause defaults
-to 15 minutes; set
-`DEVBOX_IDLE_PAUSE_MINUTES=0` to disable it or choose 1 through 1440. A missing
-heartbeat becomes idle only after the full window. A freshly snapshot-resumed
-session receives one bootstrap heartbeat before the idle timer starts; an
-ordinary attach does not reset an old heartbeat just by existing. After `Ctrl-]`
-detaches the remote TTY, the local CLI keeps watching that heartbeat until
-auto-pause fires, then exits.
+configuration, display services, and recorded public routes first. Each VM
+session owns one devbox-managed tmux session. The shell derives its socket from
+`sandbox.currentSession().sessionId`, removes only obsolete devbox-owned socket
+directories, and runs `tmux new-session -A -s devbox`.
 
-For long-running work without terminal input, an agent may refresh the heartbeat
-explicitly:
-
-```sh
-(umask 077; mkdir -p /vercel/.devbox/runtime; date +%s > /vercel/.devbox/runtime/heartbeat; chmod 600 /vercel/.devbox/runtime/heartbeat)
-```
+`Ctrl-]`, stdin EOF, and a forced local CLI close release the WebSocket while
+leaving the tmux session and its foreground process running. A same-session
+attach reaches that process. A snapshot resume creates a new VM session and
+socket, so prior user processes end while runtime setup, display services, and
+public relays restart. The configured Vercel timeout applies to each new or
+snapshot-resumed VM session.
 
 ## Inside the box
 

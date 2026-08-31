@@ -15,6 +15,17 @@ function assertTimeout(timeoutMs) {
  * response cannot keep the smoke gate from reaching cleanup.
  */
 export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS, parentSignal) {
+  return requestWithTimeout(url, init, timeoutMs, parentSignal, (response) => response);
+}
+
+export async function fetchTextWithTimeout(url, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS, parentSignal) {
+  return requestWithTimeout(url, init, timeoutMs, parentSignal, async (response) => ({
+    response,
+    body: await response.text(),
+  }));
+}
+
+async function requestWithTimeout(url, init, timeoutMs, parentSignal, consume) {
   const deadlineMs = assertTimeout(timeoutMs);
   const inheritedSignal = parentSignal ?? init.signal;
   const requestInit = { ...init };
@@ -34,7 +45,8 @@ export async function fetchWithTimeout(url, init = {}, timeoutMs = DEFAULT_TIMEO
   }, deadlineMs);
 
   try {
-    return await fetch(url, { ...requestInit, signal: controller.signal });
+    const response = await fetch(url, { ...requestInit, signal: controller.signal });
+    return await consume(response);
   } catch (error) {
     if (timedOut) {
       throw new Error(`HTTP request timed out after ${deadlineMs}ms`, { cause: error });

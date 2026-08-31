@@ -2,9 +2,9 @@ import type { CredentialResolutionOptions, VercelCredentials } from './auth.js';
 import { resolveVercelCredentials } from './auth.js';
 import {
   cleanupVercelSandbox,
+  createVercelCleanupAdapter,
   STOPPABLE_SESSION_STATES,
   TERMINAL_SESSION_STATES,
-  type VercelCleanupAdapter,
   type VercelCleanupOptions,
   type VercelCleanupResult,
 } from './cleanup.js';
@@ -43,6 +43,7 @@ import { redactSecrets } from './redaction.js';
 import { assertSandboxVcpus } from './resources.js';
 import { assertSdkPorts, DEVBOX_NOVNC_PROXY_PORT, resolveDevcontainerPorts } from './ports.js';
 import { stopAllRelays } from './app-relay.js';
+import { currentVercelSessionId } from './session-lease.js';
 import type { ShellRunner } from '../../lib/shell.js';
 
 export const DEFAULT_VERCEL_SANDBOX_TIMEOUT_MS = 60 * 60 * 1000;
@@ -173,8 +174,6 @@ export interface VercelLifecycleOptions {
   client?: VercelSandboxClient;
   timeoutMs?: number;
   vcpus?: number;
-  /** Mutable branch policy. Zero disables automatic idle pause. */
-  idlePauseMinutes?: number;
   onNotice?: (notice: string) => void | Promise<void>;
   cleanup?: Pick<VercelCleanupOptions, 'timeoutMs' | 'maxAttempts' | 'backoffMs' | 'sleep'>;
 }
@@ -288,7 +287,6 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
             ...(existing?.residual === undefined ? {} : { residual: existing.residual }),
             ...preserveDisplayCredentials(existing),
             configuration: existing?.configuration ?? configuration,
-            ...(options.idlePauseMinutes === undefined ? {} : { idlePauseMinutes: options.idlePauseMinutes }),
           }));
         } catch (error) {
           if (createdSandbox === undefined) throw error;
@@ -328,11 +326,6 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         }
         const sandbox = await getExistingSandbox(context, context.credentials, identity.name, true);
         validateSandboxIdentity(sandbox, context, identity);
-        if (options.idlePauseMinutes !== undefined && metadata?.idlePauseMinutes !== options.idlePauseMinutes) {
-          await writeBranchMetadata(context, patchBranchMetadata(metadata, {
-            idlePauseMinutes: options.idlePauseMinutes,
-          }));
-        }
         return sandbox;
       });
     },
@@ -419,7 +412,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
               : { createdAt: metadata.pausedSnapshot.createdAt }),
           });
         const pausedSnapshot: VercelPausedSnapshot | undefined = snapshot === undefined
-          ? withoutIdlePauseMarker(metadata?.pausedSnapshot)
+          ? metadata?.pausedSnapshot
           : {
             id: snapshot.id,
             sourceSessionId: snapshot.sourceSessionId ?? sandboxIdentifier(sandbox),
@@ -477,7 +470,7 @@ export function createVercelLifecycle(options: VercelLifecycleOptions): VercelLi
         const metadata = await metadataStore.read();
         if (metadata) assertScopeAndIdentity(metadata, context);
         const identity = metadata?.identity ?? toMetadataIdentity(requireIdentity(context));
-        const adapter = createCleanupAdapter(context.client);
+        const adapter = createVercelCleanupAdapter(context.client);
         const result = await cleanupVercelSandbox({
           name: identity.name,
           credentials: context.credentials,
@@ -532,7 +525,7 @@ async function removeRecoveredSandbox(
     credentials: context.credentials,
     expectedTags: recovery.identity.tags,
     ...(recovery.snapshotIds === undefined ? {} : { knownSnapshotIds: recovery.snapshotIds }),
-    adapter: createCleanupAdapter(context.client),
+    adapter: createVercelCleanupAdapter(context.client),
     ...(cleanupOptions ?? {}),
   });
   if (result.verified) {
@@ -603,17 +596,6 @@ function preserveDisplayCredentials(
   return metadata?.displayCredentials === undefined
     ? {}
     : { displayCredentials: metadata.displayCredentials };
-}
-
-function withoutIdlePauseMarker(
-  snapshot: VercelPausedSnapshot | undefined,
-): VercelPausedSnapshot | undefined {
-  if (snapshot === undefined) return undefined;
-  return {
-    id: snapshot.id,
-    sourceSessionId: snapshot.sourceSessionId,
-    ...(snapshot.createdAt === undefined ? {} : { createdAt: snapshot.createdAt }),
-  };
 }
 
 async function writeBranchMetadata(
@@ -692,7 +674,7 @@ async function compensateCreatedSandbox(
       credentials: context.credentials,
       expectedTags: identity.tags,
       knownSnapshotIds,
-      adapter: createCleanupAdapter(context.client),
+      adapter: createVercelCleanupAdapter(context.client),
       ...(cleanupOptions ?? {}),
     });
   } catch (error) {
@@ -1066,18 +1048,6 @@ async function commandOutput(result: VercelCommandResult): Promise<string> {
   return output.join('\n').trim();
 }
 
-function createCleanupAdapter(client: VercelSandboxClient): VercelCleanupAdapter {
-  return {
-    get: (request) => client.get(request),
-    deleteByName: (request) => client.deleteSandboxByName(request),
-    listSessions: (sandbox, options) => client.listSessions(sandbox as VercelSandboxHandle, options),
-    stop: (sandbox, options) => client.stopSandbox(sandbox as VercelSandboxHandle, options),
-    listSnapshots: (request) => client.listSnapshots(request),
-    getSnapshot: (request) => client.getSnapshot(request),
-    delete: (sandbox, options) => client.deleteSandbox(sandbox as VercelSandboxHandle, options),
-  };
-}
-
 function toMetadataIdentity(identity: VercelSandboxIdentity): VercelMetadataIdentity {
   return {
     name: identity.name,
@@ -1147,23 +1117,12 @@ function sameTags(actual: Record<string, string> | TagSet, expected: Readonly<Re
     actualKeys.every((key, index) => key === expectedKeys[index] && actualValues[key] === expectedValues[key]);
 }
 
-/**
- * Return the current Sandbox session identity used by session-local state.
- *
- * The SDK does not expose `Sandbox.id`; it exposes the session ID through
- * `currentSession()`. Test doubles and older adapters may still provide `id`,
- * so those values remain supported before falling back to the sandbox name.
- */
 export function sandboxIdentifier(sandbox: VercelSandboxHandle): string {
-  const candidate = sandbox as VercelSandboxHandle & { id?: unknown };
-  try {
-    const sessionId = candidate.currentSession?.()?.sessionId;
-    if (typeof sessionId === 'string' && sessionId.trim()) return sessionId;
-  } catch {
-    // A stopped or test-double handle may not have a current SDK session.
+  const sessionId = currentVercelSessionId(sandbox);
+  if (sessionId === null) {
+    throw new VercelLifecycleError('session_unavailable', 'Vercel current session ID is unavailable');
   }
-  if (typeof candidate.id === 'string' && candidate.id.trim()) return candidate.id;
-  return sandbox.name;
+  return sessionId;
 }
 
 function selectNewestSession(sessions: SandboxSessionRecord[]): SandboxSessionRecord | undefined {

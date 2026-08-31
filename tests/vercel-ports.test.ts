@@ -236,11 +236,11 @@ describe('Vercel devcontainer ports', () => {
     const handle: VercelSandboxHandle = {
       name: identity.name,
       status: 'running',
+      currentSession: () => ({ sessionId: identity.name }),
       image: TEST_IMAGE_REFERENCE,
       persistent: true,
       tags: { ...identity.tags },
       openInteractive: async () => ({ url: 'wss://example.test', token: 'token' }),
-      extendTimeout: async () => {},
       listSessions: async () => [],
       stop: async () => ({ id: 'session', status: 'stopped' }),
       delete: async () => {},

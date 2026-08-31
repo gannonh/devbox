@@ -1,10 +1,15 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { mapVercelError } from '../src/providers/vercel/errors.js';
+import { mapVercelError, VERCEL_LONG_SESSION_REJECTION_SIGNATURE } from '../src/providers/vercel/errors.js';
 import {
   VercelCreationCompensationError,
   VercelRecoveryCleanupError,
 } from '../src/providers/vercel/lifecycle.js';
+import { VercelSdkError, VercelSessionBindingError } from '../src/providers/vercel/client.js';
 import { VercelDisplayStartupError } from '../src/providers/vercel/display-startup.js';
+import { VercelObsoleteMetadataError } from '../src/providers/vercel/metadata-schema.js';
+import { VercelRuntimeSyncError } from '../src/providers/vercel/runtime.js';
+import { VercelTerminalShellError } from '../src/providers/vercel/terminal-shell.js';
 
 describe('Vercel provider errors', () => {
   it('preserves creation-compensation recovery IDs without exposing secrets', () => {
@@ -92,6 +97,56 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).toContain('devbox --provider vercel feature/ui --attach');
   });
 
+  it('maps only session-bound runtime failures to session guidance', () => {
+    const unavailable = mapVercelError(
+      new VercelRuntimeSyncError('Vercel current session ID is unavailable', 'session_unavailable'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(unavailable.code).toBe('session');
+    expect(unavailable.exitCode).toBe(2);
+
+    const generic = mapVercelError(
+      new VercelRuntimeSyncError('Display startup failed: auth-proxy'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(generic.code).toBe('api');
+    expect(generic.exitCode).toBe(1);
+
+    const terminalSetup = mapVercelError(
+      new VercelTerminalShellError('tmux reconciliation failed'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(terminalSetup.code).toBe('api');
+
+    const terminalSession = mapVercelError(
+      new VercelTerminalShellError('Vercel current session ID is unavailable', 'session_unavailable'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(terminalSession.code).toBe('session');
+
+    const binding = mapVercelError(
+      new VercelSessionBindingError('Vercel current session changed before a strict command started'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(binding.code).toBe('session');
+
+    const providerFailure = mapVercelError(
+      new VercelSdkError('Session.runCommand', Object.assign(new Error('gateway failed'), { status: 500 }), []),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(providerFailure.code).toBe('api');
+
+    const runtimeQuota = mapVercelError(
+      new VercelRuntimeSyncError(
+        'runtime command failed',
+        'runtime_sync_failed',
+        new VercelSdkError('Sandbox.runCommand', Object.assign(new Error('rate limited'), { status: 429 }), []),
+      ),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(runtimeQuota.code).toBe('quota');
+  });
+
   it('maps rate limits with Retry-After without exposing the response body', () => {
     const token = 'rate-limit-token';
     const mapped = mapVercelError(Object.assign(new Error(`body ${token}`), {
@@ -102,6 +157,109 @@ describe('Vercel provider errors', () => {
     expect(mapped.code).toBe('quota');
     expect(mapped.message).toContain('retry after 12');
     expect(mapped.message).not.toContain(token);
+  });
+
+  it('uses the captured redacted provider signature for the long-session hint', async () => {
+    const probe = JSON.parse(await readFile('tests/fixtures/vercel-timeout-rejection.json', 'utf8')) as {
+      message: string;
+      operation: string;
+      requestedTimeoutMs: number;
+      status: number;
+      redacted: boolean;
+    };
+    expect(probe.redacted).toBe(true);
+    expect(probe.operation).toBe('Sandbox.getOrCreate');
+    const mapped = mapVercelError(
+      new VercelSdkError(
+        'Sandbox.getOrCreate',
+        Object.assign(new Error(probe.message), { status: probe.status }),
+        [],
+      ),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: probe.requestedTimeoutMs,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).toContain(probe.message);
+    expect(mapped.message).toContain('requested timeout: 1441 minutes');
+    expect(mapped.message).toContain('Hobby supports up to 45 minutes');
+    expect(mapped.message).toContain('Pro and Enterprise support up to 24 hours');
+    expect(mapped.message).toContain('--timeout 45');
+  });
+
+  it('does not classify an unobserved long-session status', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError(
+        'Sandbox.getOrCreate',
+        Object.assign(new Error(VERCEL_LONG_SESSION_REJECTION_SIGNATURE), { status: 422 }),
+        [],
+      ),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 46 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
+  });
+
+  it('does not add plan guidance to an unclassified long create failure', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError('Sandbox.getOrCreate', new Error('network connection failed'), []),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
+  });
+
+  it('does not add plan guidance to an unrelated provider validation failure', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError('Sandbox.getOrCreate', Object.assign(new Error('invalid image reference'), { status: 400 }), []),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
+  });
+
+  it('keeps a credential failure in the auth category for a long create request', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError('Sandbox.getOrCreate', Object.assign(new Error('request denied'), { status: 401 }), []),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('auth');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
+  });
+
+  it('gives obsolete idle metadata explicit remove and recreate guidance', () => {
+    const mapped = mapVercelError(new VercelObsoleteMetadataError(['idlePauseMinutes']), {
+      action: 'attach',
+      branch: 'feature/ui',
+    });
+
+    expect(mapped.code).toBe('stale');
+    expect(mapped.message).toContain('feature/ui --rm');
+    expect(mapped.message).toContain('create the box again');
+    expect(mapped.message).not.toContain('idlePauseMinutes');
   });
 
   it('classifies every required failure category before generic API handling', () => {

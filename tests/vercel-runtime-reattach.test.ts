@@ -13,10 +13,12 @@ import type {
 } from '../src/providers/vercel/client.js';
 import type { ShellRunner } from '../src/lib/shell.js';
 import {
+  classifyRuntimeVmSession,
   evaluatePreparation,
   prepareSandboxRuntime,
   VERCEL_RUNTIME_PREPARATION_PATH,
 } from '../src/providers/vercel/runtime.js';
+import { parseVercelSessionId } from '../src/providers/vercel/session-lease.js';
 import { createVercelBranchMetadataStore } from '../src/providers/vercel/metadata.js';
 import { SETUP_PID_PATH, SETUP_STATUS_PATH } from '../src/providers/vercel/setup.js';
 import { DISPLAY_STATUS_OUTPUT } from './vercel-display-status.fixture.js';
@@ -28,6 +30,7 @@ function sandbox(): VercelSandboxHandle {
     name: 'runtime-sync',
     status: 'running',
     cwd: '/vercel/sandbox',
+    currentSession: () => ({ sessionId: 'runtime-sync' }),
   } as unknown as VercelSandboxHandle;
 }
 
@@ -126,29 +129,52 @@ function markerOf(harness: ReattachHarness): Record<string, unknown> | undefined
 
 describe('preparation evidence', () => {
   const actual = {
-    sandboxId: 'sbx-1',
-    revision: HEAD,
-    githubTokenHash: 'tok-hash',
-    environmentHash: 'env-hash',
+    sandboxName: 'runtime-sync',
+    sessionId: parseVercelSessionId('runtime-session')!,
+    sourceRevision: HEAD,
+    imageDigest: 'image-digest',
+    githubTokenSha256: 'tok-hash',
+    envSha256: 'env-hash',
   };
 
-  it('accepts only an exact four-field match', () => {
+  it('accepts only an exact session and preparation match', () => {
     expect(evaluatePreparation({ ...actual }, actual)).toBe(true);
   });
 
   it('rejects each stale field', () => {
-    expect(evaluatePreparation({ ...actual, sandboxId: 'sbx-2' }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, revision: 'c'.repeat(40) }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, githubTokenHash: 'rotated' }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, environmentHash: 'changed' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, sessionId: 'other-session' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, sourceRevision: 'c'.repeat(40) }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, githubTokenSha256: 'rotated' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, envSha256: 'changed' }, actual)).toBe(false);
   });
 
   it('rejects malformed evidence', () => {
     expect(evaluatePreparation(null, actual)).toBe(false);
     expect(evaluatePreparation('marker', actual)).toBe(false);
     expect(evaluatePreparation([], actual)).toBe(false);
-    expect(evaluatePreparation({ sandboxId: 'sbx-1' }, actual)).toBe(false);
-    expect(evaluatePreparation({ ...actual, revision: 7 }, actual)).toBe(false);
+    expect(evaluatePreparation({ sandboxName: 'runtime-sync' }, actual)).toBe(false);
+    expect(evaluatePreparation({ ...actual, sourceRevision: 7 }, actual)).toBe(false);
+  });
+
+  it('recognizes a snapshot boundary from provider evidence without a preparation marker', () => {
+    expect(classifyRuntimeVmSession(null, {
+      ...actual,
+      sourceSnapshotId: 'snapshot-1',
+    })).toMatchObject({
+      kind: 'snapshot-resumed',
+      sourceSnapshotId: 'snapshot-1',
+      sessionId: 'runtime-session',
+    });
+  });
+
+  it('keeps a matching session as same-session when leftover sourceSnapshotId remains', () => {
+    expect(classifyRuntimeVmSession({ ...actual }, {
+      ...actual,
+      sourceSnapshotId: 'snapshot-1',
+    })).toMatchObject({
+      kind: 'same-session',
+      sessionId: 'runtime-session',
+    });
   });
 });
 
@@ -160,9 +186,8 @@ describe('Vercel cheap re-attach', () => {
     expect(boot.reused).toBe(false);
     const marker = markerOf(harness);
     expect(marker).toEqual({
-      kind: 'running-session',
       sandboxName: 'runtime-sync',
-      sessionInstanceId: 'runtime-sync',
+      sessionId: 'runtime-sync',
       sourceRevision: HEAD,
       imageDigest: '',
       githubTokenSha256: createHash('sha256').update('github-secret', 'utf8').digest('hex'),
@@ -186,6 +211,49 @@ describe('Vercel cheap re-attach', () => {
     expect(harness.uploads.slice(uploadCount)).toEqual([]);
     expect(harness.commands.slice(commandCount).some((command) =>
       (command.args?.[1] ?? '').includes('gh auth login'))).toBe(false);
+  });
+
+  it('rewrites the preparation marker when its upload resumes the provider session', async () => {
+    const harness = reattachClient();
+    let sessionId = 'initial-session';
+    const client = {
+      ...harness.client,
+      writeFiles: async (_sandbox: VercelSandboxHandle, written: VercelWriteFile[]) => {
+        for (const file of written) harness.files.set(file.path, Buffer.from(file.content));
+        harness.uploads.push(written);
+        if (written.some((file) => file.path === VERCEL_RUNTIME_PREPARATION_PATH)) sessionId = 'resumed-session';
+      },
+    } as unknown as VercelSandboxClient;
+    const resumedDuringMarker = {
+      ...sandbox(),
+      currentSession: () => ({ sessionId }),
+    } as VercelSandboxHandle;
+
+    await prepareSandboxRuntime(prepareOptions({
+      client,
+      sandbox: resumedDuringMarker,
+    }));
+
+    expect(markerOf(harness)).toMatchObject({ sessionId: 'resumed-session' });
+    expect(harness.uploads.flat().filter((file) => file.path === VERCEL_RUNTIME_PREPARATION_PATH))
+      .toHaveLength(2);
+  });
+
+  it('fails closed when the current session is unavailable before marker publication', async () => {
+    const harness = reattachClient();
+    const missingSession = {
+      ...sandbox(),
+      currentSession: () => ({}),
+    } as VercelSandboxHandle;
+
+    await expect(prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: missingSession,
+    }))).rejects.toMatchObject({
+      code: 'session_unavailable',
+    });
+    expect(harness.commands).toEqual([]);
+    expect(markerOf(harness)).toBeUndefined();
   });
 
   it('relaunches background setup that failed after preparation', async () => {
@@ -232,7 +300,6 @@ describe('Vercel cheap re-attach', () => {
       client: harness.client,
       sandbox: resumed,
       mode: 'attach',
-      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
     }));
 
     expect(result).toMatchObject({
@@ -247,8 +314,7 @@ describe('Vercel cheap re-attach', () => {
     expect(harness.uploads.slice(uploadCount).flat().map((file) => file.path))
       .toContain(VERCEL_RUNTIME_PREPARATION_PATH);
     expect(markerOf(harness)).toMatchObject({
-      kind: 'running-session',
-      sessionInstanceId: 'resumed-session',
+      sessionId: 'resumed-session',
     });
 
     harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
@@ -258,11 +324,51 @@ describe('Vercel cheap re-attach', () => {
       client: harness.client,
       sandbox: resumed,
       mode: 'attach',
-      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
     }));
     expect(later).toMatchObject({
       reused: true,
       evidence: 'running-session',
+      snapshotResumed: false,
+    });
+  });
+
+  it('does not treat leftover sourceSnapshotId as a snapshot resume on a later same-session sync', async () => {
+    const harness = reattachClient();
+    const original = {
+      ...sandbox(),
+      currentSession: () => ({ sessionId: 'runtime-sync' }),
+    } as VercelSandboxHandle;
+    await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: original,
+    }));
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
+    const resumed = {
+      ...sandbox(),
+      sourceSnapshotId: 'snapshot-1',
+      currentSession: () => ({ sessionId: 'resumed-session' }),
+    } as VercelSandboxHandle;
+    await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: resumed,
+      mode: 'attach',
+    }));
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
+
+    const synced = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: resumed,
+      env: { GH_TOKEN: 'rotated-secret' },
+      mode: 'attach',
+    }));
+
+    expect(synced).toMatchObject({
+      reused: true,
+      evidence: 'running-sync',
       snapshotResumed: false,
     });
   });
@@ -292,7 +398,6 @@ describe('Vercel cheap re-attach', () => {
       client: harness.client,
       sandbox: resumed,
       mode: 'attach',
-      pausedSnapshot: { id: 'snapshot-1', sourceSessionId: 'runtime-sync' },
     }));
 
     expect(result).toMatchObject({
@@ -362,6 +467,30 @@ describe('Vercel cheap re-attach', () => {
       expect(harness.commands.some((command) =>
         (command.args?.[1] ?? '').includes('gh auth login'))).toBe(true);
     }
+  });
+
+  it('takes the full path when a retained snapshot has stale preparation evidence', async () => {
+    const harness = reattachClient();
+    await prepareSandboxRuntime(prepareOptions({ client: harness.client }));
+    const marker = JSON.parse(harness.files.get(VERCEL_RUNTIME_PREPARATION_PATH)!.toString('utf8'));
+    harness.files.set(
+      VERCEL_RUNTIME_PREPARATION_PATH,
+      Buffer.from(JSON.stringify({ ...marker, sourceRevision: 'c'.repeat(40) })),
+    );
+
+    const result = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      mode: 'attach',
+      sandbox: {
+        ...sandbox(),
+        sourceSnapshotId: 'snapshot-1',
+        currentSession: () => ({ sessionId: 'resumed-session' }),
+      } as VercelSandboxHandle,
+    }));
+
+    expect(result).toMatchObject({ reused: false, snapshotResumed: true });
+    expect(harness.commands.some((command) =>
+      (command.args?.[1] ?? '').includes('gh auth login'))).toBe(true);
   });
 
   it('takes the full path when the host token or dotenv rotated', async () => {

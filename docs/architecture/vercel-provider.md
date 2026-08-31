@@ -51,10 +51,11 @@ provider.
    display services, and relay routes without clone, dependency install, or
    post-create work. Metadata is removed only after cloud cleanup converges;
    residual IDs remain in a mode-`0600` retry record after partial cleanup.
-7. Re-entry writes a mode-`0600` remote heartbeat on terminal input and a
-   successful display health poll. The idle controller pauses only after the
-   configured window, while setup is not running and no fresh heartbeat exists.
-   A missing heartbeat is conservative until the full window has elapsed.
+7. Re-entry asks the terminal shell to reconcile devbox-owned tmux socket
+   directories for `sandbox.currentSession().sessionId`, then launches or
+   attaches to the named `devbox` session. Same-session reconnects reuse the
+   socket. Snapshot resume gets a new session and socket, so user processes end
+   while runtime setup, display services, and relays restart.
 
 ```mermaid
 flowchart LR
@@ -66,8 +67,9 @@ flowchart LR
   Vercel --> SDK[@vercel/sandbox v3]
   SDK --> Image[Public digest-pinned VCR image]
   SDK --> Runtime[Runtime secrets/display/setup]
-  Runtime --> Heartbeat[0600 input/display heartbeat]
+  Runtime --> Shell[Session-derived tmux shell]
   SDK --> TTY[Interactive terminal]
+  Shell --> Tmux[Named devbox tmux session]
   Vercel --> Detect[Bounded Vite/Next detector]
   Detect --> Confirm[Public-route confirmation]
   Confirm --> Relays[One relay per logical app port]
@@ -76,8 +78,6 @@ flowchart LR
   Update --> Routes
   Runtime --> Routes
   Relays --> App[localhost app listeners]
-  Heartbeat --> Idle[Idle pause controller]
-  Idle --> SDK
 ```
 
 ## CI and acceptance
