@@ -4,14 +4,15 @@ import {
   DEVBOX_TMUX_SESSION_NAME,
   DEVBOX_TMUX_SOCKET_DIRECTORY_PREFIX,
   DEVBOX_TMUX_SOCKET_ROOT,
+  VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS,
   prepareVercelTerminalShell,
 } from '../src/providers/vercel/terminal-shell.js';
 
 describe('Vercel terminal shell', () => {
   it('reconciles other devbox sockets and returns a session-derived tmux program', async () => {
-    const commands: Array<{ cmd?: string; args?: readonly string[] }> = [];
+    const commands: Array<{ cmd?: string; args?: readonly string[]; signal?: AbortSignal }> = [];
     const client = {
-      runCommand: async (_sandbox: VercelSandboxHandle, request: { cmd?: string; args?: readonly string[] }) => {
+      runCommand: async (_sandbox: VercelSandboxHandle, request: { cmd?: string; args?: readonly string[]; signal?: AbortSignal }) => {
         commands.push(request);
         return { exitCode: 0 };
       },
@@ -43,12 +44,14 @@ describe('Vercel terminal shell', () => {
       ],
     });
     expect(commands).toHaveLength(1);
+    expect(commands[0]?.signal).toBeInstanceOf(AbortSignal);
     expect(commands[0]?.cmd).toBe('sh');
     expect(commands[0]?.args?.[0]).toBe('-c');
     expect(commands[0]?.args?.[1]).toContain('tmux');
     expect(commands[0]?.args?.[1]).toContain(`${DEVBOX_TMUX_SOCKET_DIRECTORY_PREFIX}`);
     expect(commands[0]?.args?.[1]).toContain('"$root"/');
     expect(commands[0]?.args?.[1]).not.toContain('"$root"/*;');
+    expect(VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS).toBe(30_000);
   });
 
   it('keeps one socket directory for a session and separates another session', async () => {

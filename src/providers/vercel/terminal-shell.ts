@@ -12,6 +12,7 @@ import type { VercelTerminalProgram } from './terminal.js';
 export const DEVBOX_TMUX_SOCKET_ROOT = '/tmp/devbox-tmux';
 export const DEVBOX_TMUX_SOCKET_DIRECTORY_PREFIX = 'session-';
 export const DEVBOX_TMUX_SESSION_NAME = 'devbox';
+export const VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS = 30_000;
 
 export interface VercelTerminalShell {
   sessionId: VercelSessionId;
@@ -45,10 +46,11 @@ export async function prepareVercelTerminalShell(
   }
   const socketDirectory = `${DEVBOX_TMUX_SOCKET_ROOT}/${sessionDirectoryName(sessionId)}`;
   const socketPath = `${socketDirectory}/socket`;
+  const signal = options.signal ?? AbortSignal.timeout(VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS);
   const result = await options.client.runCommand(options.sandbox, {
     cmd: 'sh',
     args: ['-c', reconciliationScript(socketDirectory)],
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    signal,
   });
   if (result.exitCode !== 0) {
     throw new VercelTerminalShellError(
