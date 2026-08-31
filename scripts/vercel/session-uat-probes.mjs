@@ -406,7 +406,7 @@ function remoteHttpFixtureCommand(marker) {
 function remoteDetachedProcessCommand(started, completion, path) {
   const startedEncoded = Buffer.from(started).toString('base64');
   const completionEncoded = Buffer.from(completion).toString('base64');
-  return `rm -f -- ${shellQuote(path)}; printf '%s\\n' "$(printf '%s' '${completionEncoded}' | base64 -d)" > ${shellQuote(path)}; (sh -c 'while :; do sleep 30; done' ${shellQuote(completion)}) >/dev/null 2>&1 & printf 'PID=%s MARKER=%s\\n%s\\n' "$!" "$(printf '%s' '${completionEncoded}' | base64 -d)" "$(printf '%s' '${startedEncoded}' | base64 -d)"\n`;
+  return `set -eu; rm -f -- ${shellQuote(path)}; printf '%s\\n' "$(printf '%s' '${completionEncoded}' | base64 -d)" > ${shellQuote(path)}; test -f ${shellQuote(path)} && grep -Fqx "$(printf '%s' '${completionEncoded}' | base64 -d)" ${shellQuote(path)}; (sh -c 'while :; do sleep 30; done' ${shellQuote(completion)}) >/dev/null 2>&1 & printf 'PID=%s MARKER=%s\\n%s\\n' "$!" "$(printf '%s' '${completionEncoded}' | base64 -d)" "$(printf '%s' '${startedEncoded}' | base64 -d)"\n`;
 }
 
 function remoteSnapshotStateCommand(sentinelPresent, sentinelMissing, processPresent, processAbsent, path, marker, pid) {

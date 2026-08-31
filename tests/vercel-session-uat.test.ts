@@ -47,6 +47,8 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('duration idle provider session');
     expect(source).toContain('duration final provider session');
     expect(source).toContain('parseDetachedProcessStartup');
+    expect(source).toContain("markerFor('snapshot-process-workspace')");
+    expect(source).toContain("`${workspace.path}/.devbox-uat-sentinel-");
     expect(source).toContain('kill -0');
     expect(source).toContain('DURATION_IDLE_BOUNDARY_MS');
     expect(source).toContain('DURATION_FINAL_WINDOW_MS');
