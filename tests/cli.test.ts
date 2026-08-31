@@ -37,6 +37,8 @@ describe('cli dispatch', () => {
     expect(output).toContain('--password');
     expect(output).toContain('--env <path>');
     expect(output).toContain('--version');
+    expect(output).toContain('--timeout');
+    expect(output).not.toContain('tmux');
     expect(output).toContain('scaffold .devbox/ (required for local)');
     expect(output).toContain('Vercel does not require init');
     expect(output).toContain('devbox --provider vercel my-feature');
@@ -103,6 +105,7 @@ describe('cli dispatch', () => {
     expect(output).toContain('my-feature');
     expect(output).toContain('--provider local|vercel');
     expect(output).toContain('Ctrl-]');
+    expect(output).not.toContain('tmux');
     expect(output).toContain('VERCEL CORE');
     expect(output).toContain('No .devbox/ or .devcontainer/ is required');
   });
