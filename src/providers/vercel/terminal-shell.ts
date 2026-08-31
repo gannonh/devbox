@@ -13,6 +13,7 @@ export const DEVBOX_TMUX_SOCKET_ROOT = '/tmp/devbox-tmux';
 export const DEVBOX_TMUX_SOCKET_DIRECTORY_PREFIX = 'session-';
 export const DEVBOX_TMUX_SESSION_NAME = 'devbox';
 export const VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS = 30_000;
+const MAX_TMUX_RECONCILIATION_ATTEMPTS = 3;
 
 export interface VercelTerminalShell {
   socketDirectory: string;
@@ -39,40 +40,51 @@ export class VercelTerminalShellError extends Error {
 export async function prepareVercelTerminalShell(
   options: PrepareVercelTerminalShellOptions,
 ): Promise<VercelTerminalShell> {
-  const sessionId = currentVercelSessionId(options.sandbox);
+  let sessionId = currentVercelSessionId(options.sandbox);
   if (sessionId === null) {
     throw new VercelTerminalShellError('Vercel current session ID is unavailable');
   }
-  const socketDirectory = `${DEVBOX_TMUX_SOCKET_ROOT}/${sessionDirectoryName(sessionId)}`;
-  const socketPath = `${socketDirectory}/socket`;
   const signal = options.signal ?? AbortSignal.timeout(VERCEL_TERMINAL_SHELL_SETUP_TIMEOUT_MS);
-  const result = await options.client.runCommand(options.sandbox, {
-    cmd: 'sh',
-    args: ['-c', reconciliationScript(socketDirectory)],
-    signal,
-  });
-  if (result.exitCode !== 0) {
-    throw new VercelTerminalShellError(
-      `Vercel tmux socket reconciliation failed${await commandDetail(result)}`,
-    );
+  for (let attempt = 0; attempt < MAX_TMUX_RECONCILIATION_ATTEMPTS; attempt += 1) {
+    const socketDirectory = `${DEVBOX_TMUX_SOCKET_ROOT}/${sessionDirectoryName(sessionId)}`;
+    const result = await options.client.runCommand(options.sandbox, {
+      cmd: 'sh',
+      args: ['-c', reconciliationScript(socketDirectory)],
+      signal,
+    });
+    if (result.exitCode !== 0) {
+      throw new VercelTerminalShellError(
+        `Vercel tmux socket reconciliation failed${await commandDetail(result)}`,
+      );
+    }
+    const confirmedSessionId = currentVercelSessionId(options.sandbox);
+    if (confirmedSessionId === null) {
+      throw new VercelTerminalShellError('Vercel current session ID is unavailable');
+    }
+    if (confirmedSessionId !== sessionId) {
+      sessionId = confirmedSessionId;
+      continue;
+    }
+    const socketPath = `${socketDirectory}/socket`;
+    return {
+      socketDirectory,
+      socketPath,
+      program: {
+        command: 'tmux',
+        args: [
+          '-S',
+          socketPath,
+          'new-session',
+          '-A',
+          '-s',
+          DEVBOX_TMUX_SESSION_NAME,
+          '-c',
+          options.cwd,
+        ],
+      },
+    };
   }
-  return {
-    socketDirectory,
-    socketPath,
-    program: {
-      command: 'tmux',
-      args: [
-        '-S',
-        socketPath,
-        'new-session',
-        '-A',
-        '-s',
-        DEVBOX_TMUX_SESSION_NAME,
-        '-c',
-        options.cwd,
-      ],
-    },
-  };
+  throw new VercelTerminalShellError('Vercel current session changed during tmux setup');
 }
 
 function sessionDirectoryName(sessionId: VercelSessionId): string {

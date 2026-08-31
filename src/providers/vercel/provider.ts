@@ -41,6 +41,7 @@ import {
   type VercelScopeMetadata,
   type VercelScopeMetadataStore,
 } from './metadata.js';
+import { acquireMetadataLock } from './metadata-lock.js';
 import { mapVercelError } from './errors.js';
 import { createVercelBranchTag } from './identity.js';
 import {
@@ -84,6 +85,10 @@ import {
   resolveRouteLabels,
 } from './provider-routes.js';
 import { createVercelSessionLease } from './session-lease.js';
+
+const RUNTIME_SYNC_LOCK_TIMEOUT_MS = RUNTIME_PREPARATION_TIMEOUT_MS + 60_000;
+const RUNTIME_SYNC_LOCK_STALE_MS = RUNTIME_PREPARATION_TIMEOUT_MS + 30_000;
+const RUNTIME_SYNC_LOCK_RETRY_MS = 100;
 
 export type VercelLifecycleFactory = (options: VercelLifecycleOptions) => VercelLifecycle;
 export type VercelConfirmation = (
@@ -213,7 +218,10 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
         mode: 'boot' as const,
       };
-      const runtime = await prepareSandboxRuntime(runtimeOptions);
+      const runtime = await withRuntimeSyncLock(
+        prepared.branchStore,
+        () => prepareSandboxRuntime(runtimeOptions),
+      );
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
       const appPorts = await resolveAppPorts(
         request,
@@ -277,7 +285,10 @@ export function createVercelProvider(options: VercelProviderOptions = {}): Devbo
         signal: AbortSignal.timeout(RUNTIME_PREPARATION_TIMEOUT_MS),
         mode: 'attach' as const,
       };
-      const runtime = await prepareSandboxRuntime(runtimeOptions);
+      const runtime = await withRuntimeSyncLock(
+        prepared.branchStore!,
+        () => prepareSandboxRuntime(runtimeOptions),
+      );
       request.runtimeEnvironment = runtimeOptions.runtimeEnvironment;
       // A cheap attach still proves the transport before it reuses a URL; only
       // exact healthy evidence skips the scan, the prompt, and the route call.
@@ -838,6 +849,28 @@ async function terminalResult(
     });
   }
   return mapTerminalResult(result);
+}
+
+async function withRuntimeSyncLock<T>(
+  branchStore: VercelBranchMetadataStore,
+  operation: () => Promise<T>,
+): Promise<T> {
+  // Keep this separate from the branch metadata lock because display startup
+  // reads and rotates credentials through that lock during preparation.
+  const lock = await acquireMetadataLock(
+    `${branchStore.path}.runtime-sync`,
+    `${branchStore.lockPath}.runtime-sync`,
+    {
+      timeoutMs: RUNTIME_SYNC_LOCK_TIMEOUT_MS,
+      retryMs: RUNTIME_SYNC_LOCK_RETRY_MS,
+      staleLockMs: RUNTIME_SYNC_LOCK_STALE_MS,
+    },
+  );
+  try {
+    return await operation();
+  } finally {
+    await lock.release();
+  }
 }
 
 async function clearPausedSnapshot(

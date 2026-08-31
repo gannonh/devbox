@@ -87,6 +87,32 @@ describe('Vercel terminal shell', () => {
     expect(first.socketPath).toBe(`${first.socketDirectory}/socket`);
   });
 
+  it('reconciles again when runCommand resumes the sandbox into a new session', async () => {
+    const commands: Array<{ args?: readonly string[] }> = [];
+    let sessionReads = 0;
+    const client = {
+      runCommand: async (_sandbox: VercelSandboxHandle, request: { args?: readonly string[] }) => {
+        commands.push(request);
+        return { exitCode: 0 };
+      },
+    } as unknown as VercelSandboxClient;
+    const sandbox = {
+      currentSession: () => ({ sessionId: sessionReads++ === 0 ? 'session-before-resume' : 'session-after-resume' }),
+    } as unknown as VercelSandboxHandle;
+
+    const shell = await prepareVercelTerminalShell({
+      sandbox,
+      client,
+      cwd: '/repo',
+    });
+
+    expect(commands).toHaveLength(2);
+    expect(commands[0]?.args?.[1]).toContain('c2Vzc2lvbi1iZWZvcmUtcmVzdW1l');
+    expect(commands[1]?.args?.[1]).toContain('c2Vzc2lvbi1hZnRlci1yZXN1bWU');
+    expect(shell.socketDirectory).toContain('c2Vzc2lvbi1hZnRlci1yZXN1bWU');
+    expect(shell.program.args).toContain(`${shell.socketDirectory}/socket`);
+  });
+
   it('fails before terminal attach when the provider session identity is missing', async () => {
     const client = {
       runCommand: async () => ({ exitCode: 0 }),
