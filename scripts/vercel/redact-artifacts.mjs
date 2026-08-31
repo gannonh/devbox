@@ -34,6 +34,7 @@ function redactText(input) {
     // cookie it is exchanged for; neither may reach an evidence artifact.
     .replace(/([?&]token=)[^&\s"']+/gi, '$1[REDACTED]')
     .replace(/(devbox_novnc=)[^;\s"']+/gi, '$1[REDACTED]')
+    .replace(/(access code:\s*)[^\s]+/gi, '$1[REDACTED]')
     .replace(/(VERCEL_(?:TOKEN|OIDC_TOKEN|PASSWORD)\s*[=:]\s*)[^\s,}]+/gi, '$1[REDACTED]');
 }
 

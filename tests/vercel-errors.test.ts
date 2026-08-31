@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { mapVercelError } from '../src/providers/vercel/errors.js';
+import { mapVercelError, VERCEL_LONG_SESSION_REJECTION_SIGNATURE } from '../src/providers/vercel/errors.js';
 import {
   VercelCreationCompensationError,
   VercelRecoveryCleanupError,
@@ -110,11 +110,13 @@ describe('Vercel provider errors', () => {
   it('uses the captured redacted provider signature for the long-session hint', async () => {
     const probe = JSON.parse(await readFile('tests/fixtures/vercel-timeout-rejection.json', 'utf8')) as {
       message: string;
+      operation: string;
       requestedTimeoutMs: number;
       status: number;
       redacted: boolean;
     };
     expect(probe.redacted).toBe(true);
+    expect(probe.operation).toBe('Sandbox.getOrCreate');
     const mapped = mapVercelError(
       new VercelSdkError(
         'Sandbox.getOrCreate',
@@ -134,6 +136,24 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).toContain('Hobby supports up to 45 minutes');
     expect(mapped.message).toContain('Pro and Enterprise support up to 24 hours');
     expect(mapped.message).toContain('--timeout 45');
+  });
+
+  it('does not classify an unobserved long-session status', () => {
+    const mapped = mapVercelError(
+      new VercelSdkError(
+        'Sandbox.getOrCreate',
+        Object.assign(new Error(VERCEL_LONG_SESSION_REJECTION_SIGNATURE), { status: 422 }),
+        [],
+      ),
+      {
+        action: 'up',
+        branch: 'feature/ui',
+        requestedTimeoutMs: 46 * 60 * 1000,
+      },
+    );
+
+    expect(mapped.code).toBe('api');
+    expect(mapped.message).not.toContain('Hobby supports up to 45 minutes');
   });
 
   it('does not add plan guidance to an unclassified long create failure', () => {

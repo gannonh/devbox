@@ -10,7 +10,7 @@
 * [Zero-configuration public app ports](0005-zero-config-public-app-ports.md) - a bounded remote `package.json` detector, one public-route confirmation, and a pending/commit port update for issue [#13](https://github.com/gannonh/devbox/issues/13).
 * [Coding-agent version manifest](0006-agent-version-manifest.md) - a single manifest declares the supported agents; the image derives from it and promotion is a reviewable pull request for issue [#12](https://github.com/gannonh/devbox/issues/12).
 * [Relay-backed public app routes](0007-relay-backed-public-app-routes.md) - a fixed-target HTTP/WebSocket relay is published instead of the app's own listener, so an ordinary dev command works unedited for issue [#17](https://github.com/gannonh/devbox/issues/17); supersedes the "serving is the app's job" consequence of ADR 0005.
-* [Vercel snapshot resume](0008-snapshot-resume-and-idle-pause.md) - persistent pause, source-session evidence, and runtime refresh for issue [#19](https://github.com/gannonh/devbox/issues/19).
+* [Vercel snapshot resume](0008-snapshot-resume-and-idle-pause.md) - persistent pause, source-session evidence, and runtime refresh for issue [#19](https://github.com/gannonh/devbox/issues/19); its idle policy is superseded by ADR 0009.
 * [Vercel session lifetime and terminal reconnect](0009-vercel-session-lifetime-and-terminal-reconnect.md) - fixed VM-session timeout and session-derived tmux reconnect behavior for issues [#65](https://github.com/gannonh/devbox/issues/65) and [#66](https://github.com/gannonh/devbox/issues/66); supersedes the idle policy removed from ADR 0008.
 
 ## Proposed
@@ -19,4 +19,4 @@ _None yet._
 
 ## Superseded
 
-_None yet._
+The idle-lifetime policy in ADR 0008 is superseded by ADR 0009. Its snapshot-resume decisions remain accepted under ADR 0008.

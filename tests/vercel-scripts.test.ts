@@ -1076,7 +1076,8 @@ describe('Vercel supply-chain script boundaries', () => {
       const artifact = join(temp, 'error.json');
       const publisherToken = 'publisher-arbitrary-token-123';
       const consumerToken = 'consumer-arbitrary-token-456';
-      await writeFile(artifact, JSON.stringify({ error: `${publisherToken} ${consumerToken}`, redacted: false }));
+      const displayCode = 'display-code-123';
+      await writeFile(artifact, JSON.stringify({ error: `${publisherToken} ${consumerToken}`, output: `access code: ${displayCode}`, redacted: false }));
       const result = await runNode('scripts/vercel/redact-artifacts.mjs', {
         ...process.env,
         VERCEL_PUBLISHER_TOKEN: publisherToken,
@@ -1086,6 +1087,8 @@ describe('Vercel supply-chain script boundaries', () => {
       const redacted = await readFile(artifact, 'utf8');
       expect(redacted).not.toContain(publisherToken);
       expect(redacted).not.toContain(consumerToken);
+      expect(redacted).not.toContain(displayCode);
+      expect(redacted).toContain('access code: [REDACTED]');
       expect(redacted).toContain('[REDACTED]');
     } finally {
       await rm(temp, { recursive: true, force: true });
