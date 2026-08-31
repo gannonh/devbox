@@ -193,10 +193,10 @@ DESCRIPTION
   without restarting the display. If it is stopped, starts it and re-brings
   the display stack up, then drops into a shell in /workspace.
   For Vercel, Ctrl-C reaches the remote process and Ctrl-] detaches without
-  stopping the sandbox. Reconnect attaches to the same devbox-owned tmux
-  session; a snapshot resume starts a fresh VM session and ends prior user
-  processes. Confirmed app routes are re-applied without a new prompt;
-  --expose-ports <list> changes the exposed app ports.
+  stopping the sandbox. Reconnect reattaches until the lease expires. A
+  snapshot resume starts a fresh VM session. Confirmed app routes are
+  re-applied without a new prompt; --expose-ports <list> changes the exposed
+  app ports.
 
 EXAMPLES
   devbox ${branch} --attach
