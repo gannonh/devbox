@@ -3,6 +3,10 @@ import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Sandbox, Snapshot } from '@vercel/sandbox';
 import { delay, markerFor, shellQuote, signalCode } from './session-uat-evidence.mjs';
+import { fetchTextWithTimeout, fetchWithTimeout } from './http-probe.mjs';
+
+const PROVIDER_REQUEST_TIMEOUT_MS = 10_000;
+const FIXTURE_REQUEST_TIMEOUT_MS = 10_000;
 
 export function createSessionUatProbes({
   branch,
@@ -13,11 +17,16 @@ export function createSessionUatProbes({
   providerPollMs,
   redact,
 }) {
-  async function readProviderSessionFacts(stateHome, sandboxName = undefined) {
+  async function readProviderSessionFacts(stateHome, sandboxName = undefined, signal = undefined) {
     const name = sandboxName ?? await readStoredSandboxName(stateHome);
     let sandbox;
     try {
-      sandbox = await Sandbox.get({ ...providerCredentials(environment), name, resume: false });
+      sandbox = await Sandbox.get({
+        ...providerCredentials(environment),
+        name,
+        resume: false,
+        signal: signal ?? AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
+      });
     } catch {
       throw new Error('Vercel provider session facts probe failed');
     }
@@ -66,9 +75,14 @@ export function createSessionUatProbes({
     throw new Error('Vercel UAT metadata did not contain the branch Sandbox name');
   }
 
-  async function listProviderSnapshots(sandboxName) {
+  async function listProviderSnapshots(sandboxName, signal = undefined) {
     try {
-      const page = await Snapshot.list({ ...providerCredentials(environment), name: sandboxName, limit: 50 });
+      const page = await Snapshot.list({
+        ...providerCredentials(environment),
+        name: sandboxName,
+        limit: 50,
+        signal: signal ?? AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
+      });
       return page.toArray();
     } catch {
       throw new Error('Vercel provider snapshot probe failed');
@@ -81,7 +95,8 @@ export function createSessionUatProbes({
     let lastError;
     while (Date.now() < deadline) {
       try {
-        snapshots = await listProviderSnapshots(sandboxName);
+        const signal = AbortSignal.timeout(Math.min(PROVIDER_REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())));
+        snapshots = await listProviderSnapshots(sandboxName, signal);
         const retained = snapshots.filter((snapshot) => snapshot.status === 'created');
         if (retained.length === 1) return retained;
       } catch (error) {
@@ -98,7 +113,8 @@ export function createSessionUatProbes({
     while (Date.now() < deadline) {
       let facts;
       try {
-        facts = await readProviderSessionFacts(undefined, sandboxName);
+        const signal = AbortSignal.timeout(Math.min(PROVIDER_REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())));
+        facts = await readProviderSessionFacts(undefined, sandboxName, signal);
       } catch {
         facts = undefined;
       }
@@ -182,8 +198,11 @@ export function createSessionUatProbes({
     let lastError;
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(new URL('/', url));
-        const body = await response.text();
+        const { response, body } = await fetchTextWithTimeout(
+          new URL('/', url),
+          {},
+          Math.min(FIXTURE_REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+        );
         if (!response.ok) throw new Error('HTTP fixture returned status ' + response.status);
         const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const match = new RegExp(
@@ -200,14 +219,20 @@ export function createSessionUatProbes({
   }
 
   async function stopFixture(url, marker) {
-    const response = await fetch(new URL('/shutdown', url));
-    const body = await response.text();
+    const { response, body } = await fetchTextWithTimeout(
+      new URL('/shutdown', url),
+      {},
+      FIXTURE_REQUEST_TIMEOUT_MS,
+    );
     if (!response.ok || body !== 'fixture-stopping\n') throw new Error('HTTP fixture did not accept shutdown');
     const deadline = Date.now() + markerTimeoutMs;
     while (Date.now() < deadline) {
       try {
-        const probe = await fetch(new URL('/', url));
-        const probeBody = await probe.text();
+        const { response: probe, body: probeBody } = await fetchTextWithTimeout(
+          new URL('/', url),
+          {},
+          Math.min(FIXTURE_REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+        );
         if (!probe.ok || !probeBody.includes(marker)) return;
       } catch {
         return;
@@ -221,10 +246,12 @@ export function createSessionUatProbes({
     const deadline = Date.now() + markerTimeoutMs;
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(url, {
-          redirect: 'manual',
-          signal: AbortSignal.timeout(Math.min(10_000, Math.max(1, deadline - Date.now()))),
-        });
+        const response = await fetchWithTimeout(
+          url,
+          { redirect: 'manual' },
+          Math.min(FIXTURE_REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+        );
+        await response.body?.cancel();
         return { reachable: true, status: response.status };
       } catch {
         await delay(250);

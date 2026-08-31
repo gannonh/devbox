@@ -5,7 +5,7 @@ import {
   VercelCreationCompensationError,
   VercelRecoveryCleanupError,
 } from '../src/providers/vercel/lifecycle.js';
-import { VercelSdkError } from '../src/providers/vercel/client.js';
+import { VercelSdkError, VercelSessionBindingError } from '../src/providers/vercel/client.js';
 import { VercelDisplayStartupError } from '../src/providers/vercel/display-startup.js';
 import { VercelObsoleteMetadataError } from '../src/providers/vercel/metadata-schema.js';
 import { VercelRuntimeSyncError } from '../src/providers/vercel/runtime.js';
@@ -123,6 +123,28 @@ describe('Vercel provider errors', () => {
       { action: 'attach', branch: 'feature/ui' },
     );
     expect(terminalSession.code).toBe('session');
+
+    const binding = mapVercelError(
+      new VercelSessionBindingError('Vercel current session changed before a strict command started'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(binding.code).toBe('session');
+
+    const providerFailure = mapVercelError(
+      new VercelSdkError('Session.runCommand', Object.assign(new Error('gateway failed'), { status: 500 }), []),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(providerFailure.code).toBe('api');
+
+    const runtimeQuota = mapVercelError(
+      new VercelRuntimeSyncError(
+        'runtime command failed',
+        'runtime_sync_failed',
+        new VercelSdkError('Sandbox.runCommand', Object.assign(new Error('rate limited'), { status: 429 }), []),
+      ),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(runtimeQuota.code).toBe('quota');
   });
 
   it('maps rate limits with Retry-After without exposing the response body', () => {

@@ -13,7 +13,7 @@ import {
   REQUIRED_SMOKE_CHECKS,
   REQUIRED_SMOKE_TIMINGS,
 } from '../scripts/vercel/smoke-contract.mjs';
-import { fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
+import { fetchTextWithTimeout, fetchWithTimeout } from '../scripts/vercel/http-probe.mjs';
 import { verifySandboxDeleted, waitForTerminalSessionStates } from '../scripts/vercel/sandbox-cleanup.mjs';
 import {
   applyOwnedRecoveryEvidence,
@@ -115,6 +115,22 @@ describe('Vercel supply-chain script boundaries', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('test server did not bind');
       await expect(fetchWithTimeout(`http://127.0.0.1:${address.port}/hang`, {}, 50)).rejects.toThrow(/timed out|aborted/i);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('aborts a response body that stalls after headers', async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.write('partial');
+    }).listen(0, '127.0.0.1');
+    try {
+      await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server did not bind');
+      await expect(fetchTextWithTimeout(`http://127.0.0.1:${address.port}/slow-body`, {}, 50))
+        .rejects.toThrow(/timed out|aborted/i);
     } finally {
       server.close();
     }

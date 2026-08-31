@@ -82,8 +82,12 @@ export type VercelRuntimeSyncErrorCode = 'runtime_sync_failed' | 'session_unavai
 export class VercelRuntimeSyncError extends Error {
   readonly code: VercelRuntimeSyncErrorCode;
 
-  constructor(message: string, code: VercelRuntimeSyncErrorCode = 'runtime_sync_failed') {
-    super(message);
+  constructor(
+    message: string,
+    code: VercelRuntimeSyncErrorCode = 'runtime_sync_failed',
+    cause?: unknown,
+  ) {
+    super(message, { cause });
     this.name = 'VercelRuntimeSyncError';
     this.code = code;
   }
@@ -511,7 +515,7 @@ async function resolveRuntimeEnvironment(
     try {
       return await readEnvironmentFile(options.envPath);
     } catch (error) {
-      throw new VercelRuntimeSyncError(error instanceof Error ? error.message : String(error));
+      throw new VercelRuntimeSyncError(error instanceof Error ? error.message : String(error), 'runtime_sync_failed', error);
     }
   }
 
@@ -523,7 +527,7 @@ async function resolveRuntimeEnvironment(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
   } catch (error) {
-    throw new VercelRuntimeSyncError(`runtime environment state read failed: ${String(error)}`);
+    throw new VercelRuntimeSyncError(`runtime environment state read failed: ${String(error)}`, 'runtime_sync_failed', error);
   }
   if (result.exitCode !== 0 || !result.stdout) return {};
 
@@ -535,8 +539,8 @@ async function resolveRuntimeEnvironment(
       throw new Error('invalid environment state');
     }
     return value as Record<string, string>;
-  } catch {
-    throw new VercelRuntimeSyncError('runtime environment state is invalid');
+  } catch (error) {
+    throw new VercelRuntimeSyncError('runtime environment state is invalid', 'runtime_sync_failed', error);
   }
 }
 
@@ -563,6 +567,8 @@ async function uploadRuntimeFiles(
   } catch (error) {
     throw new VercelRuntimeSyncError(
       `runtime file upload failed: ${runtimeUploadErrorDetail(error, secrets)}`,
+      'runtime_sync_failed',
+      error,
     );
   }
 }
@@ -594,7 +600,11 @@ async function runRuntimeOperation<T>(
     return await action();
   } catch (error) {
     if (error instanceof VercelDisplayStartupError) throw error;
-    throw new VercelRuntimeSyncError(`${operation} failed: ${redactSecrets(error, secrets)}`);
+    throw new VercelRuntimeSyncError(
+      `${operation} failed: ${redactSecrets(error, secrets)}`,
+      'runtime_sync_failed',
+      error,
+    );
   }
 }
 

@@ -66,6 +66,9 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('snapshot prior process ended');
     expect(source).toContain('prior user processes ended');
     expect(source).toContain('waitForPublicRoute');
+    expect(source).toContain('fetchTextWithTimeout');
+    expect(source).toContain('boundedCall');
+    expect(source).toContain('signal: signal');
     expect(source).toContain('snapshot display route healthy');
     expect(source).toContain('snapshot public route healthy');
     expect(source).toContain('snapshot workspace restored');
@@ -159,6 +162,32 @@ describe('public Vercel session UAT driver', () => {
     ]);
   });
 
+  it('does not cache a timed-out workflow eligibility lookup', async () => {
+    let calls = 0;
+    const eligibility = createWorkflowRunEligibility({
+      repository: 'gannonh/devbox',
+      fetcher: async (_url: string, init: RequestInit) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+          });
+        }
+        return {
+          ok: true,
+          json: async () => ({ status: 'completed', run_attempt: 1 }),
+        } as Response;
+      },
+    });
+    const identity = { tags: { repository: 'repository-tag', branch: 'other-branch' } };
+    const record = { name: 'attempt-one', tags: { provider: 'vercel', repository: 'repository-tag', branch: 'uat-devbox-session-900-1-aaaaaaaaaaaaaaaa' } };
+
+    await expect(selectRunTaggedSandboxes([record], identity, eligibility, undefined, AbortSignal.timeout(5)))
+      .resolves.toEqual([]);
+    await expect(selectRunTaggedSandboxes([record], identity, eligibility)).resolves.toEqual([record]);
+    expect(calls).toBe(2);
+  });
+
   it('fails closed when the canonical cleanup build is unavailable', async () => {
     await expect(loadCleanupDependencies(async () => {
       throw new Error('dist is unavailable');
@@ -175,6 +204,20 @@ describe('public Vercel session UAT driver', () => {
       async () => inventories.shift()!,
       { timeoutMs: 10, pollMs: 1, sleep: async () => {}, now: () => now++ },
     )).resolves.toEqual({ sandboxCount: 0, snapshotCount: 0 });
+  });
+
+  it('aborts a cleanup inventory request at its operation deadline', async () => {
+    let aborted = false;
+    await expect(waitForEmptyResourceInventory(
+      (signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          aborted = true;
+          reject(signal.reason);
+        }, { once: true });
+      }),
+      { timeoutMs: 30, pollMs: 1, operationTimeoutMs: 5, sleep: async () => {} },
+    )).rejects.toThrow(/did not converge/);
+    expect(aborted).toBe(true);
   });
 
   it('creates the stable redacted report shape before any provider work', () => {

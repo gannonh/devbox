@@ -249,9 +249,10 @@ export function mapVercelError(
   if (isAbortError(error, message, lifecycleCode)) {
     return new VercelProviderError('aborted', 'The Vercel operation was aborted; retry the command.');
   }
-  if (lifecycleCode === 'session_unavailable'
+  if (lifecycleCode === 'session_binding'
+    || lifecycleCode === 'session_unavailable'
     || lifecycleCode === 'session_changed'
-    || (error instanceof VercelSdkError && error.operation === 'Session.runCommand')) {
+  ) {
     return new VercelProviderError(
       'session',
       `The Vercel provider session changed or is unavailable; retry ${command}.`,
@@ -287,17 +288,21 @@ function statusOf(error: unknown): number | undefined {
   const candidate = error as {
     status?: unknown;
     response?: { status?: unknown };
+    cause?: unknown;
   } | null;
   if (typeof candidate?.status === 'number') return candidate.status;
   if (typeof candidate?.response?.status === 'number') return candidate.response.status;
+  if (candidate?.cause !== undefined && candidate.cause !== error) return statusOf(candidate.cause);
   return undefined;
 }
 
 function codeOf(error: unknown): string | undefined {
-  return typeof error === 'object' && error !== null && 'code' in error
-    && typeof (error as { code?: unknown }).code === 'string'
-    ? (error as { code: string }).code
-    : undefined;
+  if (typeof error !== 'object' || error === null) return undefined;
+  if ('code' in error && typeof (error as { code?: unknown }).code === 'string') {
+    return (error as { code: string }).code;
+  }
+  const cause = 'cause' in error ? (error as { cause?: unknown }).cause : undefined;
+  return cause === undefined || cause === error ? undefined : codeOf(cause);
 }
 
 function safeDetail(error: unknown, secrets: readonly string[]): string {
@@ -395,20 +400,33 @@ function isStoredScopeMismatch(message: string): boolean {
 }
 
 function isAbortError(error: unknown, message: string, code: string | undefined): boolean {
-  return (error instanceof Error && error.name === 'AbortError')
+  if ((error instanceof Error && error.name === 'AbortError')
     || code === 'ABORT_ERR'
-    || /^vercel (?:authentication|operation) aborted$/.test(message);
+    || /^vercel (?:authentication|operation) aborted$/.test(message)) return true;
+  const cause = causeOf(error);
+  return cause !== undefined && cause !== error
+    && isAbortError(cause, String(cause).toLowerCase(), codeOf(cause));
 }
 
 function isTimeoutError(error: unknown, message: string, code: string | undefined): boolean {
-  return (error instanceof Error && error.name === 'TimeoutError')
+  if ((error instanceof Error && error.name === 'TimeoutError')
     || code === 'ETIMEDOUT'
-    || /^vercel (?:authentication|operation) timed out$/.test(message);
+    || /^vercel (?:authentication|operation) timed out$/.test(message)) return true;
+  const cause = causeOf(error);
+  return cause !== undefined && cause !== error
+    && isTimeoutError(cause, String(cause).toLowerCase(), codeOf(cause));
 }
 
 function operationOf(error: unknown): string | undefined {
   const candidate = error as { operation?: unknown } | null;
-  return typeof candidate?.operation === 'string' ? candidate.operation : undefined;
+  if (typeof candidate?.operation === 'string') return candidate.operation;
+  const cause = causeOf(error);
+  return cause === undefined || cause === error ? undefined : operationOf(cause);
+}
+
+function causeOf(error: unknown): unknown {
+  if (typeof error !== 'object' || error === null || !('cause' in error)) return undefined;
+  return (error as { cause?: unknown }).cause;
 }
 
 function isStableCode(code: string | undefined, expected: readonly string[]): boolean {
