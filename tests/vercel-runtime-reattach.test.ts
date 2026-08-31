@@ -166,6 +166,16 @@ describe('preparation evidence', () => {
       sessionId: 'runtime-session',
     });
   });
+
+  it('keeps a matching session as same-session when leftover sourceSnapshotId remains', () => {
+    expect(classifyRuntimeVmSession({ ...actual }, {
+      ...actual,
+      sourceSnapshotId: 'snapshot-1',
+    })).toMatchObject({
+      kind: 'same-session',
+      sessionId: 'runtime-session',
+    });
+  });
 });
 
 describe('Vercel cheap re-attach', () => {
@@ -318,6 +328,47 @@ describe('Vercel cheap re-attach', () => {
     expect(later).toMatchObject({
       reused: true,
       evidence: 'running-session',
+      snapshotResumed: false,
+    });
+  });
+
+  it('does not treat leftover sourceSnapshotId as a snapshot resume on a later same-session sync', async () => {
+    const harness = reattachClient();
+    const original = {
+      ...sandbox(),
+      currentSession: () => ({ sessionId: 'runtime-sync' }),
+    } as VercelSandboxHandle;
+    await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: original,
+    }));
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
+    const resumed = {
+      ...sandbox(),
+      sourceSnapshotId: 'snapshot-1',
+      currentSession: () => ({ sessionId: 'resumed-session' }),
+    } as VercelSandboxHandle;
+    await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: resumed,
+      mode: 'attach',
+    }));
+    harness.files.set(SETUP_STATUS_PATH, Buffer.from(JSON.stringify({
+      status: 'succeeded', startedAt: 1, finishedAt: 2,
+    })));
+
+    const synced = await prepareSandboxRuntime(prepareOptions({
+      client: harness.client,
+      sandbox: resumed,
+      env: { GH_TOKEN: 'rotated-secret' },
+      mode: 'attach',
+    }));
+
+    expect(synced).toMatchObject({
+      reused: true,
+      evidence: 'running-sync',
       snapshotResumed: false,
     });
   });

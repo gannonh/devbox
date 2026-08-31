@@ -73,7 +73,7 @@ export interface PreparedSandboxRuntime {
   /** True when evidence proved the box already prepared and work was skipped. */
   reused: boolean;
   evidence: RuntimePreparationEvidenceKind;
-  /** True when the current SDK session was created from a retained snapshot. */
+  /** True when this call classified a new VM session created from a retained snapshot. */
   snapshotResumed: boolean;
 }
 
@@ -133,7 +133,7 @@ export function evaluatePreparation(
 
 export function classifyRuntimeVmSession(
   marker: unknown,
-  actual: RuntimePreparationActualEvidence,
+  actual: Pick<RuntimePreparationActualEvidence, 'sessionId' | 'sourceSnapshotId'>,
 ): RuntimeVmSession {
   if (hasPreparationMarker(marker) && marker.sessionId === actual.sessionId) {
     return { kind: 'same-session', sessionId: actual.sessionId };
@@ -146,6 +146,18 @@ export function classifyRuntimeVmSession(
     };
   }
   return { kind: 'new', sessionId: actual.sessionId };
+}
+
+function snapshotResumedFromVmSession(
+  marker: unknown,
+  sandbox: VercelSandboxHandle,
+): boolean {
+  const sessionId = currentVercelSessionId(sandbox);
+  if (sessionId === null) return false;
+  return classifyRuntimeVmSession(marker, {
+    sessionId,
+    ...(sandbox.sourceSnapshotId === undefined ? {} : { sourceSnapshotId: sandbox.sourceSnapshotId }),
+  }).kind === 'snapshot-resumed';
 }
 
 export function classifyPreparation(
@@ -278,47 +290,53 @@ export async function prepareSandboxRuntime(
   );
   const githubTokenHash = createHash('sha256').update(token, 'utf8').digest('hex');
   const environmentHash = environmentStateHash(runtimeEnvironment);
+  let preparationMarker: unknown = undefined;
   if (options.mode === 'attach' || options.mode === 'boot') {
     const evidence = await readPreparationEvidence(options);
     if (evidence !== null) {
+      preparationMarker = evidence.marker;
       const sessionId = currentVercelSessionId(options.sandbox);
-      if (sessionId) {
-        const actual: RuntimePreparationActualEvidence = {
+      if (sessionId === null) {
+        throw new VercelRuntimeSyncError(
+          'Vercel current session ID is unavailable before runtime preparation',
+          'session_unavailable',
+        );
+      }
+      const actual: RuntimePreparationActualEvidence = {
+        sandboxName: options.sandbox.name,
+        sessionId,
+        sourceRevision: evidence.revision,
+        imageDigest: sandboxImageDigest(options.sandbox),
+        githubTokenSha256: githubTokenHash,
+        envSha256: environmentHash,
+        ...(options.sandbox.sourceSnapshotId === undefined
+          ? {}
+          : { sourceSnapshotId: options.sandbox.sourceSnapshotId }),
+      };
+      const evidenceKind = classifyPreparation(evidence.marker, actual);
+      if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
+      if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
+        await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
+        const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
+          sandbox: options.sandbox,
+          client: options.client,
+          workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
+          ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+        }));
+        await writeCurrentPreparationMarker(options, secrets, {
           sandboxName: options.sandbox.name,
-          sessionId,
-          sourceRevision: evidence.revision,
-          imageDigest: sandboxImageDigest(options.sandbox),
+          sourceRevision: actual.sourceRevision,
+          imageDigest: actual.imageDigest,
           githubTokenSha256: githubTokenHash,
           envSha256: environmentHash,
-          ...(options.sandbox.sourceSnapshotId === undefined
-            ? {}
-            : { sourceSnapshotId: options.sandbox.sourceSnapshotId }),
+        });
+        return {
+          setupStatus,
+          reused: true,
+          evidence: evidenceKind,
+          snapshotResumed: snapshotResumedFromVmSession(evidence.marker, options.sandbox),
         };
-        const evidenceKind = classifyPreparation(evidence.marker, actual);
-        if (evidenceKind === 'running-session') return reusePreparedRuntime(options, secrets);
-        if (evidenceKind === 'running-sync' || evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync') {
-          await synchronizeRuntimeState(options, token, secrets, evidenceKind === 'snapshot' || evidenceKind === 'snapshot-sync');
-          const setupStatus = await runRuntimeOperation('Background setup', secrets, () => launchBackgroundSetup({
-            sandbox: options.sandbox,
-            client: options.client,
-            workspace: resolveVercelRepositoryCwd(options.sandbox.cwd, options.repository),
-            ...(options.runtimeEnvironment === undefined ? {} : { env: options.runtimeEnvironment }),
-            ...(options.signal === undefined ? {} : { signal: options.signal }),
-          }));
-          await writeCurrentPreparationMarker(options, secrets, {
-            sandboxName: options.sandbox.name,
-            sourceRevision: actual.sourceRevision,
-            imageDigest: actual.imageDigest,
-            githubTokenSha256: githubTokenHash,
-            envSha256: environmentHash,
-          });
-          return {
-            setupStatus,
-            reused: true,
-            evidence: evidenceKind,
-            snapshotResumed: options.sandbox.sourceSnapshotId !== undefined,
-          };
-        }
       }
     }
   }
@@ -345,7 +363,7 @@ export async function prepareSandboxRuntime(
     setupStatus,
     reused: false,
     evidence: 'full',
-    snapshotResumed: options.sandbox.sourceSnapshotId !== undefined,
+    snapshotResumed: snapshotResumedFromVmSession(preparationMarker, options.sandbox),
   };
 }
 
