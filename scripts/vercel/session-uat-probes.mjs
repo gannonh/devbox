@@ -170,7 +170,8 @@ export function createSessionUatProbes({
       if (!session.output().includes(marker)) session.write(remoteIdentityCommand(marker));
     }, 2_000);
     try {
-      return parseIdentity(await wait, marker);
+      await wait;
+      return parseIdentity(session.output(), marker);
     } finally {
       clearInterval(retry);
     }
@@ -363,7 +364,7 @@ function remoteHttpFixtureCommand(marker) {
     '    def log_message(self, *_args):',
     '        pass',
     "server = http.server.ThreadingHTTPServer(('0.0.0.0', 4173), Handler)",
-    "print(f'{MARKER} PID={os.getpid()} TMUX={SESSION}', flush=True)",
+    "print(f'PID={os.getpid()} TMUX={SESSION}\\n{MARKER}', flush=True)",
     'server.serve_forever()',
   ].join('\n');
   const encoded = Buffer.from(code).toString('base64');
@@ -373,7 +374,7 @@ function remoteHttpFixtureCommand(marker) {
 function remoteDetachedProcessCommand(started, completion, path) {
   const startedEncoded = Buffer.from(started).toString('base64');
   const completionEncoded = Buffer.from(completion).toString('base64');
-  return `rm -f -- ${shellQuote(path)}; printf '%s\\n' "$(printf '%s' '${completionEncoded}' | base64 -d)" > ${shellQuote(path)}; (sh -c 'while :; do sleep 30; done' ${shellQuote(completion)}) >/dev/null 2>&1 & printf '%s PID=%s MARKER=%s\\n' "$(printf '%s' '${startedEncoded}' | base64 -d)" "$!" "$(printf '%s' '${completionEncoded}' | base64 -d)"\n`;
+  return `rm -f -- ${shellQuote(path)}; printf '%s\\n' "$(printf '%s' '${completionEncoded}' | base64 -d)" > ${shellQuote(path)}; (sh -c 'while :; do sleep 30; done' ${shellQuote(completion)}) >/dev/null 2>&1 & printf 'PID=%s MARKER=%s\\n%s\\n' "$!" "$(printf '%s' '${completionEncoded}' | base64 -d)" "$(printf '%s' '${startedEncoded}' | base64 -d)"\n`;
 }
 
 function remoteSnapshotStateCommand(sentinelPresent, sentinelMissing, processPresent, processAbsent, path, marker, pid) {
@@ -386,7 +387,7 @@ function remoteSnapshotStateCommand(sentinelPresent, sentinelMissing, processPre
 
 function remoteWorkspaceCommand(marker) {
   const encoded = Buffer.from(marker).toString('base64');
-  return `printf '%s PWD=%s BRANCH=%s\\n' "$(printf '%s' '${encoded}' | base64 -d)" "$PWD" "$(git branch --show-current)"\n`;
+  return `printf 'PWD=%s BRANCH=%s\\n%s\\n' "$PWD" "$(git branch --show-current)" "$(printf '%s' '${encoded}' | base64 -d)"\n`;
 }
 
 function remoteRuntimeStateCommand(ready, missing, sessionId) {
@@ -404,21 +405,21 @@ function parseIdentity(output, marker) {
 
 function parseFixtureStartup(output, marker) {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(escaped + ' PID=([0-9]+) TMUX=([^\\s\\r\\n]+)').exec(output);
+  const match = new RegExp(`PID=([0-9]+) TMUX=([^\\s\\r\\n]+)\\s+${escaped}`).exec(output);
   if (!match) throw new Error('fixture marker did not include a PID and tmux session');
   return { marker, pid: match[1], session: match[2] };
 }
 
 function parseDetachedProcessStartup(output, marker) {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(escaped + ' PID=([0-9]+) MARKER=([^\\s\\r\\n]+)').exec(output);
+  const match = new RegExp(`PID=([0-9]+) MARKER=([^\\s\\r\\n]+)\\s+${escaped}`).exec(output);
   if (!match) throw new Error('detached process marker did not include a PID and process marker');
   return { marker: match[2], pid: match[1] };
 }
 
 function parseWorkspace(output, marker) {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = new RegExp(escaped + ' PWD=([^\\s\\r\\n]+) BRANCH=([^\\s\\r\\n]+)').exec(output);
+  const match = new RegExp(`PWD=([^\\s\\r\\n]+) BRANCH=([^\\s\\r\\n]+)\\s+${escaped}`).exec(output);
   if (!match) throw new Error('workspace marker did not include the working directory and branch');
   return { path: match[1], branch: match[2] };
 }
