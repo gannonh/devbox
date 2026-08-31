@@ -63,6 +63,8 @@ describe('public Vercel session UAT driver', () => {
     expect(source).toContain('snapshot branch restored');
     expect(source).toContain('snapshot runtime state restored');
     expect(source).toContain('snapshot fresh provider session');
+    expect(source).not.toContain("waitFor('▲ ', cliTimeoutMs)");
+    expect(source).not.toContain("'▲ ',");
   });
 
   it('writes redacted evidence and has an explicit cleanup mode', async () => {

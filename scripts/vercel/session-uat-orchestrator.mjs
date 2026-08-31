@@ -159,11 +159,9 @@ export async function runSessionUat({ environment = process.env, argv = process.
       const first = await session.waitForAny([
         'Create this Vercel sandbox?',
         `session duration: ${timeoutMinutes} minutes`,
-        '▲ ',
       ], cliTimeoutMs);
       if (first.match === 'Create this Vercel sandbox?') session.write('y\n');
       await session.waitFor(`session duration: ${timeoutMinutes} minutes`, cliTimeoutMs);
-      await session.waitFor('▲ ', cliTimeoutMs);
       return {
         ...session,
         publicUrl: publicRoute(session.output(), APP_PORT),
@@ -376,7 +374,6 @@ export async function runSessionUat({ environment = process.env, argv = process.
     try {
       await resumed.waitFor('prior user processes ended', cliTimeoutMs);
       await resumed.waitFor(`session duration: ${timeoutMinutes} minutes`, cliTimeoutMs);
-      await resumed.waitFor('▲ ', cliTimeoutMs);
       const displayUrl = publicRoute(resumed.output(), 6080);
       const appUrl = publicRoute(resumed.output(), APP_PORT);
       const displayProbe = await waitForPublicRoute(displayUrl);

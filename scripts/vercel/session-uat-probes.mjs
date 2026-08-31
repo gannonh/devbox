@@ -156,9 +156,7 @@ export function createSessionUatProbes({
   }
 
   async function attachSession(stateHome) {
-    const session = createPty([cliPath, branch, '--provider', 'vercel', '--attach'], stateHome);
-    await session.waitFor('▲ ', cliTimeoutMs);
-    return session;
+    return createPty([cliPath, branch, '--provider', 'vercel', '--attach'], stateHome);
   }
 
   async function readIdentity(session, label) {
