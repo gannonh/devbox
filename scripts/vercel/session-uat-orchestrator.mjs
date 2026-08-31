@@ -76,6 +76,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     remoteRuntimeStateCommand,
     remoteSnapshotStateCommand,
     remoteWorkspaceCommand,
+    sessionSocketPath,
     stopFixture,
     waitForDeadline,
     waitForFixture,
@@ -179,6 +180,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const identity = parseIdentity(await writeAndWait(session, remoteIdentityCommand(marker), marker, 2_000), marker);
     check('initial named tmux session', identity.session === 'devbox', `session=${identity.session}`);
     check('initial session socket', identity.socket.startsWith('/tmp/devbox-tmux/session-'), 'socket uses the devbox-owned session directory');
+    check('initial socket matches provider session', identity.socket === sessionSocketPath(session.provider.sessionId), 'socket is derived from the current provider session ID');
     report.initial = {
       pid: identity.pid,
       tmuxSession: identity.session,
@@ -233,6 +235,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     const resumed = await resumeSnapshot(stateHome, snapshotProcess, {
       socket: initialIdentity.socket,
       providerSessionId: provider.sessionId,
+      providerExpiresAt: provider.expiresAt,
     });
     check('duration provider stop observed', ['stopped', 'aborted'].includes(stopped.status), `status=${stopped.status}`);
     check('duration one retained snapshot', retainedSnapshots.length === 1, `createdSnapshots=${retainedSnapshots.length}`);
@@ -270,6 +273,7 @@ export async function runSessionUat({ environment = process.env, argv = process.
     await verifySnapshotBoundary(stateHome, {
       socket: initialIdentity.socket,
       providerSessionId: initial.provider.sessionId,
+      providerExpiresAt: initial.provider.expiresAt,
     });
   }
 
@@ -310,11 +314,11 @@ export async function runSessionUat({ environment = process.env, argv = process.
       check('clean attach same HTTP marker', cleanResponse.marker === fixtureMarker, 'fixture survived clean detach');
       check('clean attach same HTTP response', cleanResponse.response === 'devbox-uat-http', 'same fixture response returned after clean attach');
       cleanAttach.write(Buffer.from([0x1d]));
-      await cleanAttach.waitForExit(cliTimeoutMs);
+      const cleanExitCode = await cleanAttach.waitForExit(cliTimeoutMs);
+      check('clean Ctrl-] detach', cleanExitCode === 0, `exitCode=${cleanExitCode}`);
     } finally {
       await cleanAttach.close('SIGTERM');
     }
-    check('clean Ctrl-] detach', true, 'explicit --attach returned without stopping the VM session');
     if (!forcedProvider || !cleanProvider) throw new Error('reconnect provider identity was not recorded');
     report.reconnect = {
       fixtureMarker,
@@ -369,7 +373,8 @@ export async function runSessionUat({ environment = process.env, argv = process.
       );
       check('snapshot process marker recorded', priorProcess.marker === processMarker, 'the detached process carried a unique marker');
       session.write(Buffer.from([0x1d]));
-      await session.waitForExit(cliTimeoutMs);
+      const exitCode = await session.waitForExit(cliTimeoutMs);
+      check('snapshot process Ctrl-] detach', exitCode === 0, `exitCode=${exitCode}`);
       return { ...priorProcess, sentinelPath };
     } catch (error) {
       await session.close('SIGTERM').catch(() => undefined);
@@ -416,6 +421,13 @@ export async function runSessionUat({ environment = process.env, argv = process.
       const runtimeReady = markerFor('snapshot-runtime-ready');
       const runtimeMissing = markerFor('snapshot-runtime-missing');
       const provider = await readProviderSessionFacts(stateHome);
+      check('snapshot socket matches provider session', freshIdentity.socket === sessionSocketPath(provider.sessionId), 'socket is derived from the resumed provider session ID');
+      const resumedExpiresAtMs = Date.parse(provider.expiresAt ?? '');
+      const priorExpiresAtMs = Date.parse(priorIdentity.providerExpiresAt ?? '');
+      check('snapshot fresh deadline', Number.isFinite(resumedExpiresAtMs)
+        && Number.isFinite(priorExpiresAtMs)
+        && resumedExpiresAtMs > Date.now()
+        && resumedExpiresAtMs > priorExpiresAtMs, 'snapshot resume received a new future provider deadline');
       const runtimeState = await writeAndWaitAny(
         resumed,
         remoteRuntimeStateCommand(runtimeReady, runtimeMissing, provider.sessionId),
@@ -436,7 +448,8 @@ export async function runSessionUat({ environment = process.env, argv = process.
       check('snapshot public route fixture', snapshotResponse.response === 'devbox-uat-http', 'new fixture returned the expected payload');
       await stopFixture(appUrl, snapshotFixtureMarker);
       resumed.write(Buffer.from([0x1d]));
-      await resumed.waitForExit(cliTimeoutMs);
+      const resumedExitCode = await resumed.waitForExit(cliTimeoutMs);
+      check('snapshot Ctrl-] detach', resumedExitCode === 0, `exitCode=${resumedExitCode}`);
       check('snapshot fresh provider session', provider.sessionId !== priorIdentity.providerSessionId, `priorFingerprint=${fingerprint(priorIdentity.providerSessionId)}; resumedFingerprint=${fingerprint(provider.sessionId)}`);
       check('snapshot resumed timeout', provider.configuredTimeoutMs === timeoutMinutes * 60 * 1000, `timeout=${provider.configuredTimeoutMs}ms`);
       report.snapshot = {

@@ -84,6 +84,7 @@ export interface VercelInteractiveOptions {
 export interface VercelSandboxSession {
   readonly sessionId?: string;
   openInteractive(options?: { signal?: AbortSignal }): Promise<{ url: string; token: string }>;
+  runCommand(params: VercelRunCommandRequest): Promise<VercelCommandResult>;
 }
 
 export interface VercelSandboxHandle {
@@ -236,6 +237,7 @@ export interface VercelSandboxClient {
   runCommand(
     sandbox: VercelSandboxHandle,
     params: VercelRunCommandRequest,
+    options?: VercelRunCommandOptions,
   ): Promise<VercelCommandResult>;
   /**
    * Replace the Sandbox's exposed ports with `ports` on the running Sandbox.
@@ -259,6 +261,12 @@ export interface VercelSandboxClient {
     signal?: AbortSignal;
   }): Promise<VercelSnapshotHandle>;
   deleteSnapshot(snapshot: VercelSnapshotHandle, options?: { signal?: AbortSignal }): Promise<void>;
+}
+
+export interface VercelRunCommandOptions {
+  /** Run on this already observed session instead of allowing an implicit resume. */
+  expectedSessionId?: string;
+  secrets?: readonly string[];
 }
 
 export interface VercelSandboxApi {
@@ -417,11 +425,9 @@ export function createVercelSandboxClient(
       [],
       () => sandbox.writeFiles(files, options),
     ),
-    runCommand: async (sandbox, params) => call(
-      'Sandbox.runCommand',
-      [],
-      () => sandbox.runCommand(params),
-    ),
+    runCommand: async (sandbox, params, options) => options?.expectedSessionId === undefined
+      ? call('Sandbox.runCommand', [], () => sandbox.runCommand(params))
+      : runCurrentSessionCommand(sandbox, options.expectedSessionId, params, options.secrets),
     updatePorts: async (sandbox, ports, updateOptions) => call(
       'Sandbox.update',
       [],
@@ -452,6 +458,29 @@ export function createVercelSandboxClient(
     },
     deleteSnapshot: async (snapshot, options) => call('Snapshot.delete', [], () => snapshot.delete(options)),
   };
+}
+
+/**
+ * Run a command on the already materialized provider session.
+ *
+ * Sandbox.runCommand may transparently resume a stopped VM. Session.runCommand
+ * keeps the command bound to the session that the caller observed, so teardown
+ * cannot be undone by terminal or relay preparation.
+ */
+export function runCurrentSessionCommand(
+  sandbox: VercelSandboxHandle,
+  expectedSessionId: string,
+  params: VercelRunCommandRequest,
+  secrets: readonly string[] = [],
+): Promise<VercelCommandResult> {
+  return callWithSecrets('Session.runCommand', secrets, async () => {
+    const session = sandbox.currentSession?.();
+    if (!session?.runCommand) throw new Error('Vercel current session is unavailable for a strict command');
+    if (session.sessionId !== expectedSessionId) {
+      throw new Error('Vercel current session changed before a strict command started');
+    }
+    return session.runCommand(params);
+  });
 }
 
 function matchesSandboxListFilters(

@@ -869,7 +869,7 @@ async function terminalResult(
   secrets: readonly string[],
 ): Promise<ProviderActionResult> {
   const cwd = resolveVercelRepositoryCwd(sandbox.cwd, repository);
-  const terminalShell = await prepareVercelTerminalShell({ sandbox, client, cwd });
+  const terminalShell = await prepareVercelTerminalShell({ sandbox, client, cwd, secrets });
   const streams: VercelTerminalStreams = {
     stdin: request.stdin,
     stdout: request.stdout,

@@ -8,6 +8,7 @@ import {
 import { VercelSdkError } from '../src/providers/vercel/client.js';
 import { VercelDisplayStartupError } from '../src/providers/vercel/display-startup.js';
 import { VercelObsoleteMetadataError } from '../src/providers/vercel/metadata-schema.js';
+import { VercelRuntimeSyncError } from '../src/providers/vercel/runtime.js';
 
 describe('Vercel provider errors', () => {
   it('preserves creation-compensation recovery IDs without exposing secrets', () => {
@@ -93,6 +94,22 @@ describe('Vercel provider errors', () => {
     expect(mapped.message).toContain('auth-proxy');
     expect(mapped.message).toMatch(/box was left running/i);
     expect(mapped.message).toContain('devbox --provider vercel feature/ui --attach');
+  });
+
+  it('maps only session-bound runtime failures to session guidance', () => {
+    const unavailable = mapVercelError(
+      new VercelRuntimeSyncError('Vercel current session ID is unavailable', 'session_unavailable'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(unavailable.code).toBe('session');
+    expect(unavailable.exitCode).toBe(2);
+
+    const generic = mapVercelError(
+      new VercelRuntimeSyncError('Display startup failed: auth-proxy'),
+      { action: 'attach', branch: 'feature/ui' },
+    );
+    expect(generic.code).toBe('api');
+    expect(generic.exitCode).toBe(1);
   });
 
   it('maps rate limits with Retry-After without exposing the response body', () => {
