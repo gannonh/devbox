@@ -723,6 +723,7 @@ describe('Vercel provider', () => {
       stateHome,
       lifecycle: (options) => {
         expect(options.credentials).toEqual({ token: 'new-vercel-token', teamId: 'stored-team', projectId: 'stored-project' });
+        expect(options.timeoutMs).toBe(5_400_000);
         expect(options.source?.source.password).toBe('');
         return currentLifecycle;
       },
@@ -733,6 +734,7 @@ describe('Vercel provider', () => {
     const code = await provider.attach(request({
       branch: 'feature/ui',
       env: { VERCEL_TOKEN: 'new-vercel-token' },
+      timeoutMs: 5_400_000,
       tty: true,
     }));
 

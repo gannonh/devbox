@@ -201,6 +201,12 @@ describe('public Vercel session UAT driver', () => {
     expect(detail.length).toBeLessThanOrEqual(1200);
   });
 
+  it('redacts display access codes from captured diagnostics', () => {
+    const detail = redactTailValue('Vercel devbox ready\n  access code: display-code-123', []);
+
+    expect(detail).toBe('Vercel devbox ready\n  access code: [REDACTED]');
+  });
+
   it('observes an already-exited PTY without waiting for its timeout', async () => {
     const child = Object.assign(new EventEmitter(), {
       stdout: new PassThrough(),

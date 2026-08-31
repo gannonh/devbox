@@ -343,7 +343,7 @@ function isLongSessionCreate(
     && operation === 'Sandbox.getOrCreate'
     && context.requestedTimeoutMs !== undefined
     && context.requestedTimeoutMs > 45 * 60_000
-    && (status === 400 || status === 422)
+    && status === 400
     && message === VERCEL_LONG_SESSION_REJECTION_SIGNATURE;
 }
 

@@ -554,7 +554,6 @@ async function prepareStored(
     false,
     origin.canonical,
     recovery,
-    action !== 'attach',
   );
   return {
     lifecycle,
@@ -626,12 +625,11 @@ function createLifecycle(
   listOnly = false,
   repository?: string,
   recovery?: VercelRecoveryInput,
-  requestTimeoutTakesPrecedence = true,
 ): VercelLifecycle {
   const repoKey = source?.remote.canonical ?? repository;
   if (!repoKey) throw new Error('Vercel lifecycle repository is required');
   const stored = metadata?.configuration;
-  const requestedTimeoutMs = requestTimeoutTakesPrecedence && 'branch' in request
+  const requestedTimeoutMs = 'branch' in request
     ? request.timeoutMs
     : undefined;
   const requestedVcpus = 'branch' in request ? request.vcpus : undefined;
