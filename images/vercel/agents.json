@@ -12,13 +12,13 @@
     "claude": {
       "package": "@anthropic-ai/claude-code",
       "binary": "claude",
-      "version": "2.1.251",
+      "version": "2.1.252",
       "versionFlag": "--version"
     },
     "codex": {
       "package": "@openai/codex",
       "binary": "codex",
-      "version": "0.151.0",
+      "version": "0.152.0",
       "versionFlag": "--version"
     },
     "opencode": {
