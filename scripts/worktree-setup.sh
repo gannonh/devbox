@@ -17,5 +17,5 @@ PROJECT_ROOT="/Volumes/EVO/dev/devbox"
 
 npm install
 npm run build
-$WORKTREE_ROOT/scripts/install-skills.sh
+(cd "$WORKTREE_ROOT" && ./scripts/install-skills.sh)
 ln -sf $PROJECT_ROOT/.env $WORKTREE_ROOT/.env 
