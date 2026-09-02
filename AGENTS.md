@@ -1,5 +1,17 @@
 # Project Agent Instructions
 
+## Skills
+
+Product OS is the `plan-build-verify` plugin. Specs are GitHub Issues, not files under `docs/specs/`.
+
+Install the plugin for the host you use. Do not `npx skills add gannonh/skills --skill plan-build-verify`.
+
+- **Cursor:** `/plugin marketplace add gannonh/plan-build-verify`, then enable `plan-build-verify`. `scripts/install-skills.sh` also installs a local copy under `~/.cursor/plugins/local/plan-build-verify` for headless and Cloud Agent setup.
+- **Claude Code:** `/plugin marketplace add gannonh/plan-build-verify` then `/plugin install plan-build-verify@plan-build-verify`
+- **Codex:** `codex plugin marketplace add gannonh/plan-build-verify` then `codex plugin add plan-build-verify@plan-build-verify`
+
+Cursor engineering execution is the **pstack** plugin (separate install). Do not install `ps`, `okf`, or `kata-linear` for this repo. OKF is retired.
+
 ## Vercel credentials and real UAT
 
 - `npm run worktree:setup` links the central `.env` from `~/dotfiles/repos/devbox/.env` into the worktree. Loading a file does **not** export variables into the caller's shell, so use an explicit child shell when needed. Never infer credential absence from bare `process.env` in a process that did not load the intended file.
