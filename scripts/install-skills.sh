@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
 # Copy a skill onto disk. Best-effort: a registry or network hiccup for a single
 # skill must not abort dependency setup (this script runs from worktree:setup and
