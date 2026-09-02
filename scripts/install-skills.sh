@@ -11,21 +11,9 @@ add_skill() {
   fi
 }
 
-# gannonh/skills
-add_skill gannonh/skills --skill plan-build-verify
-add_skill gannonh/skills --skill thermo-run
-add_skill gannonh/skills --skill readme
-
-# cursor/plugins
-add_skill cursor/plugins --skill thermo-nuclear-code-quality-review
-add_skill cursor/plugins --skill thermo-nuclear-review
-add_skill cursor/plugins --skill unslop
-
-# misc
-add_skill anthropics/claude-plugins-community --skill eli5
-add_skill humanlayer/skills --skill show-me
-add_skill warpdotdev/common-skills --skill skill-doctor
-
 # Project-specific third party
-
 add_skill vercel/sandbox --skill sandbox
+
+# NOTE: - First-party project-specific skills are git-tracked
+#       - Workflow skills and plugins should be boot-strapped with
+#         `npx @gannonh/agent-setup install`
